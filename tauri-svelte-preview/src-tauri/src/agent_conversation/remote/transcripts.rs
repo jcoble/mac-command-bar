@@ -116,4 +116,16 @@ mod tests {
         manager.replace_cached_profile_sessions("cache-test", &listed(Some(3))).unwrap();
         assert_eq!(saved(), None);
     }
+
+    #[tokio::test]
+    async fn a_download_running_when_another_mac_reads_the_session_again_saves_nothing_more() {
+        let manager = download_manager();
+        let (id, _requests) = begin_test_download(&manager, 100, Some(1), Some(2)).await;
+        let listed = |numbered_after| [AgentConversationSessionRecord { numbered_after, ..session("large-history", "cache-test", 1) }];
+        manager.replace_cached_profile_sessions("cache-test", &listed(None)).unwrap();
+        manager.replace_cached_profile_sessions("cache-test", &listed(Some(3))).unwrap();
+        // A chunk the old stream had already sent: its rows belong to the journal that was replaced.
+        manager.receive_history_chunk("cache-test", id, "large-history", 50, encode_history_chunk(&[history_event(2)]).unwrap()).unwrap();
+        assert_eq!(manager.store.remote_saved_minimum(&RemoteHistory::key("cache-test", "large-history")).unwrap(), None);
+    }
 }

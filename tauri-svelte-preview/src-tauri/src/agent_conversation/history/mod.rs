@@ -176,11 +176,14 @@ pub fn existing_import_session(store: &SessionStore, provider: AgentConversation
 
 /// Assembly's own run of an imported session writes to its transcript too (Claude adds bookkeeping lines on every
 /// load and turn), so after each turn and on suspend the saved length follows the file: only growth from outside reads it again.
-pub fn follow_imported_length(store: &SessionStore, owned_id: &str) -> Result<(), String> {
+/// `starting` is Assembly about to run it: growth found then is turns taken elsewhere, so the length is forgotten, which
+/// makes the next import read them and stops the following until it has.
+pub fn follow_imported_length(store: &SessionStore, owned_id: &str, starting: bool) -> Result<(), String> {
     let Some(mut row) = store.get_session(owned_id).map_err(|error| error.to_string())? else { return Ok(()) };
     let Some(cursor) = optional_import_cursor(&row.extra_json)?.filter(|cursor| cursor.imported_length.is_some()) else { return Ok(()) };
     let Ok(metadata) = std::fs::metadata(&cursor.transcript_path) else { return Ok(()) };
-    row.extra_json = merge_import_cursor(&row.extra_json, &ImportCursor { imported_length: Some(metadata.len()), ..cursor })?;
+    if starting && cursor.imported_length.is_some_and(|length| metadata.len() <= length) { return Ok(()); }
+    row.extra_json = merge_import_cursor(&row.extra_json, &ImportCursor { imported_length: (!starting).then_some(metadata.len()), ..cursor })?;
     store.upsert_session(&row).map_err(|error| error.to_string())
 }
 
@@ -635,18 +638,8 @@ pub fn extend_session(
     // A session started here rather than picked up from a transcript has no
     // cursor, and nothing older than its first event exists. Scrolling to the
     // top of one asks this question and deserves an answer, not an error.
-    let Some(cursor) = optional_import_cursor(&session.extra_json)? else {
-        return Ok(ExtendedImport {
-            added: 0,
-            reached_start: true,
-        });
-    };
-    if cursor.reached_start {
-        return Ok(ExtendedImport {
-            added: 0,
-            reached_start: true,
-        });
-    }
+    let Some(cursor) = optional_import_cursor(&session.extra_json)? else { return Ok(ExtendedImport { added: 0, reached_start: true }) };
+    if cursor.reached_start { return Ok(ExtendedImport { added: 0, reached_start: true }); }
     let provider = self::transcript::parse_provider(&session.provider)?;
     let native_session_id = session
         .native_session_id

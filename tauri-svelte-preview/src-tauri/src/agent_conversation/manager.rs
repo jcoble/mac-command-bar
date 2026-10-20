@@ -2031,11 +2031,7 @@ impl AgentRuntimeManager {
                 // What the session is on now, which a live change has already
                 // written. Only a session that has never reported an effort
                 // falls back to the one it was created with.
-                session
-                    .config
-                    .reasoning_effort
-                    .clone()
-                    .or_else(|| session.spawn_reasoning_effort.clone()),
+                session.config.reasoning_effort.clone().or_else(|| session.spawn_reasoning_effort.clone()),
                 session.config.model.clone(),
                 // The policy the session is on now, which a live change has
                 // already written. A restarted adapter comes back on its own
@@ -2044,6 +2040,8 @@ impl AgentRuntimeManager {
                 session.state == AgentRuntimeState::Suspended,
             )
         };
+        // Before the adapter loads it and writes to the transcript itself.
+        if let Err(error) = super::history::follow_imported_length(&self.store, owned_id, true) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
         let mut expected_native_session_id = native_session_id.clone();
         let never_had_a_turn = self
             .store
@@ -4148,7 +4146,7 @@ impl AgentRuntimeManager {
             }
             return Err(error);
         }
-        if let Err(error) = super::history::follow_imported_length(&self.store, owned_id) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
+        if let Err(error) = super::history::follow_imported_length(&self.store, owned_id, false) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
         let mut sessions = self
             .sessions
             .lock()
@@ -4275,7 +4273,7 @@ impl AgentRuntimeManager {
             }
             return Err(error);
         }
-        if let Err(error) = super::history::follow_imported_length(&self.store, owned_id) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
+        if let Err(error) = super::history::follow_imported_length(&self.store, owned_id, false) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
         let mut sessions = self
             .sessions
             .lock()
@@ -7217,7 +7215,7 @@ async fn handle_ordered_session_event(
         }
         OrderedSessionEvent::PromptResult { turn_id, result } => {
             manager.finish_child_rollout_scan(owned_id, generation, &turn_id).await;
-            if let Err(error) = super::history::follow_imported_length(&manager.store, owned_id) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
+            if let Err(error) = super::history::follow_imported_length(&manager.store, owned_id, false) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
             let cancelled = result
                 .as_ref()
                 .ok()

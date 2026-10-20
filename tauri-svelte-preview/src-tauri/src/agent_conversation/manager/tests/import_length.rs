@@ -50,6 +50,20 @@ async fn warming_moves_the_saved_transcript_length_along() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn turns_taken_outside_before_assembly_runs_the_session_are_still_read_again() {
+    let fixture = fixture_manager_with_acp_session("suspend_runtime").await;
+    assert!(fixture.manager.suspend_if_quiescent(&fixture.owned_id, fixture.generation).await.unwrap());
+    // The line added while the session is suspended stands for turns taken in the CLI.
+    let (transcript, _) = imported_and_grown(&fixture);
+    fixture.manager.warm_conversation_config(&fixture.owned_id, fixture.generation).await.expect("warm config");
+    assert_eq!(saved_length(&fixture), None, "opening it must not count those turns as read");
+    let native = fixture.manager.store().get_session(&fixture.owned_id).unwrap().unwrap().native_session_id.unwrap();
+    let imported = fixture.manager.begin_import_transcript_session(AgentConversationProvider::Codex, &native,
+        &transcript, fixture.root.to_str().unwrap(), None, None).await;
+    assert_eq!(imported, Ok((fixture.owned_id.clone(), true)));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn suspending_moves_the_saved_transcript_length_along() {
     let fixture = fixture_manager_with_acp_session("suspend_runtime").await;
     let (_, grown) = imported_and_grown(&fixture);
