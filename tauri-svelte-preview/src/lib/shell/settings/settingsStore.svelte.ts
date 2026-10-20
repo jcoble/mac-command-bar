@@ -7,8 +7,7 @@
  *
  * Defaults mirror the app's current hardcoded values:
  *   - editor:   System code-face id / 13 / 21
- *   - terminal: the xterm config in +page.svelte (Google Sans Mono / 15 / 1.2,
- *               dracula theme)
+ *   - terminal: the xterm config in +page.svelte (Google Sans Mono / 15 / 1.2)
  *   - general:  the source terminal app default ('Warp')
  *
  * NOTE: This module only owns the *values*. Applying them into Monaco / xterm
@@ -48,7 +47,6 @@ export interface TerminalSettings {
 	fontSize: number;
 	/** Unitless line-height multiplier (xterm-style). */
 	lineHeight: number;
-	theme: string;
 	cursorBlink: boolean;
 }
 
@@ -152,7 +150,6 @@ export function defaultSettings(): Settings {
 			fontFamily: 'JetBrains Mono',
 			fontSize: 15,
 			lineHeight: 1.2,
-			theme: 'dracula',
 			cursorBlink: true
 		},
 		general: {
