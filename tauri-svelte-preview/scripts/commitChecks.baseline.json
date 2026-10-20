@@ -70,7 +70,7 @@
     "tauri-svelte-preview/src/lib/shell/ownedSessions.ts": 625,
     "tauri-svelte-preview/src/lib/shell/workflows/components/WorkflowRuns.svelte": 669,
     "tauri-svelte-preview/src/lib/shell/browser/components/BrowserPanel.svelte": 983,
-    "tauri-svelte-preview/src/lib/shell/files/components/FilesPanel.svelte": 1484,
+    "tauri-svelte-preview/src/lib/shell/files/components/FilesPanel.svelte": 1480,
     "tauri-svelte-preview/src/lib/shell/history/components/HistoryPanel.svelte": 894,
     "tauri-svelte-preview/src/lib/shell/git/components/sourceControl/SourceControlPanel.svelte": 925,
     "tauri-svelte-preview/src/lib/shell/panels/tasks/TasksPanel.svelte": 632,
