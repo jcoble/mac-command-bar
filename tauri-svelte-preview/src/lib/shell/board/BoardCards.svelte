@@ -108,8 +108,8 @@
     busy = true;
     onError('');
     try {
-      for (const machine of new Set(done.map((entry) => entry.machine))) {
-        await changeBoardCard(machine, '', 'clear_done', Date.now(), signal);
+      for (const board of boards.filter((board) => board.value.counts.done)) {
+        await changeBoardCard(board.machine, '', 'clear_done', Date.now(), signal);
       }
     } catch (cause) {
       if (!signal.aborted) onError(`Could not clear done cards: ${message(cause)}`);
