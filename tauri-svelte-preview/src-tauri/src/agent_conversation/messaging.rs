@@ -68,6 +68,7 @@ pub fn answer(store: &SessionStore, manager: Option<&AgentRuntimeManager>, op: &
         }
         "count" => Ok(json!(store.count_messages(arg("session")?, args["after_ms"].as_i64().ok_or("after_ms is required")?)
             .map_err(|error| error.to_string())?)),
+        op if op.starts_with("board") => board::answer(store, op, args),
         _ => Err(format!("Unknown messaging operation {op}")),
     }
 }
@@ -281,6 +282,7 @@ impl MessagingEndpoint {
 
     /// This machine's workflow engine, which agents start and watch their runs on.
     pub fn set_workflow(&self, engine: crate::workflow::WorkflowEngine) {
+        tauri::async_runtime::spawn(board::forward_run_changes(engine.run_changes(), mcb_core::broker::messages_changed));
         *self.workflow.lock().unwrap() = Some(engine);
     }
 
