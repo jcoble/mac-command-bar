@@ -667,8 +667,6 @@
 		onSourceControlWorkspaceChange={(ownedId, sourceControl) => {
 			if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ sourceControl });
 		}}
-		tasksView={selection.activeWorkspaceSnapshot?.tasksView}
-		onTasksViewChange={(ownedId, tasksView) => selection.persistWorkspaceState(ownedId, { tasksView })}
 		checkoutDiscoveryRoots={selection.filesProjectionRoot ? [selection.filesProjectionRoot] : []}
 		onUseSessionCheckout={selection.controlledSession?.canChangeCheckout && selection.controlledSession.origin === "app"
 			? async (root) => {
