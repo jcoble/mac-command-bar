@@ -1105,7 +1105,7 @@ function sameDisplayItem(left: ConversationDisplayItem, right: ConversationDispl
         rightRecord[key] as Readonly<Record<string, unknown>> | undefined
       );
     }
-    return Object.is(leftRecord[key], rightRecord[key]);
+    return Object.is(leftRecord[key], rightRecord[key]) || (key === 'steps' && left.kind === 'plan' && right.kind === 'plan' && samePlanSteps(left.steps, right.steps));
   });
 }
 

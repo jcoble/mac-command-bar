@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  reuseConversationDisplayItems,
   type ConversationDisplayItem
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
 import { conversationChunksFromEvent, conversationDisplayItems, conversationMessagesAfterCustom } from '../src/lib/shell/conversation/conversationMessages.ts';
@@ -52,6 +53,13 @@ test('unchanged_messages_keep_their_display_items', () => {
   const first = conversationDisplayItems(items);
   const second = conversationDisplayItems(items);
   assert.ok(first.every((item, index) => item === second[index]));
+});
+
+test('a_plan_with_equal_steps_is_the_same_display_item', () => {
+  const steps = () => [{ id: 'step-1', title: 'Read', detail: null, state: 'in-progress' as const, ownerAgentId: null, startedAt: null, completedAt: null }];
+  const plan = { kind: 'plan' as const, itemId: 'plan-1', title: 'Plan', steps: steps(), timestampMs: 1 };
+  const [reused] = reuseConversationDisplayItems([{ ...plan, steps: steps() }], [plan]);
+  assert.equal(reused, plan);
 });
 
 console.log('conversation timeline identity tests passed');
