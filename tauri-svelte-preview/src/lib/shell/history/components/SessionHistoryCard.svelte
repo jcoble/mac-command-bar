@@ -49,6 +49,8 @@
     title: string;
     /** The name of the machine the session ran on. */
     machineLabel: string;
+    /** The session's machine has not answered History's scan yet. */
+    machineScanning?: boolean;
     expanded: boolean;
     detail?: Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns' | 'messageCount' | 'startComplete'> | null;
     detailsLoading?: boolean;
@@ -66,6 +68,7 @@
     record,
     title,
     machineLabel,
+    machineScanning = false,
     expanded,
     detail = null,
     detailsLoading = false,
@@ -109,7 +112,8 @@
     return parts.length > 3 ? parts.slice(-3).join('/') : value;
   }
 
-  const actions = $derived(new Map(sessionHistoryActions(record).map((item) => [item.id, item])));
+  const actions = $derived(new Map(sessionHistoryActions(record, machineScanning).map((item) => [item.id, item])));
+  const resume = $derived(actions.get('resume-assembly'));
   const can = (id: SessionHistoryActionId): boolean => actions.get(id)?.enabled ?? false;
 
   const agent = $derived(normalizeProvider(record.provider));
@@ -313,14 +317,15 @@
     {/if}
 
     <div class="detail-actions">
-      {#if can('resume-assembly')}
+      {#if resume && (resume.enabled || machineScanning)}
         <Button
           size="xs"
           class="mr-1 rounded-full bg-[var(--color-good-bg)] px-3 font-semibold text-[var(--color-accent)]
                  hover:bg-[color-mix(in_srgb,var(--color-accent)_20%,transparent)]"
+          disabled={!resume.enabled}
           onclick={() => onAction('resume-assembly')}
         >
-          <RotateCcw aria-hidden="true" /> Resume
+          <RotateCcw aria-hidden="true" /> {resume.enabled ? resume.label : resume.disabledReason}
         </Button>
       {/if}
       {#if can('copy-resume-command')}

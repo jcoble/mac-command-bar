@@ -555,7 +555,7 @@
    * action the record cannot support never becomes pressable in the first place.
    */
   async function runAction(record: SessionLibraryRecord, id: SessionHistoryActionId): Promise<void> {
-    const allowed = sessionHistoryActions(record).find((action) => action.id === id);
+    const allowed = sessionHistoryActions(record, rail.scanningMachines.includes(record.machine)).find((action) => action.id === id);
     if (!allowed?.enabled) return;
 
     switch (id) {
@@ -693,7 +693,7 @@
       <SessionHistoryCard
         record={row.record}
         title={row.displayTitle}
-        machineLabel={projectMachineLabel(row.record.machine, rail.remoteProfiles)}
+        machineLabel={projectMachineLabel(row.record.machine, rail.remoteProfiles)} machineScanning={rail.scanningMachines.includes(row.record.machine)}
         expanded={expandedKey === row.record.key}
         {now}
         onToggle={() => toggleCard(row)}

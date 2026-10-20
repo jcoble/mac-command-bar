@@ -119,8 +119,11 @@ function action(
   };
 }
 
-/** The nine actions a session card offers, in the order a person sees them. */
-export function sessionHistoryActions(record: SessionLibraryRecord): SessionHistoryAction[] {
+/**
+ * The nine actions a session card offers, in the order a person sees them. `machineScanning` is true while the
+ * record's machine has not answered History's scan: a remote session Assembly holds learns its transcript from it.
+ */
+export function sessionHistoryActions(record: SessionLibraryRecord, machineScanning = false): SessionHistoryAction[] {
   const hasLog = Boolean(record.logPath?.trim());
   const hasFolder = Boolean(record.canonicalCwd?.trim());
   // Resuming needs all four of the agent, the id it knew the session by, the
@@ -129,7 +132,8 @@ export function sessionHistoryActions(record: SessionLibraryRecord): SessionHist
   // whose agent this app cannot read.
   const canResumeAssembly = sessionTranscriptImport(record) !== null;
   const resumeLabel = 'Resume as Assembly Session';
-  const resumeReason = !record.nativeSessionId?.trim()
+  const waiting = machineScanning && Boolean(record.ownedId) && record.machine !== 'local';
+  const resumeReason = waiting ? 'Scanning…' : !record.nativeSessionId?.trim()
     ? NO_SESSION_ID
     : !hasLog
       ? NO_TRANSCRIPT
@@ -138,7 +142,7 @@ export function sessionHistoryActions(record: SessionLibraryRecord): SessionHist
         : UNREADABLE_AGENT;
 
   const actions = [
-    action('resume-assembly', resumeLabel, Boolean(record.ownedId) || canResumeAssembly, resumeReason),
+    action('resume-assembly', resumeLabel, !waiting && (Boolean(record.ownedId) || canResumeAssembly), resumeReason),
     action('view-log', 'View Log', hasLog, NO_TRANSCRIPT),
     action(
       'copy-resume-command',

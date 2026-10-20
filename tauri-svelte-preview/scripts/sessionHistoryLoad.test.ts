@@ -117,6 +117,25 @@ run('every_history_row_offers_resume_through_the_import', () => {
   }
   const card = readFileSync(new URL('../src/lib/shell/history/components/SessionHistoryCard.svelte', import.meta.url), 'utf8');
   assert.doesNotMatch(card, /<Play aria-hidden="true" \/> Open/);
+  // The button says the whole action, for rows Assembly holds and rows it does not.
+  assert.match(card, /<RotateCcw aria-hidden="true" \/> \{resume\.enabled \? resume\.label : resume\.disabledReason\}/);
+});
+
+run('a_held_remote_row_waits_for_its_machine_scan', () => {
+  const held = record('held-remote');
+  held.source = 'owned';
+  held.ownedId = 'held-remote';
+  held.machine = 'box';
+  const waiting = sessionHistoryActions(held, true).find((candidate) => candidate.id === 'resume-assembly');
+  assert.equal(waiting?.enabled, false);
+  assert.equal(waiting?.disabledReason, 'Scanning…');
+  assert.equal(sessionHistoryActions(held, false).find((candidate) => candidate.id === 'resume-assembly')?.enabled, true);
+  held.machine = 'local';
+  assert.equal(sessionHistoryActions(held, true).find((candidate) => candidate.id === 'resume-assembly')?.enabled, true);
+  const card = readFileSync(new URL('../src/lib/shell/history/components/SessionHistoryCard.svelte', import.meta.url), 'utf8');
+  assert.match(card, /disabled=\{!resume\.enabled\}/);
+  const host = readFileSync(new URL('../src/lib/shell/history/sessionHistoryHost.ts', import.meta.url), 'utf8');
+  assert.match(host, /rail\.scanningMachines = /);
 });
 
 const remoteScan = {

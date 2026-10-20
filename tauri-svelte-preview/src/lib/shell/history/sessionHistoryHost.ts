@@ -37,12 +37,15 @@ async function listLocalProviderSessions(projectPath?: string): Promise<AgentSes
 /** This Mac's scan, and for the whole list each connected machine's own scan, labelled with that machine. */
 async function listProviderSessions(projectPath?: string): Promise<AgentSession[]> {
   const machines = projectPath ? [] : Object.keys(rail.remoteConnections).filter((id) => rail.remoteConnections[id] === 'connected');
+  rail.scanningMachines = [...new Set([...rail.scanningMachines, ...machines])];
   const remote = await Promise.all(machines.map(async (machine) => {
     try {
       return ((await listAgentSessionsFromTauri(machine)) ?? []).map((session) => ({ ...session, machine }));
     } catch (error) {
       console.warn(`[history] could not scan ${machine}`, error);
       return [];
+    } finally {
+      rail.scanningMachines = rail.scanningMachines.filter((id) => id !== machine);
     }
   }));
   return [...(await listLocalProviderSessions(projectPath)), ...remote.flat()];
