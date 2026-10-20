@@ -30,6 +30,20 @@ export type SessionSelectionOwner = {
   signal: AbortSignal;
 };
 
+/**
+ * A remote machine can stop answering before the app hears that it went away.
+ * Its folder, workspace and draft reads then fail quietly (undefined), so the
+ * saved chat still opens from the Mac's copy. Local failures still throw.
+ */
+async function unlessUnreachable<T>(session: OwnedSession, read: Promise<T>): Promise<T | undefined> {
+  try {
+    return await read;
+  } catch (error) {
+    if (session.executionEnvironment !== 'remote') throw error;
+    return undefined;
+  }
+}
+
 export class SessionSelectionLayers {
   treeOwnedId = $state<string | null>(null);
   treeRoot = $state('');
@@ -72,9 +86,9 @@ export class SessionSelectionLayers {
     }
 
     countInvoke('validate_project_root');
-    const validation = await validateProjectRootFromTauri(root, owner.signal);
+    const validation = await unlessUnreachable(session, validateProjectRootFromTauri(root, owner.signal));
     if (!this.isCurrent(owner)) return;
-    if (validation && (!validation.exists || !validation.isDirectory)) {
+    if (validation === undefined || (validation && (!validation.exists || !validation.isDirectory))) {
       this.hasTreeProjection = true;
       this.treeOwnedId = session.ownedId;
       this.treeRoot = '';
@@ -113,7 +127,7 @@ export class SessionSelectionLayers {
       && rail.remoteConnections[session.remoteProfileId ?? ''] !== 'connected';
     if (!offline) {
       countInvoke('read_agent_conversation_workspace');
-      const workspace = await readAgentConversationWorkspaceFromTauri(session.ownedId);
+      const workspace = await unlessUnreachable(session, readAgentConversationWorkspaceFromTauri(session.ownedId));
       if (!this.isCurrent(owner)) return;
       conversation.viewByHistoryId = workspace?.conversation?.viewByHistoryId ?? {};
     }
@@ -124,7 +138,7 @@ export class SessionSelectionLayers {
       if (this.requestedChatOwnedId !== session.ownedId) disposeSelectedConversationChat(session.ownedId);
       return;
     }
-    if (!offline) await loadConversationSessionDraft(session.ownedId);
+    if (!offline) await unlessUnreachable(session, loadConversationSessionDraft(session.ownedId));
     if (!this.isCurrent(owner)) {
       if (this.requestedChatOwnedId !== session.ownedId) disposeSelectedConversationChat(session.ownedId);
       return;
