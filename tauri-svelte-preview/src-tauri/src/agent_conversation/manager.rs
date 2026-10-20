@@ -611,12 +611,12 @@ impl AgentRuntimeManager {
     /// rail has something to show while the transcript is still being read.
     /// Also answers whether a session already here was cleared to be read again from its transcript.
     pub async fn begin_import_transcript_session(&self, provider: AgentConversationProvider, native_session_id: &str,
-        path: &Path, cwd: &str, title: Option<String>) -> Result<(String, bool), String> {
+        path: &Path, cwd: &str, title: Option<String>, project_id: Option<String>) -> Result<(String, bool), String> {
         // Activation holds the same guard, so the session cannot start between the check and the read-again.
         let existing = super::history::existing_import_session(&self.store, provider, native_session_id)?;
         let _lifecycle = match &existing { Some(row) => Some(self.lifecycle_guard(&row.owned_id).await?), None => None };
         let open = existing.is_some_and(|row| self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(&row.owned_id));
-        super::history::begin_import_session(&self.store, provider, native_session_id, path, cwd, title, open)
+        super::history::begin_import_session(&self.store, provider, native_session_id, path, cwd, title, project_id, open)
     }
 
     /// Reads the newest page of an imported transcript into a session that has
@@ -666,12 +666,10 @@ impl AgentRuntimeManager {
         Ok(true)
     }
 
-    pub fn extend_imported_session(
-        &self,
-        owned_id: &str,
-        max_bytes: u64,
-        max_records: usize,
-    ) -> Result<super::history::ExtendedImport, String> {
+    pub fn extend_imported_session(&self, owned_id: &str, max_bytes: u64, max_records: usize) -> Result<super::history::ExtendedImport, String> {
+        // Two downloads at once would each read the same older page in, numbered twice, so one reads at a time.
+        static EXTENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one_at_a_time = EXTENDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         super::history::extend_session(&self.store, owned_id, max_bytes, max_records)
     }
 

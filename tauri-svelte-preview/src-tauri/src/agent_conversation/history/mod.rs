@@ -76,7 +76,7 @@ pub fn import_session(
     max_bytes: u64,
     max_records: usize,
 ) -> Result<String, String> {
-    let (owned_id, _) = begin_import_session(store, provider, native_session_id, path, cwd, title, false)?;
+    let (owned_id, _) = begin_import_session(store, provider, native_session_id, path, cwd, title, None, false)?;
     finish_import_session(store, &owned_id, max_bytes, max_records)?;
     Ok(owned_id)
 }
@@ -97,11 +97,13 @@ pub fn import_session(
 /// `title` is the name the past session already had, as the History card shows
 /// it. It is written here, with the row, because the database is what the rail
 /// reads: a title held only in the front end survived until the next reload and
-/// then the row went back to showing a raw owned id.
+/// then the row went back to showing a raw owned id. `project_id` is the project the session is filed under when it has none.
+#[allow(clippy::too_many_arguments)]
 pub fn begin_import_session(store: &SessionStore, provider: AgentConversationProvider, native_session_id: &str,
-    path: &Path, cwd: &str, title: Option<String>, open: bool) -> Result<(String, bool), String> {
+    path: &Path, cwd: &str, title: Option<String>, project_id: Option<String>, open: bool) -> Result<(String, bool), String> {
     let metadata = path.metadata().map_err(|error| format!("Could not inspect transcript: {error}"))?;
     if let Some(mut row) = existing_import_session(store, provider, native_session_id)? {
+        if row.project_id.is_none() && project_id.is_some() { row.project_id = project_id; store.upsert_session(&row).map_err(|error| error.to_string())?; }
         // The transcript is the whole conversation. A session never read from it (one
         // started here), or whose file has grown since it was, lacks turns its own events
         // do not hold or would repeat, so it is read again from the file. Its events are
@@ -134,12 +136,9 @@ pub fn begin_import_session(store: &SessionStore, provider: AgentConversationPro
     let cursor = ImportCursor { transcript_path: path.to_string_lossy().into_owned(), cutoff_offset: metadata.len(),
         imported_length: Some(metadata.len()), ..ImportCursor::default() };
     let extra_json = merge_import_cursor(&super::manager::imported_session_extra(provider)?, &cursor)?;
-    // The folder's project as of now, matched like the back-fill: a project added
-    // after History scanned this transcript still counts.
-    let project_id = crate::project_folders::match_local_folders(store, &[cwd.to_string()])?
-        .into_iter()
-        .next()
-        .map(|(_, project_id)| project_id);
+    // Else the folder's project as of now, matched like the back-fill: one added after History scanned this still counts.
+    let project_id = match project_id { Some(project_id) => Some(project_id),
+        None => crate::project_folders::match_local_folders(store, &[cwd.to_string()])?.into_iter().next().map(|(_, project_id)| project_id) };
     let session = SessionRow {
         owned_id: owned_id.clone(),
         native_session_id: Some(native_session_id.to_string()),
@@ -1277,7 +1276,7 @@ mod tests {
         let store = SessionStore::open_in_memory().unwrap();
         let parent_owned_id = begin_import_session(
             &store, fixture_provider(), "parent", &fixture.path,
-            "/tmp/project", None, false,
+            "/tmp/project", None, None, false,
         ).unwrap().0;
         let child_owned_id = serde_json::to_string(&("child", &parent_owned_id, "child-1")).unwrap();
         let mut child = store.get_session(&parent_owned_id).unwrap().unwrap();
@@ -1301,7 +1300,7 @@ mod tests {
             "parent",
             &fixture.path,
             "/tmp/project",
-            None,
+            None, None,
             false,
         )
         .unwrap().0;
@@ -1346,7 +1345,7 @@ mod tests {
         let db_path = std::env::temp_dir().join(format!("mcb-child-store-{}.sqlite", Uuid::new_v4()));
         let store = SessionStore::open(&db_path).unwrap();
         let parent_owned_id = begin_import_session(
-            &store, fixture_provider(), "parent", &fixture.path, "/tmp/project", None, false,
+            &store, fixture_provider(), "parent", &fixture.path, "/tmp/project", None, None, false,
         ).unwrap().0;
         let child_owned_id = serde_json::to_string(&("child", &parent_owned_id, "child")).unwrap();
         let mut child = store.get_session(&parent_owned_id).unwrap().unwrap();

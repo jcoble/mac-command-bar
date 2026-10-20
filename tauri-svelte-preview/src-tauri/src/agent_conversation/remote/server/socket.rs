@@ -401,7 +401,7 @@ mod tests {
         let length = std::fs::metadata(&path).unwrap().len();
         let manager = manager(&directory);
         let (owned_id, _) = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
-            &path, &directory.to_string_lossy(), None).await.unwrap();
+            &path, &directory.to_string_lossy(), None, None).await.unwrap();
         manager.finish_import_transcript_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES,
             crate::agent_conversation::IMPORT_MAX_RECORDS).unwrap();
         let store = manager.store_handle();
@@ -429,7 +429,7 @@ mod tests {
         let path = transcript(&directory, 3, 100);
         let manager = manager(&directory);
         let (owned_id, _) = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
-            &path, &directory.to_string_lossy(), None).await.unwrap();
+            &path, &directory.to_string_lossy(), None, None).await.unwrap();
         manager.finish_import_transcript_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES,
             crate::agent_conversation::IMPORT_MAX_RECORDS).unwrap();
         // Reading back to the start leaves nothing to import, so the download is sized by its saved rows.
@@ -452,6 +452,9 @@ mod tests {
         let path = transcript(&directory, 3, 100);
         let manager = manager(&directory);
         let cwd = directory.to_string_lossy().into_owned();
+        // A project of the machine's own for the same folder: the desktop's project still files the session there.
+        manager.store_handle().insert_or_get_project(&crate::project_folders::new_project_row("local".into(),
+            crate::project_folders::ProjectFolderInspection { root_path: cwd.clone(), title: "here".into(), repo_key: String::new(), is_git: false })).unwrap();
         let RemoteResponse::Imported { owned_id, .. } = super::super::execute_remote_command(&manager, &directory,
             RemoteCommand::BeginImport { provider: AgentConversationProvider::Codex, native_session_id: "native".into(),
                 transcript_path: path.to_string_lossy().into(), cwd: cwd.clone(), title: Some("Past".into()), project_id: Some("p1".into()) },
@@ -491,7 +494,7 @@ mod tests {
         let path = transcript(&directory, count, text_bytes);
         let manager = manager(&directory);
         let (owned_id, _) = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
-            &path, &directory.to_string_lossy(), None).await.unwrap();
+            &path, &directory.to_string_lossy(), None, None).await.unwrap();
         manager.finish_import_transcript_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES,
             crate::agent_conversation::IMPORT_MAX_RECORDS).unwrap();
         (directory, path, manager, owned_id)
@@ -559,7 +562,7 @@ mod tests {
         std::fs::write(&path, format!("{}{{}}\n", std::fs::read_to_string(&path).unwrap())).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         let again = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native", &path,
-            &directory.to_string_lossy(), None).await;
+            &directory.to_string_lossy(), None, None).await;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(again.is_err(), "{again:?}");
         assert_eq!(manager.store_handle().history_download_facts(&owned_id, None).unwrap().row_count, saved);
@@ -573,7 +576,7 @@ mod tests {
         let importer = manager.clone();
         let cwd = directory.to_string_lossy().into_owned();
         let import = tokio::spawn(async move {
-            importer.begin_import_transcript_session(AgentConversationProvider::Codex, "native", &path, &cwd, None).await });
+            importer.begin_import_transcript_session(AgentConversationProvider::Codex, "native", &path, &cwd, None, None).await });
         for _ in 0..10 { tokio::task::yield_now().await; }
         assert!(!import.is_finished(), "activation holds the guard, so the import waits");
         drop(lifecycle);
