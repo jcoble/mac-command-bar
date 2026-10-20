@@ -53,7 +53,7 @@
     "tauri-svelte-preview/src/lib/shell/files/components/EditorPanel.svelte": 2164,
     "tauri-svelte-preview/src/lib/shell/settings/SettingsDialog.svelte": 1215,
     "tauri-svelte-preview/src/lib/shell/components/WorktreeAgentRow.svelte": 661,
-    "tauri-svelte-preview/src/lib/shell/git/components/GitHistoryView.svelte": 887,
+    "tauri-svelte-preview/src/lib/shell/git/components/GitHistoryView.svelte": 884,
     "tauri-svelte-preview/src/lib/shell/git/components/MultiFileDiff.svelte": 678,
     "tauri-svelte-preview/src/lib/shell/git/github/PullRequestWorkspace.svelte": 921,
     "tauri-svelte-preview/src/lib/shell/conversation/ConversationSurface.svelte": 847,
