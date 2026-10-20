@@ -890,7 +890,7 @@
                     root={scopeAvailable ? folder : ''}
                     selected={panel.selectedPaths.compact === file.relativePath}
                     canWrite={canChange}
-                    canOpenInEditor={scopeAvailable && !readOnlyScope}
+                    canOpenInEditor={scopeAvailable && !readOnlyScope && !readOnlyReason}
                     readOnlyReason={cannotChangeReason}
                     {busy}
                     onStage={stageOne}

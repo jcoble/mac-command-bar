@@ -27,6 +27,9 @@
   import { gitService } from '$lib/shell/git/gitService';
   import { requestOpenFile } from '$lib/shell/openFileBus';
   import { isDiffMode, type DiffMode } from '$lib/shell/sessionWorkspaces';
+  import { canonicalPath } from '$lib/shell/files/explorer/explorerStore.svelte';
+  import { sessionWorkingIn } from '$lib/shell/projects/projects.ts';
+  import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
   import type { ProjectGitStatus, SourceGitDiff } from '$lib/tauriSource';
 
   interface Props {
@@ -180,7 +183,9 @@
     requestOpenFile({
       path: `${root.replace(/\/+$/, '')}/${relativePath.replace(/^\/+/, '')}`,
       projectRoot: root,
-      line: line && line > 0 ? line : undefined
+      line: line && line > 0 ? line : undefined,
+      // Another project's diff, where another session is working, opens read-only.
+      readOnly: canonicalPath(root) !== canonicalPath(sessionRoot) && sessionWorkingIn(root, rail.owned) !== null
     });
   }
 </script>
