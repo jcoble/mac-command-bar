@@ -19,7 +19,6 @@
   import Plus from '@lucide/svelte/icons/plus';
   import Settings2 from '@lucide/svelte/icons/settings-2';
   import { onMount } from 'svelte';
-  import { exists } from '$lib/workspaceFs.ts';
   import { remoteWorkspacePath } from '$lib/workspacePaths.ts';
 
   import { Button } from '$lib/components/ui/button/index.js';
@@ -28,7 +27,7 @@
   import { pickProjectFolder } from '$lib/shell/conversation/newSession/newSessionBackend.ts';
   import { addProject } from '$lib/shell/projects/projectRegistry.svelte.ts';
   import { isNewFolderPath, projectMachineLabel } from '$lib/shell/projects/projects.ts';
-  import { listFoldersFromTauri, type FolderListing, type ProjectRecord, type RemoteAssemblyProfile } from '$lib/tauriSource.ts';
+  import { listFoldersFromTauri, validateProjectRootFromTauri, type FolderListing, type ProjectRecord, type RemoteAssemblyProfile } from '$lib/tauriSource.ts';
 
   interface Props {
     profiles: RemoteAssemblyProfile[];
@@ -59,6 +58,7 @@
   let adding = $state(false);
   let pathField = $state<HTMLInputElement | null>(null);
   let listSequence = 0;
+  let homePath = $state('');
   let checkedFolder = $state<{ path: string; machine: string; exists: boolean } | null>(null);
 
   const machineLabel = $derived(projectMachineLabel(machine, profiles));
@@ -70,16 +70,20 @@
   $effect(() => {
     const requested = path.trim();
     const owner = machine;
+    const home = homePath;
     const stop = new AbortController();
     checkedFolder = null;
-    if (requested && !chooseFolder) void checkFolder(owner, requested, stop.signal);
+    if (requested && !chooseFolder && (!requested.startsWith('~') || home)) {
+      const resolved = requested === '~' ? home : requested.startsWith('~/') ? `${home}/${requested.slice(2)}` : requested;
+      void checkFolder(owner, requested, resolved, stop.signal);
+    }
     return () => stop.abort();
   });
 
-  async function checkFolder(owner: string, requested: string, signal: AbortSignal): Promise<void> {
+  async function checkFolder(owner: string, requested: string, resolved: string, signal: AbortSignal): Promise<void> {
     try {
-      const found = await exists(owner === 'local' ? requested : remoteWorkspacePath(owner, requested));
-      if (!signal.aborted) checkedFolder = { path: requested, machine: owner, exists: found };
+      const result = await validateProjectRootFromTauri(owner === 'local' ? resolved : remoteWorkspacePath(owner, resolved), signal);
+      if (result && !signal.aborted) checkedFolder = { path: requested, machine: owner, exists: result.exists };
     } catch (error) {
       if (!signal.aborted) message = describe(error);
     }
@@ -127,6 +131,7 @@
       const next = await listFoldersFromTauri(machine, folder);
       if (sequence !== listSequence) return;
       listing = next;
+      if (folder === '~') homePath = next.path;
       if (folder === '~' && !path) path = withSlash(next.path);
       message = '';
     } catch (error) {
@@ -142,6 +147,7 @@
     search = '';
     path = '';
     listing = null;
+    homePath = '';
     message = '';
     void list('~');
   }
