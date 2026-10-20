@@ -15,15 +15,15 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not list the project roots", error))
     }
 
-    /// The root folder of the project added on this machine whose folder is `named`, or else
+    /// The root folder of the project added on `machine` whose folder is `named`, or else
     /// the only one titled `named`. A title shared by several projects finds none.
-    pub fn local_project_root(&self, named: &str) -> Result<Option<String>> {
+    pub fn project_root(&self, machine: &str, named: &str) -> Result<Option<String>> {
         self.lock()?.query_row(
-            "SELECT root_path FROM projects WHERE machine = 'local' AND root_path = ?1
+            "SELECT root_path FROM projects WHERE machine = ?1 AND root_path = ?2
              UNION ALL
-             SELECT MAX(root_path) FROM projects WHERE machine = 'local' AND title = ?1 HAVING COUNT(*) = 1
+             SELECT MAX(root_path) FROM projects WHERE machine = ?1 AND title = ?2 HAVING COUNT(*) = 1
              LIMIT 1",
-            [named], |row| row.get(0),
+            [machine, named], |row| row.get(0),
         ).optional().map_err(|error| StoreError::sqlite("could not find the project", error))
     }
 }
@@ -47,7 +47,10 @@ mod tests {
         add(&store, "b", "local", "/work/twin-1", "twin");
         add(&store, "c", "local", "/work/twin-2", "twin");
         add(&store, "d", "workbox", "/work/remote", "remote");
-        let found = |named| store.local_project_root(named).unwrap();
+        assert_eq!(store.project_root("workbox", "remote").unwrap().as_deref(), Some("/work/remote"));
+        assert_eq!(store.project_root("workbox", "/work/remote").unwrap().as_deref(), Some("/work/remote"));
+        assert_eq!(store.project_root("workbox", "app").unwrap(), None);
+        let found = |named| store.project_root("local", named).unwrap();
         assert_eq!(found("app").as_deref(), Some("/work/app"));
         assert_eq!(found("/work/app").as_deref(), Some("/work/app"));
         assert_eq!(found("/work/twin-2").as_deref(), Some("/work/twin-2"));

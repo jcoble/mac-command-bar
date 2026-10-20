@@ -667,7 +667,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
-            <tr><td>2026-10-20 · TSK-1503 · Check and start workflows in a named project</td><td>Both tools accept an optional registered project title or root on the executing machine. SQL resolves that project, while the caller keeps run ownership and its unfinished-run limit.</td><td>01, 04</td></tr>
+            <tr><td>2026-10-20 · TSK-1503 · Check and start workflows in a named project</td><td>Both tools accept an optional registered project title or root on the executing machine. SQL resolves that project; remote backends use the trusted desktop relay to query registrations scoped to their machine. The caller keeps run ownership and its unfinished-run limit.</td><td>01, 04</td></tr>
             <tr><td>2026-10-20 · TSK-1534 · Build board MCP tool</td><td>The session-bound endpoint exposes <code>board_update</code>, resolves linked sessions on its own machine and leaves card validation and ownership checks in the store.</td><td>01</td></tr>
             <tr><td>2026-10-20 · TSK-1534 · Build board storage</td><td>Each store opens the board card and owner note tables without a schema version change. Card ownership and dropped-card protection apply in the upsert; board documents and counts are single SQL statements.</td><td>10</td></tr>
             <tr><td>2026-10-20 · TSK-1537 · Open another project in Files and Git</td><td>A session can show another project's folder, on any connected machine, in Files and Git; it is saved per session with its machine qualifier, and is read-only while a running session works there.</td><td>11, 13</td></tr>

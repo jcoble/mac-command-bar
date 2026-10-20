@@ -185,18 +185,6 @@ pub(crate) fn workflow_summary(definition: &crate::workflow::WorkflowDefinitionV
     lines.join("\n")
 }
 
-/// An explicitly named registered project, or the calling session's folder when omitted.
-fn project_of(store: &SessionStore, owned_id: &str, project: Option<&Value>) -> Result<String, String> {
-    if let Some(project) = project {
-        let named = project.as_str().ok_or("project must be a project folder or title")?;
-        return store.local_project_root(named).map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("No single project added on this machine has the folder or title {named}"));
-    }
-    store.get_session(owned_id).map_err(|error| error.to_string())?
-        .map(|row| row.cwd).filter(|cwd| !cwd.is_empty())
-        .ok_or_else(|| "This session has no project folder".into())
-}
-
 fn workflow_error(error: crate::workflow::WorkflowError) -> String {
     match error {
         crate::workflow::WorkflowError::InvalidDefinition(message) => message,
@@ -248,6 +236,24 @@ pub fn endpoint() -> Result<&'static Arc<MessagingEndpoint>, String> {
 }
 
 impl MessagingEndpoint {
+    /// An explicitly named registered project, or the calling session's folder when omitted.
+    async fn project_of(&self, store: &SessionStore, owned_id: &str, project: Option<&Value>) -> Result<String, String> {
+        if let Some(project) = project {
+            let named = project.as_str().ok_or("project must be a project folder or title")?;
+            let relay = self.relay.lock().unwrap().clone();
+            let root = match relay {
+                Some(relay) => serde_json::from_value(relay("project_root".into(), json!({"project":named})).await?)
+                    .map_err(|error| error.to_string())?,
+                None => store.project_root("local", named).map_err(|error| error.to_string())?,
+            };
+            return root
+                .ok_or_else(|| format!("No single project added on this machine has the folder or title {named}"));
+        }
+        store.get_session(owned_id).map_err(|error| error.to_string())?
+            .map(|row| row.cwd).filter(|cwd| !cwd.is_empty())
+            .ok_or_else(|| "This session has no project folder".into())
+    }
+
     pub fn start() -> Result<Arc<Self>, String> {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
@@ -413,7 +419,7 @@ impl MessagingEndpoint {
             Some("check_workflow") => {
                 let path = tool_call["arguments"]["path"].as_str()
                     .ok_or("path must be a workflow file relative to your project")?;
-                let project = project_of(&store, &owned_id, tool_call["arguments"].get("project"))?;
+                let project = self.project_of(&store, &owned_id, tool_call["arguments"].get("project")).await?;
                 crate::workflow::WorkflowEngine::validate_file(std::path::Path::new(&project), std::path::Path::new(path))
                     .map(|definition| text(workflow_summary(&definition))).map_err(workflow_error)
             }
@@ -424,7 +430,7 @@ impl MessagingEndpoint {
                 let path = args["path"].as_str().ok_or("path must be a workflow file relative to your project")?;
                 let task: crate::workflow::TaskSnapshot = serde_json::from_value(args["task"].clone())
                     .map_err(|_| "task must have a key, a title and a body")?;
-                let project = project_of(&store, &owned_id, tool_call["arguments"].get("project"))?;
+                let project = self.project_of(&store, &owned_id, tool_call["arguments"].get("project")).await?;
                 // Reuse an unfinished run; follow finished runs to a new run. This task does not count toward the limit.
                 let base = format!("agent:{owned_id}:{}", task.key);
                 let mut key = base.clone();
