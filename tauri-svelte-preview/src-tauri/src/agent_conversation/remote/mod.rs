@@ -1,6 +1,7 @@
 //! One authenticated WebSocket boundary for conversations owned by a remote machine.
 
 mod history;
+mod transcripts;
 pub(in crate::agent_conversation) mod install;
 pub(crate) mod install_flow;
 mod workspace;
@@ -63,7 +64,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 20;
+pub(super) const PROTOCOL_VERSION: u16 = 21;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -2053,42 +2054,6 @@ impl RemoteConnectionManager {
         }
     }
 
-    pub async fn extend_import(&self, owned_id: String) -> Result<super::history::ExtendedImport, String> {
-        let profile = self.profile_for_owned_id(&owned_id)?;
-        self.extend_import_from(profile, owned_id).await
-    }
-
-    pub async fn extend_child_import(
-        &self,
-        profile: String,
-        source_owned_id: String,
-    ) -> Result<super::history::ExtendedImport, String> {
-        self.extend_import_from(profile, source_owned_id).await
-    }
-
-    async fn extend_import_from(
-        &self,
-        profile: String,
-        owned_id: String,
-    ) -> Result<super::history::ExtendedImport, String> {
-        let epoch = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).epoch(&profile);
-        let RemoteResponse::ImportProgress { added, reached_start } = self.request_for_profile(&profile,
-            RemoteCommand::ExtendImport { owned_id: owned_id.clone() }).await?
-        else { return Err("Remote Assembly returned the wrong import response".into()); };
-        if added > 0 {
-            let active = self.downloads.lock().unwrap().get_mut(&RemoteHistory::key(&profile, &owned_id))
-                .and_then(|entry| entry.request_id.take());
-            if let Some(id) = active { self.cancel_request(id).await; }
-        }
-        {
-            let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            history.check(&profile, epoch)?;
-            if added > 0 || !reached_start { history.imported_older(&profile, epoch, &owned_id)?; }
-        }
-        if added > 0 { self.ensure_history_download(&profile, &owned_id).await?; }
-        Ok(super::history::ExtendedImport { added, reached_start })
-    }
-
     pub async fn capabilities(
         &self,
         owned_id: String,
@@ -3613,8 +3578,8 @@ mod connection_tests {
     }
 
     #[test]
-    fn history_download_protocol_20_round_trips_compressed_chunks() {
-        assert_eq!(PROTOCOL_VERSION, 20);
+    fn history_download_protocol_21_round_trips_compressed_chunks() {
+        assert_eq!(PROTOCOL_VERSION, 21);
         let rows = vec![history_event(3), history_event(-2)];
         let encoded = encode_history_chunk(&rows).unwrap();
         assert_eq!(decode_history_chunk(&encoded).unwrap(), rows);
@@ -4974,7 +4939,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn readiness_requires_protocol_and_session_response() {
-        assert_eq!(PROTOCOL_VERSION, 20);
+        assert_eq!(PROTOCOL_VERSION, 21);
         for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();

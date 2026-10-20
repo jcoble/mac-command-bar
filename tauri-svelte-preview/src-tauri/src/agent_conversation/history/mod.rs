@@ -638,7 +638,7 @@ pub fn extend_session(
     max_bytes: u64,
     max_records: usize,
 ) -> Result<ExtendedImport, String> {
-    let mut session = store
+    let session = store
         .get_session(owned_id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Imported session was not found".to_string())?;
@@ -748,10 +748,10 @@ pub fn extend_session(
             reached_start,
         });
     }
-    session.extra_json = merge_import_cursor(&session.extra_json, &next_cursor)?;
-    store
-        .upsert_session(&session)
-        .map_err(|error| error.to_string())?;
+    // Onto the row as it is now: a running session may have saved itself while this page was read.
+    let mut latest = store.get_session(owned_id).map_err(|error| error.to_string())?.ok_or("Imported session was not found")?;
+    latest.extra_json = merge_import_cursor(&latest.extra_json, &next_cursor)?;
+    store.upsert_session(&latest).map_err(|error| error.to_string())?;
     Ok(ExtendedImport {
         added: record_count,
         reached_start,
@@ -917,7 +917,7 @@ fn projection_payload(
 }
 
 /// The import cursor when the session has one, and `None` when it never did.
-fn optional_import_cursor(extra_json: &str) -> Result<Option<ImportCursor>, String> {
+pub(super) fn optional_import_cursor(extra_json: &str) -> Result<Option<ImportCursor>, String> {
     let extra: Value = serde_json::from_str(extra_json)
         .map_err(|error| format!("Could not decode stored session metadata: {error}"))?;
     let Some(cursor) = extra.get("import").cloned() else {

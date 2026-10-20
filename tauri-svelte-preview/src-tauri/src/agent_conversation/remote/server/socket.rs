@@ -7,6 +7,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
+use mcb_core::session_store::{HistoryDownloadRows, SessionStore};
 use tokio::sync::{broadcast, mpsc};
 
 use super::execute_server_command;
@@ -48,24 +49,54 @@ pub(in crate::agent_conversation::remote) async fn next_outbound_frame(outbound:
 pub(in crate::agent_conversation::remote) async fn stream_history_download(state: &ServerState, id: u64, owned_id: &str, mut before_sequence: Option<i64>,
     history_outbound: &mpsc::Sender<ServerFrame>) -> Result<(), String> {
     let store = state.manager.store_handle();
-    let facts = store.history_download_facts(owned_id, before_sequence).map_err(|e| e.to_string())?;
+    let mut facts = store.history_download_facts(owned_id, before_sequence).map_err(|e| e.to_string())?;
     let snapshot = state.manager.snapshot_since(owned_id, Some(i64::MAX))?.ok_or("Remote session was not found")?;
-    let mut covered = facts.covered_bytes;
+    // A transcript still being imported is measured in its file's bytes, and its
+    // older pages are read in here whenever the saved rows run out.
+    let import = unread_transcript(&store, owned_id)?;
+    let mut cutoff = import.map(|(_, cutoff)| cutoff);
+    let total = import.map_or(facts.total_bytes, |(length, _)| length);
+    let mut covered = match import {
+        Some((length, cutoff)) if before_sequence.is_some() => length.saturating_sub(cutoff),
+        Some(_) => 0,
+        None => facts.covered_bytes,
+    };
     let start = ServerFrame::HistoryDownloadStart { id, owned_id: owned_id.into(), low_sequence: facts.low_sequence,
-        high_sequence: facts.high_sequence, row_count: facts.row_count, total_bytes: facts.total_bytes, covered_bytes: covered, snapshot };
+        high_sequence: facts.high_sequence, row_count: facts.row_count, total_bytes: total, covered_bytes: covered, snapshot };
     send_history_frame(history_outbound, start).await?;
-    if let (Some(low), Some(high)) = (facts.low_sequence, facts.high_sequence) {
-        loop {
-            let rows = store.history_download_rows(owned_id, low, high, before_sequence, HISTORY_DOWNLOAD_CHUNK_BYTES, covered).map_err(|e| e.to_string())?;
-            let Some(oldest) = rows.events.last().map(|row| row.seq) else { break; };
-            covered = rows.covered_bytes;
-            let events = rows.events.into_iter().map(crate::agent_conversation::manager::stored_event).collect::<Result<Vec<_>, _>>()?;
-            send_history_frame(history_outbound, ServerFrame::HistoryDownloadChunk { id, owned_id: owned_id.into(), oldest_sequence: oldest,
-                covered_bytes: covered, gzip_base64: encode_history_chunk(&events)? }).await?;
-            before_sequence = Some(oldest);
-        }
+    loop {
+        let rows = match (facts.low_sequence, facts.high_sequence) {
+            (Some(low), Some(high)) => store.history_download_rows(owned_id, low, high, before_sequence, HISTORY_DOWNLOAD_CHUNK_BYTES, covered).map_err(|e| e.to_string())?,
+            _ => HistoryDownloadRows { events: Vec::new(), covered_bytes: covered },
+        };
+        let Some(oldest) = rows.events.last().map(|row| row.seq) else {
+            if cutoff.is_none() { break; }
+            state.manager.extend_imported_session(owned_id, crate::agent_conversation::IMPORT_MAX_BYTES, crate::agent_conversation::IMPORT_MAX_RECORDS)?;
+            let next = unread_transcript(&store, owned_id)?.map(|(_, cutoff)| cutoff);
+            if next.is_some() && next == cutoff { return Err("The transcript import made no progress".into()); }
+            cutoff = next;
+            facts = store.history_download_facts(owned_id, before_sequence).map_err(|e| e.to_string())?;
+            continue;
+        };
+        covered = match import { Some(_) => total.saturating_sub(cutoff.unwrap_or(0)), None => rows.covered_bytes };
+        let events = rows.events.into_iter().map(crate::agent_conversation::manager::stored_event).collect::<Result<Vec<_>, _>>()?;
+        send_history_frame(history_outbound, ServerFrame::HistoryDownloadChunk { id, owned_id: owned_id.into(), oldest_sequence: oldest,
+            covered_bytes: covered, gzip_base64: encode_history_chunk(&events)? }).await?;
+        before_sequence = Some(oldest);
     }
     history_outbound.send(ServerFrame::HistoryDownloadDone { id, owned_id: owned_id.into() }).await.map_err(|e| e.to_string())
+}
+
+/// A top-level transcript import that has not reached the start of its file: the file's size and where reading stopped.
+fn unread_transcript(store: &SessionStore, owned_id: &str) -> Result<Option<(u64, u64)>, String> {
+    let Some(session) = store.get_session(owned_id).map_err(|e| e.to_string())? else { return Ok(None); };
+    match crate::agent_conversation::history::optional_import_cursor(&session.extra_json)? {
+        Some(cursor) if !cursor.reached_start && cursor.parent_owned_id.is_none() => {
+            let length = std::fs::metadata(&cursor.transcript_path).map_err(|e| format!("Could not inspect transcript: {e}"))?.len();
+            Ok(Some((length, cursor.cutoff_offset)))
+        }
+        _ => Ok(None),
+    }
 }
 
 async fn send_history_frame(outbound: &mpsc::Sender<ServerFrame>, frame: ServerFrame) -> Result<(), String> {
@@ -315,4 +346,127 @@ pub(in crate::agent_conversation::remote) async fn replay_session(
     outbound.send(ServerFrame::ReplayComplete { owned_id: owned_id.into(), head, snapshot })
         .await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_conversation::manager::AgentRuntimeManager;
+    use crate::agent_conversation::protocol::AgentConversationProvider;
+    use crate::agent_conversation::providers::ProviderRegistry;
+    use super::super::super::server_state;
+    use super::super::super::wire::decode_history_chunk;
+
+    /// A Codex transcript of `count` user messages, each about `text_bytes` long.
+    fn transcript(directory: &std::path::Path, count: usize, text_bytes: usize) -> std::path::PathBuf {
+        let path = directory.join("rollout.jsonl");
+        let text = "x".repeat(text_bytes);
+        let meta = "{\"timestamp\":\"2026-10-20T00:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"native\",\"cwd\":\"/work\",\"thread_source\":\"user\",\"source\":\"cli\"}}\n";
+        let lines: String = std::iter::once(meta.to_string()).chain((1..=count).map(|index| format!(
+            "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"id\":\"item-{index}\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"{text}\"}}]}}}}\n"
+        ))).collect();
+        std::fs::write(&path, lines).unwrap();
+        path
+    }
+
+    fn manager(directory: &std::path::Path) -> AgentRuntimeManager {
+        AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("sessions.db")).unwrap()
+    }
+
+    /// Every frame of one download: Start's total and covered, each chunk's covered and sequences, and whether Done came.
+    async fn download(state: ServerState, owned_id: String) -> (u64, u64, Vec<u64>, Vec<i64>) {
+        let (sender, mut frames) = mpsc::channel(1);
+        let producer = tokio::spawn(async move { stream_history_download(&state, 7, &owned_id, None, &sender).await });
+        let Some(ServerFrame::HistoryDownloadStart { total_bytes, covered_bytes, .. }) = frames.recv().await else { panic!("no start") };
+        let (mut covered, mut sequences) = (Vec::new(), Vec::new());
+        loop {
+            match frames.recv().await.expect("download ended without done") {
+                ServerFrame::HistoryDownloadChunk { covered_bytes, gzip_base64, .. } => {
+                    covered.push(covered_bytes);
+                    sequences.extend(decode_history_chunk(&gzip_base64).unwrap().iter().map(|event| event.sequence));
+                }
+                ServerFrame::HistoryDownloadDone { id: 7, .. } => break,
+                other => panic!("unexpected frame {other:?}"),
+            }
+        }
+        producer.await.unwrap().unwrap();
+        (total_bytes, covered_bytes, covered, sequences)
+    }
+
+    #[tokio::test]
+    async fn history_download_imports_older_transcript_pages_while_it_streams() {
+        let directory = std::env::temp_dir().join(format!("import-download-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        // About 5 MiB: the newest 2 MiB page is read when the session is named, the rest while streaming.
+        let path = transcript(&directory, 250, 20_000);
+        let length = std::fs::metadata(&path).unwrap().len();
+        let manager = manager(&directory);
+        let owned_id = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
+            &path, &directory.to_string_lossy(), None).unwrap();
+        manager.finish_import_transcript_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES,
+            crate::agent_conversation::IMPORT_MAX_RECORDS).unwrap();
+        let store = manager.store_handle();
+        let state = server_state(manager, directory.clone(), Arc::from("test")).unwrap();
+        let (total, start_covered, covered, sequences) = download(state, owned_id.clone()).await;
+
+        assert_eq!((total, start_covered), (length, 0));
+        assert!(covered.windows(2).all(|pair| pair[0] <= pair[1]), "{covered:?}");
+        assert!(covered.first().is_some_and(|first| *first > 0));
+        // The last read can find only the file's header; Done then stands for the rest.
+        assert!(covered.last().is_some_and(|last| *last <= length && *last > length - 1_000), "{covered:?}");
+        assert_eq!(sequences.len(), 250);
+        assert!(sequences.windows(2).all(|pair| pair[1] == pair[0] - 1), "newest first without gaps");
+        assert!(*sequences.last().unwrap() < 0, "older pages are numbered below the first page");
+        let session = store.get_session(&owned_id).unwrap().unwrap();
+        let cursor = crate::agent_conversation::history::optional_import_cursor(&session.extra_json).unwrap().unwrap();
+        assert!(cursor.reached_start);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn history_download_of_a_finished_import_keeps_payload_sizing() {
+        let directory = std::env::temp_dir().join(format!("plain-download-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = transcript(&directory, 3, 100);
+        let manager = manager(&directory);
+        let owned_id = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
+            &path, &directory.to_string_lossy(), None).unwrap();
+        manager.finish_import_transcript_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES,
+            crate::agent_conversation::IMPORT_MAX_RECORDS).unwrap();
+        // Reading back to the start leaves nothing to import, so the download is sized by its saved rows.
+        assert!(manager.extend_imported_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES,
+            crate::agent_conversation::IMPORT_MAX_RECORDS).unwrap().reached_start);
+        let facts = manager.store_handle().history_download_facts(&owned_id, None).unwrap();
+        let state = server_state(manager, directory.clone(), Arc::from("test")).unwrap();
+        let (total, start_covered, covered, sequences) = download(state, owned_id).await;
+
+        assert_eq!((total, start_covered), (facts.total_bytes, 0));
+        assert_eq!(covered, [facts.total_bytes]);
+        assert_eq!(sequences, [3, 2, 1]);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn begin_import_and_transcript_scan_run_on_the_server() {
+        let directory = std::env::temp_dir().join(format!("remote-import-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = transcript(&directory, 3, 100);
+        let manager = manager(&directory);
+        let cwd = directory.to_string_lossy().into_owned();
+        let RemoteResponse::OptionalString(Some(owned_id)) = super::super::execute_remote_command(&manager, &directory,
+            RemoteCommand::BeginImport { provider: AgentConversationProvider::Codex, native_session_id: "native".into(),
+                transcript_path: path.to_string_lossy().into(), cwd: cwd.clone(), title: Some("Past".into()), project_id: Some("p1".into()) },
+            Arc::new(|_| {})).await.unwrap() else { panic!("wrong begin response") };
+        let row = manager.store_handle().get_session(&owned_id).unwrap().unwrap();
+        assert_eq!(row.project_id.as_deref(), Some("p1"));
+        assert_eq!(row.title.as_deref(), Some("Past"));
+        assert!(manager.store_handle().has_display_events(&owned_id).unwrap(), "the newest page is read on the server");
+
+        let RemoteResponse::Transcripts(found) = super::super::execute_remote_command(&manager, &directory,
+            RemoteCommand::ScanTranscripts { log_path: Some(path.to_string_lossy().into()) }, Arc::new(|_| {})).await.unwrap()
+            else { panic!("wrong scan response") };
+        assert!(!found.is_empty());
+        assert!(found.iter().all(|record| record.log_path.as_deref() == Some(path.to_string_lossy().as_ref())));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
