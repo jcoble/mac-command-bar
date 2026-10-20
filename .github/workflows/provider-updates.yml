@@ -53,6 +53,9 @@ jobs:
           # launcher (scripts/claudeAcpLauncher.ts); if an upstream release breaks the
           # launcher's imports, the build fails and nothing is published.
           pnpm update @agentclientprotocol/codex-acp @agentclientprotocol/claude-agent-acp --latest
+      - name: Check new adapter releases for an npm account takeover
+        working-directory: tauri-svelte-preview
+        run: node --experimental-strip-types scripts/checkAdapterRelease.ts
       - name: Package and sign adapters
         working-directory: tauri-svelte-preview
         env:
