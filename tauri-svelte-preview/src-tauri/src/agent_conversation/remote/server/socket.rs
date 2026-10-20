@@ -443,6 +443,8 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("remote-import-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
         let path = transcript(&directory, 3, 100);
+        std::fs::create_dir(directory.join(".git")).unwrap(); std::fs::write(directory.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+        std::fs::write(&path, std::fs::read_to_string(&path).unwrap().replace("\"/work\"", &serde_json::to_string(directory.to_str().unwrap()).unwrap())).unwrap();
         let manager = manager(&directory);
         let cwd = directory.to_string_lossy().into_owned();
         // A project of the machine's own for the same folder: the desktop's project still files the session there.
@@ -456,10 +458,10 @@ mod tests {
         assert_eq!(row.project_id.as_deref(), Some("p1"));
         assert_eq!(row.title.as_deref(), Some("Past"));
         assert!(manager.store_handle().has_display_events(&owned_id).unwrap(), "the newest page is read on the server");
-
-        let RemoteResponse::Transcripts(found) = super::super::execute_remote_command(&manager, &directory,
-            RemoteCommand::ScanTranscripts { log_path: Some(path.to_string_lossy().into()) }, Arc::new(|_| {})).await.unwrap()
+        let RemoteResponse::Transcripts { sessions: found, common_dirs } = super::super::execute_remote_command(&manager, &directory,
+            RemoteCommand::ScanTranscripts { log_path: Some(path.to_string_lossy().into()), project_roots: vec![cwd.clone()] }, Arc::new(|_| {})).await.unwrap()
             else { panic!("wrong scan response") };
+        assert_eq!(common_dirs.get(&cwd), Some(&directory.join(".git").to_string_lossy().into_owned()));
         assert!(!found.is_empty());
         assert!(found.iter().all(|record| record.log_path.as_deref() == Some(path.to_string_lossy().as_ref())));
         std::fs::remove_dir_all(directory).unwrap();

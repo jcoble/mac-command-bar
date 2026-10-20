@@ -338,12 +338,20 @@ pub(super) async fn execute_remote_command(
             let progress = manager.extend_imported_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES, crate::agent_conversation::IMPORT_MAX_RECORDS)?;
             Ok(RemoteResponse::ImportProgress { added: progress.added, reached_start: progress.reached_start })
         }
-        RemoteCommand::ScanTranscripts { log_path } => tokio::task::spawn_blocking(move || match log_path {
-            Some(path) => mcb_core::scanners::sessions::scan_session_details(&path),
-            // The desktop keeps no turn text from the full list, so it is not sent.
-            None => mcb_core::scanners::sessions::scan_sessions().into_iter()
-                .map(|session| AgentSessionRecord { latest_turns: Vec::new(), ..session }).collect(),
-        }).await.map(RemoteResponse::Transcripts).map_err(|error| error.to_string()),
+        RemoteCommand::ScanTranscripts { log_path, project_roots } => tokio::task::spawn_blocking(move || {
+            let sessions = match log_path {
+                Some(path) => mcb_core::scanners::sessions::scan_session_details(&path),
+                // The desktop keeps no turn text from the full list, so it is not sent.
+                None => mcb_core::scanners::sessions::scan_sessions().into_iter()
+                    .map(|session| AgentSessionRecord { latest_turns: Vec::new(), ..session }).collect(),
+            };
+            let folders: std::collections::BTreeSet<_> = sessions.iter().filter_map(|session| session.project_path.as_deref())
+                .chain(project_roots.iter().map(String::as_str)).collect();
+            let common_dirs = folders.into_iter().filter_map(|folder| {
+                Some((folder.to_string(), crate::project_folders::git_common_dir(folder)?))
+            }).collect();
+            RemoteResponse::Transcripts { sessions, common_dirs }
+        }).await.map_err(|error| error.to_string()),
         RemoteCommand::BeginImport { provider, native_session_id, transcript_path, cwd, title, project_id } => {
             // Filed under this Mac's project for the folder, which is how its rail groups it, even if the machine has its own.
             let (owned_id, rebuilt) = manager.begin_import_transcript_session(provider, &native_session_id,

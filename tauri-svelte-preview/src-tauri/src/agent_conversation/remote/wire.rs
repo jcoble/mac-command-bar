@@ -48,7 +48,7 @@ pub(in crate::agent_conversation) enum RemoteCommand {
     },
     ExtendImport { owned_id: String },
     /// Past provider sessions this machine's scanner finds, or one transcript's details when `log_path` is set.
-    ScanTranscripts { log_path: Option<String> },
+    ScanTranscripts { log_path: Option<String>, project_roots: Vec<String> },
     /// Names a transcript on this machine as a session here, filed under the desktop's project, and reads its newest page.
     BeginImport { provider: AgentConversationProvider, native_session_id: String, transcript_path: String, cwd: String,
         title: Option<String>, project_id: Option<String> },
@@ -144,7 +144,7 @@ pub(in crate::agent_conversation) enum RemoteCommand {
 pub(in crate::agent_conversation) enum RemoteResponse {
     Workspace(serde_json::Value),
     Sessions(Vec<AgentConversationSessionRecord>),
-    Transcripts(Vec<mcb_core::scanners::sessions::AgentSessionRecord>),
+    Transcripts { sessions: Vec<mcb_core::scanners::sessions::AgentSessionRecord>, common_dirs: BTreeMap<String, String> },
     ProviderUpdates(crate::agent_conversation::providers::updates::ProviderUpdateStatus),
     Restarting,
     Connection(AgentConversationConnection),

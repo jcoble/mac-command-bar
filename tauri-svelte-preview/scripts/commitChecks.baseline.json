@@ -33,7 +33,7 @@
     "tauri-svelte-preview/src-tauri/src/main.rs": 7331,
     "tauri-svelte-preview/src-tauri/src/notion_tasks.rs": 1932,
     "tauri-svelte-preview/src-tauri/src/workflow/orchestration.rs": 1470,
-    "tauri-svelte-preview/src-tauri/src/project_folders.rs": 737,
+    "tauri-svelte-preview/src-tauri/src/project_folders.rs": 730,
     "tauri-svelte-preview/src-tauri/src/resources.rs": 2202,
     "tauri-svelte-preview/src-tauri/src/resources_disk.rs": 617,
     "tauri-svelte-preview/src-tauri/src/terminal/mod.rs": 1070,

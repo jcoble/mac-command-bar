@@ -1,7 +1,7 @@
 //! This Mac's requests about past provider transcripts on a remote machine.
 //! They are found, read and imported there; this Mac only ever reads the rows
 //! the history download saves.
-use std::sync::atomic::Ordering;
+use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 use mcb_core::scanners::sessions::AgentSessionRecord;
 
@@ -12,9 +12,9 @@ use crate::agent_conversation::protocol::AgentConversationProvider;
 
 impl RemoteConnectionManager {
     /// Every past session the machine's scanner finds, or one transcript's details when `log_path` is set.
-    pub async fn scan_transcripts(&self, profile: &str, log_path: Option<String>) -> Result<Vec<AgentSessionRecord>, String> {
-        match self.request_for_profile(profile, RemoteCommand::ScanTranscripts { log_path }).await? {
-            RemoteResponse::Transcripts(sessions) => Ok(sessions),
+    pub async fn scan_transcripts(&self, profile: &str, log_path: Option<String>, project_roots: Vec<String>) -> Result<(Vec<AgentSessionRecord>, BTreeMap<String, String>), String> {
+        match self.request_for_profile(profile, RemoteCommand::ScanTranscripts { log_path, project_roots }).await? {
+            RemoteResponse::Transcripts { sessions, common_dirs } => Ok((sessions, common_dirs)),
             _ => Err("Remote Assembly returned the wrong transcript response".into()),
         }
     }

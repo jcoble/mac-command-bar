@@ -66,7 +66,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 22;
+pub(super) const PROTOCOL_VERSION: u16 = 23;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -3556,8 +3556,8 @@ mod connection_tests {
     }
 
     #[test]
-    fn history_download_protocol_21_round_trips_compressed_chunks() {
-        assert_eq!(PROTOCOL_VERSION, 22);
+    fn history_download_protocol_23_round_trips_compressed_chunks() {
+        assert_eq!(PROTOCOL_VERSION, 23);
         let rows = vec![history_event(3), history_event(-2)];
         let encoded = encode_history_chunk(&rows).unwrap();
         assert_eq!(decode_history_chunk(&encoded).unwrap(), rows);
@@ -4914,7 +4914,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn readiness_requires_protocol_and_session_response() {
-        assert_eq!(PROTOCOL_VERSION, 22);
+        assert_eq!(PROTOCOL_VERSION, 23);
         for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
