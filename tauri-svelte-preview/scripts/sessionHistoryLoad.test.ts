@@ -165,6 +165,8 @@ run('a_session_running_outside_assembly_waits_until_it_stops', () => {
   assert.match(panel, /rail\.runningElsewhere = \[\.\.\.rail\.runningElsewhere, record\.key\]/);
   const host = readFileSync(new URL('../src/lib/shell/history/sessionHistoryHost.ts', import.meta.url), 'utf8');
   assert.match(host, /rail\.runningElsewhere = \[\]/);
+  const card = readFileSync(new URL('../src/lib/shell/history/components/SessionHistoryCard.svelte', import.meta.url), 'utf8');
+  assert.ok(card.includes('This session is still running outside Assembly. Stop it there, then resume it here.'));
 });
 
 const remoteScan = {

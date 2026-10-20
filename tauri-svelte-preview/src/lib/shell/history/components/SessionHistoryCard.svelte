@@ -387,6 +387,7 @@
         </IconButton>
       {/if}
     </div>
+    {#if runningElsewhere}<p class="detail-note">This session is still running outside Assembly. Stop it there, then resume it here.</p>{/if}
   </div>
 {/if}
 
