@@ -115,6 +115,8 @@
     return disclosures[`${run.itemId}:open`]
       ?? (run.turnId === activeTurnId && run.items.at(-1)?.itemId === renderedItems.at(-1)?.itemId);
   }
+  // A finished edit's diff is counted once, not on every chunk. Declared before `rows`, which reads it during setup.
+  const diffCounts = new WeakMap<ConversationDisplayItem, { added: number; removed: number }>();
   const rows = $derived.by((): Row[] => {
     if (previousRunWindow !== renderWindowId) {
       previousRunWindow = renderWindowId;
@@ -245,8 +247,6 @@
     set(key, open) { follow = false; disclosures = { ...disclosures, [key]: open }; saveView(); }
   });
 
-  // A finished edit's display item never changes, so its diff is counted once rather than on every chunk.
-  const diffCounts = new WeakMap<ConversationDisplayItem, { added: number; removed: number }>();
   function countDiffLines(item: ConversationDisplayItem, diffText: string): { added: number; removed: number } {
     const known = diffCounts.get(item);
     if (known) return known;
