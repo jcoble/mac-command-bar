@@ -197,4 +197,43 @@ mod tests {
         assert_eq!(snapshot.state, ProviderUsageState::Unavailable);
         assert!(snapshot.windows.is_empty());
     }
+
+    fn window(label: &str, used_percent: f64) -> ProviderUsageWindow {
+        ProviderUsageWindow { label: label.into(), used_percent, resets_at: None, window_minutes: Some(300) }
+    }
+
+    fn available(provider: &str, instance_id: &str, windows: Vec<ProviderUsageWindow>) -> ProviderUsageSnapshot {
+        ProviderUsageSnapshot {
+            provider: provider.into(),
+            account: None,
+            instance_id: instance_id.into(),
+            state: ProviderUsageState::Available,
+            windows,
+            captured_at: 1,
+            source: Some("provider".into()),
+            source_version: None,
+            unavailable_reason: None,
+        }
+    }
+
+    // Protects e794abc4c: the quota meter shows 0-100% with a name for every
+    // window, and never claims "available" without a window or a provider.
+    #[test]
+    fn provider_quota_is_clamped_named_and_never_available_without_windows() {
+        let snapshot = normalize_provider_usage(available(
+            "provider-a",
+            "instance-a",
+            vec![window("5h", 140.0), window("  ", -3.0)],
+        ));
+        assert_eq!(snapshot.state, ProviderUsageState::Available);
+        assert_eq!(snapshot.windows, vec![window("5h", 100.0), window("Provider window", 0.0)]);
+
+        let empty = normalize_provider_usage(available("provider-a", "instance-a", Vec::new()));
+        assert_eq!(empty.state, ProviderUsageState::Unavailable);
+        assert_eq!(empty.unavailable_reason.as_deref(), Some("The provider returned no quota windows"));
+
+        let anonymous = normalize_provider_usage(available(" ", "instance-a", vec![window("5h", 10.0)]));
+        assert_eq!(anonymous.state, ProviderUsageState::Unavailable);
+        assert!(anonymous.windows.is_empty());
+    }
 }

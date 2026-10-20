@@ -13,7 +13,7 @@ use tokio::sync::{broadcast, mpsc};
 use super::execute_server_command;
 use super::super::{PendingAttachment, ServerState, HISTORY_DOWNLOAD_CHUNK_BYTES,
     MAX_SERVER_FRAME_BYTES, MAX_WIRE_FRAME_BYTES, MESSAGE_CHANGES, OUTBOUND_FRAME_CAPACITY,
-    PROTOCOL_VERSION, REPLAY_PAGE_BYTES};
+    REPLAY_PAGE_BYTES};
 use super::super::wire::{encode_history_chunk, encode_server_frame, ClientFrame, RemoteCommand, RemoteResponse, ServerFrame};
 
 pub(in crate::agent_conversation::remote) async fn upgrade_remote_socket(
@@ -21,17 +21,13 @@ pub(in crate::agent_conversation::remote) async fn upgrade_remote_socket(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    let expected = format!("Bearer {}", state.token);
-    if headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        != Some(expected.as_str())
-    {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
+    let Some(challenge) = headers.get(super::super::handshake::CHALLENGE_HEADER).and_then(|value| value.to_str().ok())
+        .filter(|value| super::super::handshake::valid_challenge(value)).map(str::to_owned) else {
+        return StatusCode::UPGRADE_REQUIRED.into_response();
+    };
     upgrade
         .max_message_size(MAX_WIRE_FRAME_BYTES)
-        .on_upgrade(move |socket| serve_remote_socket(socket, state))
+        .on_upgrade(move |socket| serve_remote_socket(socket, state, challenge))
         .into_response()
 }
 
@@ -106,7 +102,8 @@ async fn send_history_frame(outbound: &mpsc::Sender<ServerFrame>, frame: ServerF
     Ok(())
 }
 
-async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
+async fn serve_remote_socket(mut socket: WebSocket, state: ServerState, challenge: String) {
+    if !super::super::handshake::admit_desktop(&mut socket, &state.token, &challenge).await { return; }
     let (mut writer, mut reader) = socket.split();
     let (outbound, mut outgoing) = mpsc::channel::<ServerFrame>(OUTBOUND_FRAME_CAPACITY);
     let (history_outbound, mut history_outgoing) = mpsc::channel::<ServerFrame>(1);
@@ -129,11 +126,6 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
             if sent.is_err() { break; }
         }
     });
-    let _ = outbound
-        .send(ServerFrame::Ready {
-            protocol_version: PROTOCOL_VERSION,
-        })
-        .await;
     let socket_id = state.relay.next_id.fetch_add(1, Ordering::Relaxed);
     state.relay.desktops.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((socket_id, outbound.clone()));
     let mut live_events = state.events.subscribe();
@@ -221,6 +213,7 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
             continue;
         };
         match frame {
+            ClientFrame::Authenticate { .. } => break,
             ClientFrame::Request { id, command } => {
                 match &command {
                     RemoteCommand::SelectChildHistory {

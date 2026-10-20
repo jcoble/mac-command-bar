@@ -170,8 +170,7 @@ pub fn begin_import_session(store: &SessionStore, provider: AgentConversationPro
 /// a second row for one conversation was filed under two folders once only one learnt its worktree.
 pub fn existing_import_session(store: &SessionStore, provider: AgentConversationProvider, native_session_id: &str) -> Result<Option<SessionRow>, String> {
     let stored_provider = enum_storage_value(provider)?;
-    Ok(store.list_sessions().map_err(|error| error.to_string())?.into_iter()
-        .find(|row| row.native_session_id.as_deref() == Some(native_session_id) && row.provider == stored_provider))
+    store.session_for_native_id(&stored_provider, native_session_id).map_err(|error| error.to_string())
 }
 
 /// Assembly's own run of an imported session writes to its transcript too (Claude adds bookkeeping lines on every
