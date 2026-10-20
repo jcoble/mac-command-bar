@@ -52,7 +52,7 @@ assert.match(editor, /const checkpoint = this\.checkpointActiveWorkspace\(stopSi
 assert.match(editor, /this\.releaseActiveEditorResources\(\);\s*(?:\/\/[^\n]*\s*)*this\.releaseOwnership\(\);\s*if \(stopSignal\.aborted\) return null;[\s\S]*?await readAgentConversationWorkspaceFromTauri\(ownedId\);\s*\} catch \(error\) \{\s*if \(stopSignal\.aborted\) return null;[\s\S]*?const snapshot = [^;]+;\s*if \(stopSignal\.aborted\) return null;/);
 assert.match(editor, /planWorkspaceRestore\(snapshot\)/);
 assert.match(editor, /restoreEditorFiles\(plan\.openFiles, plan\.activePath\)/);
-assert.match(editor, /await writeAgentConversationWorkspaceFromTauri\(ownedId, snapshot\);\s*if \(stopSignal\.aborted\) return;/);
+assert.match(editor, /await writeAgentConversationWorkspaceFromTauri\(ownedId, snapshot, machineOf\(ownedId\)\);\s*if \(stopSignal\.aborted\) return;/);
 assert.doesNotMatch(editor, /\.then\(|\.catch\(|\.finally\(/);
 assert.doesNotMatch(page, /\{#key\s+selection\.activeOwnedId/);
 // TSK-1440: closing the window or quitting destroys the webview without tearing down the route,

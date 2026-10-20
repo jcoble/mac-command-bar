@@ -661,12 +661,12 @@
 		filesInspectionRoot={selection.activeWorkspaceSnapshot?.filesInspectionRoot ?? null}
 		sourceControlInspectionRoot={selection.activeWorkspaceSnapshot?.sourceControlInspectionRoot ?? null}
 		onFilesInspectionRootChange={(root) => selection.rememberWorkspaceState({ filesInspectionRoot: root })}
-		onSourceControlInspectionRootChange={(root) =>
-			selection.rememberWorkspaceState({ sourceControlInspectionRoot: root })}
+		onSourceControlInspectionRootChange={(root) => selection.rememberWorkspaceState({ sourceControlInspectionRoot: root })}
 		sourceControlWorkspace={selection.activeWorkspaceSnapshot?.sourceControl}
-		onSourceControlWorkspaceChange={(ownedId, sourceControl) => {
-			if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ sourceControl });
-		}}
+		onSourceControlWorkspaceChange={(ownedId, sourceControl) => { if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ sourceControl }); }}
+		viewedRoot={selection.activeWorkspaceSnapshot?.viewedProjectRoot ?? null}
+		onViewedRootChange={(root) => { if (selection.activeOwnedId) selection.persistWorkspaceState(selection.activeOwnedId, { viewedProjectRoot: root }); }}
+		onNewSessionHere={openNewSession}
 		checkoutDiscoveryRoots={selection.filesProjectionRoot ? [selection.filesProjectionRoot] : []}
 		onUseSessionCheckout={selection.controlledSession?.canChangeCheckout && selection.controlledSession.origin === "app"
 			? async (root) => {
@@ -760,7 +760,7 @@
 		<div class="pane-body" class:showing={paneShowing && topTabs.activeKind === "editor"}>
 			<EditorPanel
 				bind:this={editorPanel}
-				ownedId={selection.activeOwnedId}
+				ownedId={selection.activeOwnedId} sessionRoot={selection.durableSessionRoot}
 				showing={paneShowing && topTabs.activeKind === "editor"}
 				rootAvailable={selection.controlledEditorRootAvailable}
 				onCloseAllEditors={() => selection.editorSessions.clearActiveEditors()}

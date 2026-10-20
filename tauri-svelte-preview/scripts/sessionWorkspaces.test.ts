@@ -537,3 +537,23 @@ test('a tree whose folder was missing still counts as moved when its project mov
   assert.equal(treeRootMoved.call(selection('/gone', '/code/assembly')), true);
   assert.equal(treeRootMoved.call(selection('/code/assembly', '/code/assembly')), false);
 });
+
+test('a viewed project folder survives a reload with its machine', () => {
+  const viewed = 'assembly-remote://workbox/home/me/b';
+  assert.equal(normalizeWorkspaceSnapshot({ openPaths: [], rightTab: 'files', viewedProjectRoot: viewed })?.viewedProjectRoot, viewed);
+  assert.equal(normalizeWorkspaceSnapshot({ openPaths: [], rightTab: 'files', viewedProjectRoot: 42 })?.viewedProjectRoot, undefined);
+  assert.equal(normalizeWorkspaceSnapshot({ openPaths: [], rightTab: 'files', viewedProjectRoot: '' })?.viewedProjectRoot, undefined);
+});
+
+test('saved folders keep their machine prefix when a workspace is read back', () => {
+  const remote = 'assembly-remote://box/repo';
+  const mac = 'file:///Users/me/mac-proj';
+  const restored = normalizeWorkspaceSnapshot({
+    openPaths: [],
+    activePath: null,
+    filesInspectionRoot: `${remote}/`,
+    expandedPathsByRoot: { [remote]: [`${remote}/src`, `${remote}/./lib`], [mac]: [`${mac}/src`] }
+  });
+  assert.equal(restored?.filesInspectionRoot, remote);
+  assert.deepEqual(restored?.expandedPathsByRoot, { [remote]: [`${remote}/lib`, `${remote}/src`], [mac]: [`${mac}/src`] });
+});

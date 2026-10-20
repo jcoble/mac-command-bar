@@ -37,6 +37,22 @@ export function sessionWorkspaceRoot(
   return path && session.remoteProfileId ? remoteWorkspacePath(session.remoteProfileId, path) : '';
 }
 
+type WorkingSession = { cwd: string; executionEnvironment: string; remoteProfileId?: string | null; state: string; runtimeState?: string; title?: string | null };
+/** A running session's working folder on its machine, without a trailing slash; null when it is not running. */
+export function runningSessionFolder(session: WorkingSession): string | null {
+  if (session.state === 'exited' || ['suspended', 'closed', 'failed'].includes(session.runtimeState ?? '')) return null;
+  const remote = session.executionEnvironment === 'remote';
+  if (remote && (!session.remoteProfileId || !session.cwd.startsWith('/'))) return null;
+  return (remote ? remoteWorkspacePath(session.remoteProfileId!, session.cwd) : session.cwd).replace(/\/+$/, '');
+}
+/** Throws when `path` is outside `sessionRoot` and a running session works in the folder that holds it. */
+export function assertSaveAllowed(path: string, sessionRoot: string, sessions: readonly WorkingSession[]): void {
+  const within = (folder: string): boolean => folder !== '' && (path === folder || path.startsWith(`${folder}/`));
+  if (within(sessionRoot.replace(/\/+$/, ''))) return;
+  const holder = sessions.find((session) => within(runningSessionFolder(session) ?? ''));
+  if (holder) throw new Error(`${holder.title ? `"${holder.title}"` : 'Another session'} is working in this folder, so this file can't be saved here.`);
+}
+
 const pathKeys = new Set(['root', 'path', 'directory', 'source', 'target', 'roots', 'paths', 'projectRoot', 'projectPath', 'worktreePath', 'checkoutPath', 'gitRoot', 'localRoot', 'projectFilter']);
 /** Hosted PR commands wrap their root in one request object. */
 const nestedRequestCommands = new Set(['list_github_pull_requests', 'read_github_pull_request_file', 'submit_github_pull_request_review', 'reply_github_pull_request_comment', 'comment_github_pull_request', 'merge_github_pull_request']);
@@ -69,22 +85,28 @@ export function qualifyWorkspaceResult(value: unknown, profileId: string, key = 
   return value;
 }
 
-/** SQLite stores native paths; each client projects them onto its saved machine. */
-export function mapWorkspaceSnapshotPaths(value: unknown, profileId: string | null, key = ''): unknown {
-  const keys = new Set(['openPaths', 'activePath', 'selectedPath', 'diffRoot', 'filesInspectionRoot', 'sourceControlInspectionRoot', 'root', 'path']);
+/**
+ * SQLite keeps each path on the session's own machine (`profileId`, null for the Mac) native, so
+ * older records load unchanged. A path on another machine keeps its `assembly-remote://` form, and
+ * a Mac path in a remote session's record is saved as `file://<path>`.
+ */
+export function mapWorkspaceSnapshotPaths(value: unknown, profileId: string | null, direction: 'load' | 'save' = 'load', key = ''): unknown {
+  const keys = new Set(['openPaths', 'activePath', 'selectedPath', 'diffRoot', 'filesInspectionRoot', 'sourceControlInspectionRoot', 'root', 'path', 'viewedProjectRoot']);
   const mapPath = (path: string): string => {
-    const native = parseRemoteWorkspacePath(path)?.path ?? path;
-    return profileId && native.startsWith('/') ? remoteWorkspacePath(profileId, native) : native;
+    const remote = parseRemoteWorkspacePath(path);
+    if (direction === 'save') return remote ? (remote.profileId === profileId ? remote.path : path) : profileId && path.startsWith('/') ? `file://${path}` : path;
+    if (path.startsWith('file:///')) return path.slice(7);
+    return profileId && path.startsWith('/') ? remoteWorkspacePath(profileId, path) : path;
   };
   if (typeof value === 'string') {
     // Top-row editor tabs are keyed 'editor:<path>' and must follow openPaths.
     if ((key === 'order' || key === 'activeKey') && value.startsWith('editor:')) return `editor:${mapPath(value.slice(7))}`;
     return keys.has(key) || key === 'expandedPathsByRoot' ? mapPath(value) : value;
   }
-  if (Array.isArray(value)) return value.map((item) => mapWorkspaceSnapshotPaths(item, profileId, key));
+  if (Array.isArray(value)) return value.map((item) => mapWorkspaceSnapshotPaths(item, profileId, direction, key));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([name, item]) => [
-    name.startsWith('/') || name.startsWith(remotePrefix) ? mapPath(name) : name,
-    mapWorkspaceSnapshotPaths(item, profileId, key === 'expandedPathsByRoot' ? key : name)
+    name.startsWith('/') || name.startsWith(remotePrefix) || name.startsWith('file:///') ? mapPath(name) : name,
+    mapWorkspaceSnapshotPaths(item, profileId, direction, key === 'expandedPathsByRoot' ? key : name)
   ]));
   return value;
 }

@@ -134,26 +134,8 @@ export interface SessionWorkspaceSnapshot {
   sourceControlInspectionRoot?: string | null;
   /** Small view state for the lazily mounted Source Control panel. */
   sourceControl?: SessionSourceControlWorkspace;
-}
-
-/** Current checkout ownership as the /next route hands it to inspection panels. */
-export interface CheckoutScope {
-  /** Durable session checkout, or '' while it is unavailable or no session is active. */
-  durableSessionRoot: string;
-  /** Files panel checkout being inspected, or null for the session checkout. */
-  filesInspectionRoot: string | null;
-  /** Source-control checkout being inspected, or null for the session checkout. */
-  gitInspectionRoot: string | null;
-  /** True when Files is reading a checkout other than the durable session root. */
-  filesReadOnly: boolean;
-  /** True when Source Control is reading a checkout other than the durable session root. */
-  gitReadOnly: boolean;
-  /** Existing restore generation guarding stale workspace/root requests. */
-  workspaceRestoreGeneration: number;
-  /** Existing selection generation guarding stale session/root requests. */
-  sessionSelectionGeneration: number;
-  /** Active conversation generation, used by agent-backed source-control requests. */
-  conversationGeneration: number | null;
+  /** Another project's folder Files and Git show instead, kept with its machine prefix; unset for the session's own. */
+  viewedProjectRoot?: string | null;
 }
 
 /**
@@ -466,7 +448,8 @@ function normalizeFileStates(
 }
 
 function canonicalWorkspacePath(value: string): string {
-  const path = value.trim().replaceAll('\\', '/');
+  const prefix = /^(?:assembly-remote:\/\/[^/]+|file:\/\/)(?=\/)/.exec(value.trim())?.[0] ?? ''; // A machine prefix is kept as is.
+  const path = value.trim().slice(prefix.length).replaceAll('\\', '/');
   if (!path) return '';
   const absolute = path.startsWith('/');
   const parts: string[] = [];
@@ -480,14 +463,13 @@ function canonicalWorkspacePath(value: string): string {
     parts.push(part);
   }
   const joined = parts.join('/');
-  if (!joined) return absolute ? '/' : '.';
-  return absolute ? `/${joined}` : joined;
+  if (!joined) return absolute ? `${prefix}/` : '.';
+  return absolute ? `${prefix}/${joined}` : joined;
 }
 
 function normalizeInspectionRoot(value: unknown): string | null {
   if (typeof value !== 'string') return null;
-  const root = canonicalWorkspacePath(value);
-  return root || null;
+  return canonicalWorkspacePath(value) || null;
 }
 
 function normalizeSourceControl(value: unknown): SessionSourceControlWorkspace | null {
@@ -569,6 +551,7 @@ export function normalizeWorkspaceSnapshot(value: unknown): SessionWorkspaceSnap
   if (filesInspectionRoot) snapshot.filesInspectionRoot = filesInspectionRoot;
   const sourceControlInspectionRoot = normalizeInspectionRoot(entry.sourceControlInspectionRoot);
   if (sourceControlInspectionRoot) snapshot.sourceControlInspectionRoot = sourceControlInspectionRoot;
+  if (typeof entry.viewedProjectRoot === 'string' && entry.viewedProjectRoot.trim()) snapshot.viewedProjectRoot = entry.viewedProjectRoot.trim();
   const sourceControl = normalizeSourceControl(entry.sourceControl);
   if (sourceControl) snapshot.sourceControl = sourceControl;
   return snapshot;

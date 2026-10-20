@@ -13,10 +13,12 @@
    * click goes straight back out.
    */
   import type { RightTabId } from '$lib/shell/workbenchNavigation';
-  import type {
-    CheckoutScope,
-    SessionSourceControlWorkspace
-  } from '$lib/shell/sessionWorkspaces';
+  import type { SessionSourceControlWorkspace } from '$lib/shell/sessionWorkspaces';
+  import { untrack } from 'svelte';
+  import { canonicalPath, explorer } from '$lib/shell/files/explorer/explorerStore.svelte';
+  import { activate as activateExplorer } from '$lib/shell/files/explorer/explorerService';
+  import { sessionWorkingIn } from '$lib/shell/projects/projects.ts';
+  import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
 
   import AgentsPanel from '$lib/shell/panels/agents/AgentsPanel.svelte';
   import FilesPanel from '$lib/shell/files/components/FilesPanel.svelte';
@@ -27,6 +29,7 @@
   import WorktreesPanel from '$lib/shell/panels/worktrees/WorktreesPanel.svelte';
   import TasksPanel from '$lib/shell/panels/tasks/TasksPanel.svelte';
   import WorkspaceTerminal from '../terminal/WorkspaceTerminal.svelte';
+  import OpenOtherProject from './OpenOtherProject.svelte';
 
   interface Props {
     /** False while the drawer is closed. */
@@ -37,8 +40,6 @@
     root: string;
     /** False when the active session's checkout has disappeared. */
     rootAvailable?: boolean;
-    /** Current route-owned checkout roots and stale-request generations. */
-    checkoutScope?: CheckoutScope;
     /** The active session's ownedId, or null. */
     ownedId: string | null;
     /** Optional tree-only projection while rail selection is rebuilt in layers. */
@@ -57,6 +58,10 @@
     sourceControlWorkspace?: SessionSourceControlWorkspace;
     onSourceControlWorkspaceChange?(ownedId: string | null, state: SessionSourceControlWorkspace): void;
     onUseSessionCheckout?(root: string): void | Promise<void>;
+    /** Another project's folder Files and Git show instead of the session's, or null. */
+    viewedRoot?: string | null;
+    onViewedRootChange?(root: string | null): void;
+    onNewSessionHere?(projectId: string): void;
     messagesUnread: number;
     onMessagesSeen(): void;
     onShowRunMessages(runId: string, label: string): void;
@@ -66,7 +71,6 @@
     activeId,
     root,
     rootAvailable = true,
-    checkoutScope,
     ownedId,
     filesRoot,
     filesOwnedId,
@@ -82,13 +86,37 @@
     sourceControlWorkspace,
     onSourceControlWorkspaceChange,
     onUseSessionCheckout,
+    viewedRoot = null,
+    onViewedRootChange,
+    onNewSessionHere,
     messagesUnread,
     onMessagesSeen,
     onShowRunMessages
   }: Props = $props();
+
+  // While another project is viewed, Files and Git read it and nothing there can move the session.
+  const viewing = $derived(root !== '' && Boolean(viewedRoot) && canonicalPath(viewedRoot ?? '') !== canonicalPath(root));
+  const working = $derived(viewing ? sessionWorkingIn(viewedRoot ?? '', rail.owned) : null);
+  const readOnlyReason = $derived(
+    working ? `${working.title ? `"${working.title}"` : 'Another session'} is working in this folder, so it is read-only here.` : null
+  );
+  // Switching sessions points the shared file tree at the session's own folder; while viewing, point it back.
+  $effect(() => {
+    if (!viewing || !visible || activeId !== 'files') return;
+    if (canonicalPath(explorer.root ?? '') === canonicalPath(filesRoot ?? root)) untrack(() => activateExplorer(viewedRoot));
+  });
 </script>
 
 <div class="right-panel">
+  {#if visible && root !== '' && (activeId === 'files' || activeId === 'source-control')}
+    <OpenOtherProject
+      sessionRoot={root}
+      viewedRoot={viewing ? viewedRoot : null}
+      {readOnlyReason}
+      onView={(next) => onViewedRootChange?.(next)}
+      {onNewSessionHere}
+    />
+  {/if}
   <div class="panel-bodies">
     <div
       class="panel-body"
@@ -97,31 +125,32 @@
     >
       <FilesPanel
         visible={visible && activeId === 'files'}
-        root={filesRoot ?? root}
+        root={viewing ? viewedRoot ?? '' : filesRoot ?? root}
         ownedId={filesOwnedId === undefined ? ownedId : filesOwnedId}
         filterFocusRequest={filesFilterFocusRequest}
         {onRootUnavailable}
         {expandedPathsByRoot}
         {onExpandedPathsChange}
-        inspectionRoot={filesInspectionRoot}
-        onInspectionRootChange={onFilesInspectionRootChange}
-        {checkoutDiscoveryRoots}
-        {onUseSessionCheckout}
+        inspectionRoot={viewing ? undefined : filesInspectionRoot}
+        onInspectionRootChange={viewing ? undefined : onFilesInspectionRootChange}
+        checkoutDiscoveryRoots={viewing ? [] : checkoutDiscoveryRoots}
+        onUseSessionCheckout={viewing ? undefined : onUseSessionCheckout}
+        {readOnlyReason}
       />
     </div>
     {#if visible && activeId === 'source-control'}
       <div class="panel-body showing">
         <SourceControlPanel
           visible={true}
-          {root}
+          root={viewing ? viewedRoot ?? '' : root}
           {ownedId}
-          {rootAvailable}
-          {checkoutScope}
-          inspectionRoot={sourceControlInspectionRoot}
-          onInspectionRootChange={onSourceControlInspectionRootChange}
+          rootAvailable={viewing || rootAvailable}
+          inspectionRoot={viewing ? undefined : sourceControlInspectionRoot}
+          onInspectionRootChange={viewing ? undefined : onSourceControlInspectionRootChange}
           workspaceState={sourceControlWorkspace}
           onWorkspaceStateChange={onSourceControlWorkspaceChange}
-          {onUseSessionCheckout}
+          onUseSessionCheckout={viewing ? undefined : onUseSessionCheckout}
+          {readOnlyReason}
         />
       </div>
     {:else if visible && activeId === 'worktrees'}
@@ -155,7 +184,7 @@
     width: 100%;
     min-width: 0;
     min-height: 0;
-    grid-template-rows: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     overflow: hidden;
     /* The card behind this paints the surface and its gradient. */
     background: transparent;
@@ -167,6 +196,7 @@
      to it, so a panel's own floating strip cannot be drawn over the middle of
      the shell. Same reasoning as the column this replaced. */
   .panel-bodies {
+    grid-row: 2;
     position: relative;
     min-width: 0;
     min-height: 0;

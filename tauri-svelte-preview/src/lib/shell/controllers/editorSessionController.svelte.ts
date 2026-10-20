@@ -19,6 +19,17 @@ import {
 } from '../../tauriSource';
 import { captureConversationWorkspace } from '../conversation/conversationStore.svelte';
 
+/** The machine whose paths a session's saved record keeps native: null for the Mac. */
+function machineOf(ownedId: string): string | null {
+	const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
+	return session?.executionEnvironment === 'remote' ? session.remoteProfileId ?? null : null;
+}
+
+/** A session's saved record with its paths back in app form, ready to change and save again. */
+async function readWorkspace(ownedId: string): Promise<SessionWorkspaceSnapshot | null> {
+	return mapWorkspaceSnapshotPaths(await readAgentConversationWorkspaceFromTauri(ownedId), machineOf(ownedId)) as SessionWorkspaceSnapshot | null;
+}
+
 export type EditorPanelLifecycle = {
 	captureViewStates(paths: readonly string[]): Record<string, object>;
 	workspaceOwnedPaths(): string[];
@@ -87,7 +98,7 @@ export class EditorSessionController {
 			if (rootAvailable || !remote || message !== `Remote machine ${remote.profileId} is not connected`) throw error;
 			return null;
 		}
-		const snapshot = remote ? mapWorkspaceSnapshotPaths(stored, remote.profileId) as SessionWorkspaceSnapshot | null : stored;
+		const snapshot = mapWorkspaceSnapshotPaths(stored, remote?.profileId ?? null) as SessionWorkspaceSnapshot | null;
 		if (stopSignal.aborted) return null;
 		this.activeOwnedId = ownedId;
 		this.activeSnapshot = snapshot;
@@ -127,12 +138,12 @@ export class EditorSessionController {
 				if (this.activeOwnedId === ownedId || !attachmentIds) return;
 			}
 			if (!attachmentIds) return;
-			const latest = await readAgentConversationWorkspaceFromTauri(ownedId);
+			const latest = await readWorkspace(ownedId);
 			if (!latest?.conversation) throw new Error('Conversation workspace is no longer available');
 			await writeAgentConversationWorkspaceFromTauri(ownedId, {
 				...latest,
 				conversation: { ...latest.conversation, attachmentIds: [...attachmentIds] },
-			});
+			}, machineOf(ownedId));
 		});
 	}
 
@@ -153,7 +164,7 @@ export class EditorSessionController {
 	async clearActiveEditors(keptFiles: Parameters<typeof captureWorkspace>[0]['openFiles'] = []): Promise<boolean> {
 		const ownedId = this.activeOwnedId;
 		if (!ownedId) return false;
-		const previous = this.activeSnapshot ?? await readAgentConversationWorkspaceFromTauri(ownedId);
+		const previous = this.activeSnapshot ?? await readWorkspace(ownedId);
 		const fallback = captureWorkspace({
 			openFiles: keptFiles,
 			activePath: null,
@@ -168,7 +179,7 @@ export class EditorSessionController {
 		};
 		if (fallback.fileStates) next.fileStates = fallback.fileStates;
 		else delete next.fileStates;
-		await writeAgentConversationWorkspaceFromTauri(ownedId, next);
+		await writeAgentConversationWorkspaceFromTauri(ownedId, next, machineOf(ownedId));
 		if (this.activeOwnedId === ownedId) this.activeSnapshot = next;
 		return true;
 	}
@@ -212,7 +223,7 @@ export class EditorSessionController {
 		const conversation = attachmentIds && capturedConversation ? { ...capturedConversation, attachmentIds: [...attachmentIds] } : capturedConversation;
 
 		if (stopSignal.aborted) return;
-		const latest = await readAgentConversationWorkspaceFromTauri(ownedId);
+		const latest = await readWorkspace(ownedId);
 		if (stopSignal.aborted || this.activeOwnedId !== ownedId) return;
 		const previous = latest && this.activeSnapshot
 			? {
@@ -240,7 +251,7 @@ export class EditorSessionController {
 
 		if (stopSignal.aborted) return;
 		const before = this.activeSnapshot;
-		await writeAgentConversationWorkspaceFromTauri(ownedId, snapshot);
+		await writeAgentConversationWorkspaceFromTauri(ownedId, snapshot, machineOf(ownedId));
 		if (stopSignal.aborted) return;
 		// Keep any workspace change made while the write was pending.
 		if (this.activeSnapshot === before) this.activeSnapshot = snapshot;

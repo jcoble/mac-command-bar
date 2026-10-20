@@ -4,10 +4,12 @@ import {
   defaultDraftProjectId,
   filterProjects,
   isNewFolderPath,
+  otherProjectGroups,
   projectBadge,
   projectCountsByMachine,
   projectLastUsedLabel,
   projectMachineLabel,
+  sessionWorkingIn,
   shortProjectPath,
   visibleProjects
 } from '../src/lib/shell/projects/projects.ts';
@@ -118,6 +120,46 @@ const project = (id: string, machine: string): ProjectRecord => ({
   assert.equal(projectLastUsedLabel(now.getTime() - 30_000, now), 'now');
   assert.equal(projectLastUsedLabel(now.getTime() - 2 * 3_600_000, now), '2h');
   assert.equal(projectLastUsedLabel(now.getTime() - 3 * 86_400_000, now), '3d');
+}
+
+// Other projects: This Mac, then each connected saved machine, each project followed by its other worktrees.
+{
+  const groups = otherProjectGroups(
+    [project('A', 'local'), project('B', 'workbox'), project('C', 'sd'), project('D', 'gone')],
+    [{ id: 'workbox', name: 'Workbox Test' }, { id: 'sd', name: 'SD' }],
+    { workbox: 'connected', sd: 'disconnected' },
+    { '/work/A': [{ path: '/work/A/', branch: 'main', isMain: true }, { path: '/work/A-wt', branch: 'feature', isMain: false }] }
+  );
+  assert.deepEqual(groups, [
+    { machine: 'local', label: 'This Mac', options: [
+      { projectId: 'A', path: '/work/A', label: 'A', detail: '/work/A', worktree: false },
+      { projectId: 'A', path: '/work/A-wt', label: 'A-wt — feature', detail: '/work/A-wt', worktree: true }
+    ] },
+    { machine: 'workbox', label: 'Workbox Test', options: [
+      { projectId: 'B', path: 'assembly-remote://workbox/work/B', label: 'B', detail: '/work/B', worktree: false }
+    ] }
+  ]);
+}
+
+// A folder is read-only only while a running session works in it, on the same machine.
+{
+  const session = (cwd: string, runtimeState: string | undefined, state = 'live', remoteProfileId: string | null = null) =>
+    ({ cwd, runtimeState, state, executionEnvironment: remoteProfileId ? 'remote' : 'local', remoteProfileId });
+  const working = session('/work/A/sub', 'working');
+  assert.equal(sessionWorkingIn('/work/A', [working]), working);
+  assert.equal(sessionWorkingIn('/work/A/', [working]), working);
+  assert.equal(sessionWorkingIn('/work/A', [session('/work/A', 'suspended'), session('/work/A', 'failed'), session('/work/A', 'closed'), session('/work/A', 'ready', 'exited')]), null);
+  assert.equal(sessionWorkingIn('/work/A-wt', [session('/work/A', 'working')]), null);
+  // A viewed folder inside a running session's folder is read-only too.
+  assert.equal(sessionWorkingIn('/work/A/sub/package', [working]), working);
+  assert.equal(sessionWorkingIn('/work/A/sub-2', [working]), null);
+  const remote = session('/work/B', 'working', 'live', 'workbox');
+  assert.equal(sessionWorkingIn('assembly-remote://workbox/work/B', [remote]), remote);
+  assert.equal(sessionWorkingIn('/work/B', [remote]), null);
+  assert.equal(sessionWorkingIn('assembly-remote://workbox/work/B/package', [remote]), remote);
+  assert.equal(sessionWorkingIn('/work/B/package', [remote]), null);
+  const terminal = session('/work/C', undefined);
+  assert.equal(sessionWorkingIn('/work/C', [terminal]), terminal);
 }
 
 console.log('projects.test.ts passed');

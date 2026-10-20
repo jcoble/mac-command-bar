@@ -1,6 +1,7 @@
 <script lang="ts">
   import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
-  import { parseRemoteWorkspacePath, workspaceChangePath } from '$lib/workspacePaths';
+  import { assertSaveAllowed, parseRemoteWorkspacePath, workspaceChangePath } from '$lib/workspacePaths';
+  import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
   /**
    * EditorPanel.svelte — the /next code-reading panel.
    *
@@ -133,6 +134,7 @@
   interface Props {
     /** Session whose live file-edit events may invalidate open documents. */
     ownedId?: string | null;
+    sessionRoot?: string; // The selected session's own folder; a save outside it is refused while a running session works there.
     /** Called when an open-file request has become a real open, so the shell can
      * bring this panel's tab to the front. The panel itself stays unaware of the
      * tab area — it just says a file arrived. */
@@ -150,6 +152,7 @@
   }
   let {
     ownedId = null,
+    sessionRoot = '',
     onFileOpened,
     showing = false,
     rootAvailable = true,
@@ -1071,8 +1074,8 @@
     const content = file.draftContent;
     setEditorFileSaving(file.path, true);
     try {
-      if (stopSignal.aborted) return false;
-      if (!file.preview) return false;
+      if (stopSignal.aborted || !file.preview) return false;
+      assertSaveAllowed(file.path, sessionRoot, rail.owned.filter((session) => session.ownedId !== ownedId));
       const saved = await writeSourceToTauri(recordForPath(file.path), content, file.preview.revision);
       if (stopSignal.aborted) return false;
       if (!saved) throw new Error('The file could not be written from here.');
@@ -1176,10 +1179,7 @@
     // record's path is the key: it is what the strip and the editor hold.
     const record = recordForPath(request.path, request.projectRoot);
     if (request.readOnly) {
-      readOnlyByPath = {
-        ...readOnlyByPath,
-        [record.path]: request.projectRoot?.trim() || 'outside the session workspace'
-      };
+      readOnlyByPath = { ...readOnlyByPath, [record.path]: request.projectRoot?.trim() || 'outside the session workspace' };
     } else if (readOnlyByPath[record.path]) {
       const { [record.path]: _wasReadOnly, ...remaining } = readOnlyByPath;
       readOnlyByPath = remaining;
