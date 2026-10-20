@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import {
@@ -171,4 +172,10 @@ test('move destinations stay on the session machine', () => {
   assert.deepEqual(moveProjectDestinations(projects, { executionEnvironment: 'local' }).map(p => p.id), ['a']);
   assert.deepEqual(moveProjectDestinations(projects, { executionEnvironment: 'remote', remoteProfileId: 'box' }).map(p => p.id), ['b']);
   assert.deepEqual(moveProjectDestinations(projects, { executionEnvironment: 'remote', remoteProfileId: null }), []);
+});
+
+test('a long destination list scrolls inside the window', () => {
+  const source = readFileSync(new URL('../src/lib/shell/components/SessionRowContextMenu.svelte', import.meta.url), 'utf8');
+  assert.match(source, /max-height:calc\(100vh - \$\{top \+ 8\}px\)/);
+  assert.match(source, /\.menu\{[^}]*overflow-y:auto/);
 });
