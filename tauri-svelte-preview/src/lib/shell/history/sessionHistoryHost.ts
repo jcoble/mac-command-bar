@@ -34,12 +34,13 @@ async function listLocalProviderSessions(projectPath?: string): Promise<AgentSes
   }
 }
 
-/** This Mac's scan, and for the whole list each connected machine's own scan, labelled with that machine. */
-async function listProviderSessions(projectPath?: string): Promise<AgentSession[]> {
+/** This Mac's scan, and for the whole list each connected machine's own scan, labelled with that machine. This Mac's
+ * rows go to `onLocal` as soon as they are read, so a slow machine (its scan may wait 15 s) never holds them back. */
+async function listProviderSessions(projectPath?: string, onLocal?: (local: AgentSession[]) => void): Promise<AgentSession[]> {
   const machines = projectPath ? [] : Object.keys(rail.remoteConnections).filter((id) => rail.remoteConnections[id] === 'connected');
   rail.scanningMachines = [...new Set([...rail.scanningMachines, ...machines])];
   rail.runningElsewhere = [];
-  const remote = await Promise.all(machines.map(async (machine) => {
+  const remote = Promise.all(machines.map(async (machine) => {
     try {
       return ((await listAgentSessionsFromTauri(machine)) ?? []).map((session) => ({ ...session, machine }));
     } catch (error) {
@@ -49,7 +50,9 @@ async function listProviderSessions(projectPath?: string): Promise<AgentSession[
       rail.scanningMachines = rail.scanningMachines.filter((id) => id !== machine);
     }
   }));
-  return [...(await listLocalProviderSessions(projectPath)), ...remote.flat()];
+  const local = await listLocalProviderSessions(projectPath);
+  onLocal?.(local);
+  return [...local, ...(await remote).flat()];
 }
 
 /** Own the History panel's scanner and action bridge for the primary shell. */
@@ -81,8 +84,12 @@ export function registerSessionHistoryHost(options: SessionHistoryHostOptions): 
     const scanGeneration = ++generation;
     rail.scanning = true;
     try {
-      const sessions = await listProviderSessions();
-      if (stopSignal?.aborted || scanGeneration !== generation) return;
+      const current = (): boolean => !stopSignal?.aborted && scanGeneration === generation;
+      // This Mac's rows show at once, beside the rows other machines gave last time.
+      const sessions = await listProviderSessions(undefined, (local) => {
+        if (current()) setAvailable([...local, ...rail.available.filter((session) => (session.machine ?? 'local') !== 'local')]);
+      });
+      if (!current()) return;
       setAvailable(sessions);
     } finally {
       if (!stopSignal?.aborted && scanGeneration === generation) rail.scanning = false;
