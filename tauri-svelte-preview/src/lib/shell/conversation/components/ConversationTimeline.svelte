@@ -167,6 +167,10 @@
     if (activityLabel || hasBackgroundWork) result.push({ key: `activity:${result.at(-1)?.key ?? 'empty'}`, activity: true });
     return result;
   });
+  // A new key function makes the virtualizer rebuild every row position, so it gets one only when the row keys change.
+  let keyedRows: Row[] = [];
+  let rowKey = (index: number) => keyedRows[index].key;
+  const rowSize = (index: number) => keyedRows[index].run || keyedRows[index].item?.kind === 'tool' ? 36 : 90;
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: 0, getScrollElement: () => host, estimateSize: () => 90, overscan: 3,
     anchorTo: 'end', followOnAppend: false, scrollEndThreshold: -1
@@ -198,10 +202,10 @@
       const kept = anchor && !keys.has(String(anchor.key))
         ? $virtualizer.getVirtualItems().find((row) => row.end > top && keys.has(String(row.key)))
         : undefined;
+      if (currentRows.some((row, index) => row.key !== keyedRows[index]?.key)) rowKey = (index) => keyedRows[index].key;
+      keyedRows = currentRows;
       $virtualizer.setOptions({
-        count: currentRows.length, getScrollElement: () => element,
-        getItemKey: (index) => currentRows[index].key,
-        estimateSize: (index) => currentRows[index].run || currentRows[index].item?.kind === 'tool' ? 36 : 90,
+        count: currentRows.length, getScrollElement: () => element, getItemKey: rowKey, estimateSize: rowSize,
         paddingStart: topInset, paddingEnd,
         followOnAppend: following ? 'smooth' : false,
         scrollEndThreshold: following ? 80 : -1
@@ -241,23 +245,18 @@
     set(key, open) { follow = false; disclosures = { ...disclosures, [key]: open }; saveView(); }
   });
 
-  function countDiffLines(diffText: string): { added: number; removed: number } {
-    let added = 0;
-    let removed = 0;
-    let lineStart = 0;
-    const len = diffText.length;
-    for (let i = 0; i <= len; i++) {
-      if (i === len || diffText.charCodeAt(i) === 10) {
-        if (i > lineStart) {
-          const first = diffText.charCodeAt(lineStart);
-          const second = i > lineStart + 1 ? diffText.charCodeAt(lineStart + 1) : 0;
-          if (first === 43 && second !== 43) added++;
-          else if (first === 45 && second !== 45) removed++;
-        }
-        lineStart = i + 1;
-      }
+  // A finished edit's display item never changes, so its diff is counted once rather than on every chunk.
+  const diffCounts = new WeakMap<ConversationDisplayItem, { added: number; removed: number }>();
+  function countDiffLines(item: ConversationDisplayItem, diffText: string): { added: number; removed: number } {
+    const known = diffCounts.get(item);
+    if (known) return known;
+    const counts = { added: 0, removed: 0 };
+    for (const line of diffText.split('\n')) {
+      if (line.startsWith('+') && !line.startsWith('++')) counts.added++;
+      else if (line.startsWith('-') && !line.startsWith('--')) counts.removed++;
     }
-    return { added, removed };
+    diffCounts.set(item, counts);
+    return counts;
   }
 
   function getTurnFileEdits(group: ConversationTurnGroup): { path: string; added: number; removed: number }[] {
@@ -276,15 +275,13 @@
         const path = toolFilePath(item);
         if (path && !seenPaths.has(path)) {
           seenPaths.add(path);
-          edits.push({ path, ...countDiffLines(item.diff ?? '') });
+          edits.push({ path, ...countDiffLines(item, item.diff ?? '') });
         }
       } else if (item.kind === 'file' && item.completed) {
         const p = typeof item.metadata?.path === 'string' ? item.metadata.path : '';
         if (p && !seenPaths.has(p)) {
           seenPaths.add(p);
-          const d = typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text;
-          const { added, removed } = countDiffLines(d);
-          edits.push({ path: p, added, removed });
+          edits.push({ path: p, ...countDiffLines(item, typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text) });
         }
       } else if (item.kind === 'toolRun') {
         for (const sub of item.items) {
@@ -299,9 +296,7 @@
             const p = typeof sub.metadata?.path === 'string' ? sub.metadata.path : '';
             if (p && !seenPaths.has(p)) {
               seenPaths.add(p);
-              const d = typeof sub.metadata?.diff === 'string' ? sub.metadata.diff : sub.text;
-              const { added, removed } = countDiffLines(d);
-              edits.push({ path: p, added, removed });
+              edits.push({ path: p, ...countDiffLines(sub, typeof sub.metadata?.diff === 'string' ? sub.metadata.diff : sub.text) });
             }
           }
         }
