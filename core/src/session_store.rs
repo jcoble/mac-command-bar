@@ -10,6 +10,7 @@ use rusqlite::{
 };
 use serde::Serialize;
 
+mod board;
 mod evidence;
 mod phone;
 
@@ -808,22 +809,6 @@ CREATE INDEX IF NOT EXISTS notion_task_projections_offline_page_idx
         title COLLATE NOCASE ASC,
         source_task_id ASC
     );";
-
-/// Phones paired with this backend, and the id and name it gives them (phone spec §5.2).
-/// Only a SHA-256 of each device token is kept.
-const PHONE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS phone_machine (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS phone_devices (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    token_hash TEXT NOT NULL UNIQUE,
-    fcm_token TEXT,
-    created_at INTEGER NOT NULL,
-    last_seen_at INTEGER,
-    revoked_at INTEGER
-);";
 
 /// A paired phone, as the desktop's phone list shows it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -2072,12 +2057,12 @@ impl SessionStore {
                 StoreError::sqlite("could not create the orchestration table", error)
             })?;
         add_evidence_artifact_schema(&connection)?;
+        board::add_board_schema(&connection)?;
         add_notion_task_projection_schema(&connection)?;
         add_remote_history_column(&connection)?;
         add_child_session_schema(&connection)?;
         add_project_schema(&connection)?;
-        connection.execute_batch(PHONE_SCHEMA)
-            .map_err(|error| StoreError::sqlite("could not create the phone tables", error))?;
+        phone::add_phone_schema(&connection)?;
         add_session_handle(&connection)?;
         upgrade_broker_queue(&mut connection)?;
 

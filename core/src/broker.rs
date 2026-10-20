@@ -132,7 +132,7 @@ static MESSAGE_LISTENER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std:
 pub fn on_messages_changed(listener: impl Fn() + Send + Sync + 'static) {
     let _ = MESSAGE_LISTENER.set(Box::new(listener));
 }
-fn messages_changed() { if let Some(listener) = MESSAGE_LISTENER.get() { listener(); } }
+pub fn messages_changed() { if let Some(listener) = MESSAGE_LISTENER.get() { listener(); } }
 
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

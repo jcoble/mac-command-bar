@@ -667,6 +667,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-10-20 · TSK-1534 · Build board storage</td><td>Each store opens the board card and owner note tables without a schema version change. Card ownership and dropped-card protection apply in the upsert; board documents and counts are single SQL statements.</td><td>10</td></tr>
             <tr><td>2026-10-20 · TSK-1537 · Open another project in Files and Git</td><td>A session can show another project's folder, on any connected machine, in Files and Git; it is saved per session with its machine qualifier, and is read-only while a running session works there.</td><td>11, 13</td></tr>
             <tr><td>2026-10-20 · TSK-1537 · Saved paths keep their machine</td><td>A session's saved workspace records the machine of each path that is not on the session's own machine, so a tab from another project restores on that project's machine after "Back to session" and equal paths on two machines stay apart.</td><td>11</td></tr>
             <tr><td>2026-10-20 · TSK-1529 · Call the Settings helper model the utility model</td><td>The small model in Settings that writes session titles, Inspect answers and PR review drafts is now called the utility model everywhere a person reads it, so "helper" only means a helper session one session starts through <code>start_session</code>, and "sub-agent" means a provider's own agent inside its turn. Code names (<code>helper/</code>, <code>HelperSettings</code>, the Tauri commands) and the stored key <code>helper.settings</code> are unchanged, so saved choices survive.</td><td>19</td></tr>
@@ -1516,6 +1517,7 @@
             <tr><td>Provider-native storage</td><td>The conversation context Codex, Claude, or Agy resumes; often provider JSONL or its equivalent.</td><td>Yes, provider-controlled</td></tr>
             <tr><td><code>usage-history.sqlite3</code></td><td>Separate usage analytics: token/cost events, source cursors, rate versions, and daily rollups.</td><td>Yes</td></tr>
             <tr><td>Browser persistence</td><td>Assembly product state does not use <code>localStorage</code>, <code>sessionStorage</code>, or IndexedDB. Website-owned cookies and storage remain in the one persistent WebKit profile.</td><td>Website data only</td></tr>
+            <tr><td>Build board</td><td><code>board_cards</code> keeps each machine’s latest agent cards; <code>board_notes</code> keeps owner notes on cards and live items. Bounded board reads and badge counts run in SQL.</td><td>Yes, in sessions.db</td></tr>
             <tr><td>Rust live maps</td><td>Attached runtimes, pending RPC calls, writer lease, active tools/background work, ordered-event senders, and process handles.</td><td>No; reconstructed</td></tr>
             <tr><td>PTY scrollback</td><td>Bounded output for native terminal sessions.</td><td>Only for the live backend process</td></tr>
           </tbody>
