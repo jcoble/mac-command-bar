@@ -298,6 +298,39 @@ function makeBackend({ total = 1000 } = {}) {
   assert.equal(describeGitHistoryFooter(state), '', 'no list, no count line');
 }
 
+// ── a failed first read waits for Refresh instead of reading on every pass ──
+// Regression a89037a49: the effects that call ensureHistorySurface ran it again
+// after each failure, so a plain folder read its history ~33 times a second.
+{
+  const backend = makeBackend({ total: 1000 });
+  const working = backend.readHistory;
+  backend.readHistory = async (...args) => {
+    backend.calls.push(['readHistory', ...args]);
+    throw new Error('fatal: not a git repository');
+  };
+  const reads = () => backend.calls.filter(([name]) => name === 'readHistory').length;
+  const state = createGitPanelState();
+  const git = createGitService({ backend, state });
+
+  git.activate('/plain-folder');
+  git.ensureHistorySurface();
+  await settle();
+  assert.equal(state.historyError, 'fatal: not a git repository');
+  const afterFailure = reads();
+
+  git.ensureHistorySurface();
+  git.ensureHistorySurface();
+  git.ensureHistorySurface();
+  await settle();
+  assert.equal(reads(), afterFailure, 'later effect passes do not read a failed history again');
+
+  backend.readHistory = working;
+  await git.refreshHistory();
+  await settle();
+  assert.equal(state.historyError, '');
+  assert.equal(state.history.length, COMMIT_HISTORY_LIMIT, 'Refresh still reads again');
+}
+
 // ── the branch hover text spells everything out ─────────────────────────────
 {
   assert.equal(describeGitBranchTitle(null), 'No repository loaded');
