@@ -185,8 +185,13 @@ pub(crate) fn workflow_summary(definition: &crate::workflow::WorkflowDefinitionV
     lines.join("\n")
 }
 
-/// The caller's project folder: workflows it checks and starts are read from there.
-fn project_of(store: &SessionStore, owned_id: &str) -> Result<String, String> {
+/// An explicitly named registered project, or the calling session's folder when omitted.
+fn project_of(store: &SessionStore, owned_id: &str, project: Option<&Value>) -> Result<String, String> {
+    if let Some(project) = project {
+        let named = project.as_str().ok_or("project must be a project folder or title")?;
+        return store.local_project_root(named).map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("No single project added on this machine has the folder or title {named}"));
+    }
     store.get_session(owned_id).map_err(|error| error.to_string())?
         .map(|row| row.cwd).filter(|cwd| !cwd.is_empty())
         .ok_or_else(|| "This session has no project folder".into())
@@ -408,7 +413,7 @@ impl MessagingEndpoint {
             Some("check_workflow") => {
                 let path = tool_call["arguments"]["path"].as_str()
                     .ok_or("path must be a workflow file relative to your project")?;
-                let project = project_of(&store, &owned_id)?;
+                let project = project_of(&store, &owned_id, tool_call["arguments"].get("project"))?;
                 crate::workflow::WorkflowEngine::validate_file(std::path::Path::new(&project), std::path::Path::new(path))
                     .map(|definition| text(workflow_summary(&definition))).map_err(workflow_error)
             }
@@ -419,7 +424,7 @@ impl MessagingEndpoint {
                 let path = args["path"].as_str().ok_or("path must be a workflow file relative to your project")?;
                 let task: crate::workflow::TaskSnapshot = serde_json::from_value(args["task"].clone())
                     .map_err(|_| "task must have a key, a title and a body")?;
-                let project = project_of(&store, &owned_id)?;
+                let project = project_of(&store, &owned_id, tool_call["arguments"].get("project"))?;
                 // Reuse an unfinished run; follow finished runs to a new run. This task does not count toward the limit.
                 let base = format!("agent:{owned_id}:{}", task.key);
                 let mut key = base.clone();
@@ -494,10 +499,10 @@ impl MessagingEndpoint {
                      "model":{"type":"string"},"prompt":{"type":"string"},"name":{"type":"string"}},"required":["provider","prompt","name"]}},
                 {"name":"workflow_format","description":"Read the reference for writing an Assembly workflow (.assembly/workflows/*.yml).",
                  "inputSchema":{"type":"object","properties":{}}},
-                {"name":"check_workflow","description":"Check a workflow file in your project, the same way starting it would. Returns ok, its steps and any warnings, or the first error.",
-                 "inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
-                {"name":"start_workflow","description":"Start a workflow from your project's .assembly/workflows on this machine for a task. You are messaged when it waits for the owner or ends. At most 3 of your runs can be unfinished.",
-                 "inputSchema":{"type":"object","properties":{"path":{"type":"string"},
+                {"name":"check_workflow","description":"Check a workflow file in a registered project on this machine, or your current project when project is omitted. Returns ok, its steps and any warnings, or the first error.",
+                 "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"project":{"type":"string","description":"Registered project title or root path on this machine; omit to use your current project."}},"required":["path"]}},
+                {"name":"start_workflow","description":"Start a workflow from a registered project's .assembly/workflows on this machine, or your current project when project is omitted. You are messaged when it waits for the owner or ends. At most 3 of your runs can be unfinished.",
+                 "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"project":{"type":"string","description":"Registered project title or root path on this machine; omit to use your current project."},
                      "task":{"type":"object","properties":{"key":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"}},"required":["key","title","body"]}},
                      "required":["path","task"]}},
                 {"name":"list_workflow_runs","description":"List the workflow runs on this machine.",

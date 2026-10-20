@@ -13,6 +13,7 @@ use serde::Serialize;
 mod board;
 mod evidence;
 mod phone;
+mod projects;
 
 const SCHEMA_VERSION: i64 = 21;
 
@@ -2617,19 +2618,6 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not match folders by git common dir", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not match folders by git common dir", error))
-    }
-
-    /// The root folders of this Mac's projects.
-    pub fn local_project_roots(&self) -> Result<Vec<String>> {
-        let connection = self.lock()?;
-        let mut statement = connection
-            .prepare("SELECT root_path FROM projects WHERE machine = 'local' ORDER BY created_at, id")
-            .map_err(|error| StoreError::sqlite("could not prepare the project roots", error))?;
-        let rows = statement
-            .query_map([], |row| row.get(0))
-            .map_err(|error| StoreError::sqlite("could not list the project roots", error))?;
-        rows.collect::<rusqlite::Result<_>>()
-            .map_err(|error| StoreError::sqlite("could not list the project roots", error))
     }
 
     /// The distinct folders of local sessions that have no project yet.
