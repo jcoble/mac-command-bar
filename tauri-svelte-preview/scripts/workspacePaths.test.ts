@@ -47,7 +47,7 @@ test('saved workspace paths round trip without retaining a client profile or rew
   const stored = { openPaths: ['/home/me/a.txt'], activePath: '/home/me/a.txt', filesInspectionRoot: '/home/me', expandedPathsByRoot: { '/home/me': ['/home/me/sub'] }, fileStates: { '/home/me/a.txt': { content: '/home/me/leave-content-alone' } } };
   const projected = mapWorkspaceSnapshotPaths(stored, 'workbox');
   assert.equal((projected as typeof stored).activePath, 'assembly-remote://workbox/home/me/a.txt');
-  assert.deepEqual(mapWorkspaceSnapshotPaths(projected, null), stored);
+  assert.deepEqual(mapWorkspaceSnapshotPaths(projected, 'workbox', 'save'), stored);
 });
 test('saved top tabs follow their editor paths between machines', () => {
   const stored = { openPaths: ['/home/me/a.txt'], topTabs: { order: ['diff', 'editor:/home/me/a.txt', 'browser:tab-1'], activeKey: 'editor:/home/me/a.txt' } };
@@ -56,30 +56,37 @@ test('saved top tabs follow their editor paths between machines', () => {
     order: ['diff', 'editor:assembly-remote://workbox/home/me/a.txt', 'browser:tab-1'],
     activeKey: 'editor:assembly-remote://workbox/home/me/a.txt'
   });
-  assert.deepEqual(mapWorkspaceSnapshotPaths(projected, null), stored);
+  assert.deepEqual(mapWorkspaceSnapshotPaths(projected, 'workbox', 'save'), stored);
 });
-test("a viewed project's saved paths come back on that project's machine", () => {
-  // A Mac session viewing a Workbox project: its paths keep Workbox after a save and a read.
-  const viewed = 'assembly-remote://workbox/home/me/other';
-  const fromMac = {
-    viewedProjectRoot: viewed,
-    openPaths: [`${viewed}/a.ts`, '/Users/me/session/b.ts'],
-    topTabs: { order: [`editor:${viewed}/a.ts`], activeKey: `editor:${viewed}/a.ts` },
-    expandedPathsByRoot: { [viewed]: [`${viewed}/src`] }
-  };
-  const storedFromMac = mapWorkspaceSnapshotPaths(fromMac, null) as typeof fromMac;
-  assert.deepEqual(storedFromMac.openPaths, ['/home/me/other/a.ts', '/Users/me/session/b.ts']);
-  assert.equal(storedFromMac.viewedProjectRoot, viewed);
-  assert.deepEqual(mapWorkspaceSnapshotPaths(storedFromMac, null, storedFromMac.viewedProjectRoot), fromMac);
+test('a Workbox Test tab kept after Back to session reloads on Workbox Test with its draft', () => {
+  // A Mac session: no viewed project any more, but the remote tab and its draft stay open.
+  const tab = 'assembly-remote://workbox-test/home/me/other/a.ts';
+  const open = { openPaths: [tab, '/Users/me/session/b.ts'], activePath: tab, topTabs: { order: [`editor:${tab}`], activeKey: `editor:${tab}` }, fileStates: { [tab]: { draftContent: 'unsaved' } } };
+  const stored = mapWorkspaceSnapshotPaths(open, null, 'save') as typeof open;
+  assert.deepEqual(stored.openPaths, [tab, '/Users/me/session/b.ts']);
+  assert.deepEqual(mapWorkspaceSnapshotPaths(stored, null), open);
+});
+test("the session's own files saved while viewing a remote project reload on the session's machine", () => {
+  // A Mac session viewing the same folder on Workbox Test keeps its own Mac files on the Mac.
+  const viewed = 'assembly-remote://workbox-test/Users/me/repo';
+  const open = { viewedProjectRoot: viewed, openPaths: ['/Users/me/repo/a.ts', `${viewed}/a.ts`], expandedPathsByRoot: { [viewed]: [`${viewed}/src`] } };
+  const stored = mapWorkspaceSnapshotPaths(open, null, 'save') as typeof open;
+  assert.deepEqual(stored.openPaths, ['/Users/me/repo/a.ts', `${viewed}/a.ts`]);
+  assert.deepEqual(mapWorkspaceSnapshotPaths(stored, null), open);
 
-  // A Workbox session viewing a Mac project: the Mac paths stay on the Mac, a sibling folder does not.
-  const fromWorkbox = {
-    viewedProjectRoot: '/Users/me/mac-proj',
-    openPaths: ['/Users/me/mac-proj/x.ts', 'assembly-remote://workbox/Users/me/mac-proj-2/z.ts', 'assembly-remote://workbox/home/me/session/y.ts']
-  };
-  const storedFromWorkbox = mapWorkspaceSnapshotPaths(fromWorkbox, null) as typeof fromWorkbox;
-  assert.deepEqual(storedFromWorkbox.openPaths, ['/Users/me/mac-proj/x.ts', '/Users/me/mac-proj-2/z.ts', '/home/me/session/y.ts']);
-  assert.deepEqual(mapWorkspaceSnapshotPaths(storedFromWorkbox, 'workbox', storedFromWorkbox.viewedProjectRoot), fromWorkbox);
+  // A Workbox session viewing a Mac project: its own files go back to Workbox, the Mac files to the Mac.
+  const fromWorkbox = { viewedProjectRoot: '/Users/me/mac-proj', openPaths: ['/Users/me/mac-proj/x.ts', 'assembly-remote://workbox/home/me/session/y.ts'] };
+  const storedFromWorkbox = mapWorkspaceSnapshotPaths(fromWorkbox, 'workbox', 'save') as typeof fromWorkbox;
+  assert.deepEqual(storedFromWorkbox, { viewedProjectRoot: 'file:///Users/me/mac-proj', openPaths: ['file:///Users/me/mac-proj/x.ts', '/home/me/session/y.ts'] });
+  assert.deepEqual(mapWorkspaceSnapshotPaths(storedFromWorkbox, 'workbox'), fromWorkbox);
+});
+test('two machines with the same path stay separate in a saved workspace', () => {
+  const own = 'assembly-remote://workbox/home/me/a.ts';
+  const other = 'assembly-remote://workbox-test/home/me/a.ts';
+  const open = { openPaths: [own, other], fileStates: { [own]: { draftContent: 'one' }, [other]: { draftContent: 'two' } } };
+  const stored = mapWorkspaceSnapshotPaths(open, 'workbox', 'save') as typeof open;
+  assert.deepEqual(stored.openPaths, ['/home/me/a.ts', other]);
+  assert.deepEqual(mapWorkspaceSnapshotPaths(stored, 'workbox'), open);
 });
 test('hosted PR requests route their nested roots to the owning machine', () => {
   const root = remoteWorkspacePath('workbox', '/home/me/repo');

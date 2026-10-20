@@ -2611,14 +2611,14 @@ export async function deleteAgentConversationSessionFromTauri(ownedId: string): 
 
 export async function writeAgentConversationWorkspaceFromTauri(
   ownedId: string,
-  snapshot: SessionWorkspaceSnapshot
+  snapshot: SessionWorkspaceSnapshot, profileId: string | null
 ): Promise<boolean> {
   if (!isTauriRuntime()) return true;
   if (!ownedId.trim()) return false;
   const { invoke } = await import('./workspaceInvoke.ts');
   await invoke<void>('write_agent_conversation_workspace', {
     ownedId,
-    snapshotJson: JSON.stringify(mapWorkspaceSnapshotPaths(snapshot, null))
+    snapshotJson: JSON.stringify(mapWorkspaceSnapshotPaths(snapshot, profileId, 'save'))
   });
   return true;
 }

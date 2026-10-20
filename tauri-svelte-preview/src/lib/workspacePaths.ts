@@ -70,28 +70,27 @@ export function qualifyWorkspaceResult(value: unknown, profileId: string, key = 
 }
 
 /**
- * SQLite stores native paths; each client projects them onto its saved machine. Paths inside
- * `viewedRoot` (a session's `viewedProjectRoot`, stored with its machine) go onto that machine.
+ * SQLite keeps each path on the session's own machine (`profileId`, null for the Mac) native, so
+ * older records load unchanged. A path on another machine keeps its `assembly-remote://` form, and
+ * a Mac path in a remote session's record is saved as `file://<path>`.
  */
-export function mapWorkspaceSnapshotPaths(value: unknown, profileId: string | null, viewedRoot = '', key = ''): unknown {
-  const keys = new Set(['openPaths', 'activePath', 'selectedPath', 'diffRoot', 'filesInspectionRoot', 'sourceControlInspectionRoot', 'root', 'path']);
-  const viewed = parseRemoteWorkspacePath(viewedRoot);
-  const viewedNative = (viewed?.path ?? viewedRoot).replace(/\/+$/, '');
+export function mapWorkspaceSnapshotPaths(value: unknown, profileId: string | null, direction: 'load' | 'save' = 'load', key = ''): unknown {
+  const keys = new Set(['openPaths', 'activePath', 'selectedPath', 'diffRoot', 'filesInspectionRoot', 'sourceControlInspectionRoot', 'root', 'path', 'viewedProjectRoot']);
   const mapPath = (path: string): string => {
-    const native = parseRemoteWorkspacePath(path)?.path ?? path;
-    const inViewed = viewedNative !== '' && (native === viewedNative || native.startsWith(`${viewedNative}/`));
-    const machine = inViewed ? viewed?.profileId ?? null : profileId;
-    return machine && native.startsWith('/') ? remoteWorkspacePath(machine, native) : native;
+    const remote = parseRemoteWorkspacePath(path);
+    if (direction === 'save') return remote ? (remote.profileId === profileId ? remote.path : path) : profileId && path.startsWith('/') ? `file://${path}` : path;
+    if (path.startsWith('file:///')) return path.slice(7);
+    return profileId && path.startsWith('/') ? remoteWorkspacePath(profileId, path) : path;
   };
   if (typeof value === 'string') {
     // Top-row editor tabs are keyed 'editor:<path>' and must follow openPaths.
     if ((key === 'order' || key === 'activeKey') && value.startsWith('editor:')) return `editor:${mapPath(value.slice(7))}`;
     return keys.has(key) || key === 'expandedPathsByRoot' ? mapPath(value) : value;
   }
-  if (Array.isArray(value)) return value.map((item) => mapWorkspaceSnapshotPaths(item, profileId, viewedRoot, key));
+  if (Array.isArray(value)) return value.map((item) => mapWorkspaceSnapshotPaths(item, profileId, direction, key));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([name, item]) => [
-    name.startsWith('/') || name.startsWith(remotePrefix) ? mapPath(name) : name,
-    mapWorkspaceSnapshotPaths(item, profileId, viewedRoot, key === 'expandedPathsByRoot' ? key : name)
+    name.startsWith('/') || name.startsWith(remotePrefix) || name.startsWith('file:///') ? mapPath(name) : name,
+    mapWorkspaceSnapshotPaths(item, profileId, direction, key === 'expandedPathsByRoot' ? key : name)
   ]));
   return value;
 }
