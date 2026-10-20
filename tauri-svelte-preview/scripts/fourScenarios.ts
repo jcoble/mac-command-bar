@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -9,7 +10,8 @@ const proofRoot = path.join(home, 'assembly-proof');
 const templateDir = path.join(proofRoot, 'template');
 const templateSource = path.join(home, 'assembly-qa-1500b', 'xdg-fresh');
 export function currentRunLink(root: string, worktree: string): string {
-  return path.join(root, `current-${path.basename(worktree)}`);
+  const key = createHash('sha256').update(worktree).digest('hex');
+  return path.join(root, `current-${path.basename(worktree)}-${key}`);
 }
 const ownerDataPaths = [path.join(home, '.local/share/assembly'), path.join(home, '.local/share/dev.blackcolours.MacCommandBarWebviewPreview')];
 

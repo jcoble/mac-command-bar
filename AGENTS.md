@@ -133,7 +133,8 @@ one next to it doesn't. Before calling work done, name which of these you covere
   Workbox Test. Several changes may share one run if it exercises each of them. Report the four-row
   table with evidence; a scenario you can't run is reported blocked with the exact error.
   Each worktree has its own test-app run: `fourScenarios.ts start --worktree <path>` and
-  `stop --worktree <path>` use `~/assembly-proof/current-<worktree folder name>`. Without
+  `stop --worktree <path>` use `~/assembly-proof/current-<folder name>-<path hash>` so equal
+  folder names in different locations stay separate. The hash uses the canonical worktree path. Without
   `--worktree`, commands use the current directory's Git worktree. Different worktrees may run
   together when more than 6 GB of RAM is available; starting the same worktree twice is refused.
   Stopping one worktree leaves the others running.

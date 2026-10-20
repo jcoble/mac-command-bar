@@ -103,16 +103,15 @@ test('stop reaches descendants that started their own process group', () => {
 });
 
 test('two worktrees keep independent run state when one is stopped', () => {
-  const linkA = currentRunLink('/proof', '/work/first');
-  const linkB = currentRunLink('/proof', '/work/second');
-  assert.equal(linkA, '/proof/current-first');
-  assert.equal(linkB, '/proof/current-second');
+  const linkA = currentRunLink('/proof', '/work/repo-a/review');
+  const linkB = currentRunLink('/proof', '/work/repo-b/review');
+  assert.notEqual(linkA, linkB, 'equal folder names in different worktrees must stay separate');
   const state = (worktree: string, pid: number) => buildState({
     runDir: `/proof/run-${pid}`, display: 140 + pid, port: 5300 + pid,
     dataDir: `/proof/run-${pid}/data`, worktree,
     processes: [{ name: 'app', pid, startedAt: 'now', log: '' }]
   });
-  const runs = new Map([[linkA, state('/work/first', 10)], [linkB, state('/work/second', 20)]]);
+  const runs = new Map([[linkA, state('/work/repo-a/review', 10)], [linkB, state('/work/repo-b/review', 20)]]);
   const live = new Set([10, 20]);
   const isLive = (p: { pid: number }) => live.has(p.pid);
   assert.throws(() => refuseWhileRunning(runs.get(linkA), isLive), /still running/);
