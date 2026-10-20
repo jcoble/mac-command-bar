@@ -10,7 +10,7 @@
  * The rule the whole panel follows: an action is either backed by something
  * real or it is off with a plain-English reason. Nothing pretends.
  */
-import { hasTranscriptReader } from '../sessionHistoryViewModel.ts';
+import { hasTranscriptReader, runningRuntimeStates } from '../sessionHistoryViewModel.ts';
 import { normalizeProvider } from '../../ownedSessions.ts';
 import { resumeCommand } from '../../resumeCommand.ts';
 import type { AgentConversationTranscriptImport } from '../../../tauriSource.ts';
@@ -96,6 +96,8 @@ export function sessionTranscriptImport(
   const transcriptPath = record.logPath?.trim() ?? '';
   const cwd = record.canonicalCwd?.trim() ?? '';
   if (!provider || !nativeSessionId || !transcriptPath || !cwd) return null;
+  // A session whose agent is running here is only selected: reading it again needs it closed first.
+  if (record.ownedId && record.runtimeState && runningRuntimeStates.has(record.runtimeState)) return null;
   // The name travels with the import so the DATABASE gets it. Setting it on the
   // rail row after the fact looked right until the next reload, when the rail
   // read the row back and found no title on it.

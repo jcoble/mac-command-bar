@@ -180,10 +180,24 @@ pub fn existing_import_session(store: &SessionStore, provider: AgentConversation
 /// makes the next import read them and stops the following until it has.
 pub fn follow_imported_length(store: &SessionStore, owned_id: &str, starting: bool) -> Result<(), String> {
     let Some(mut row) = store.get_session(owned_id).map_err(|error| error.to_string())? else { return Ok(()) };
-    let Some(cursor) = optional_import_cursor(&row.extra_json)?.filter(|cursor| cursor.imported_length.is_some()) else { return Ok(()) };
+    let Some(mut cursor) = optional_import_cursor(&row.extra_json)?.filter(|cursor| cursor.imported_length.is_some()) else { return Ok(()) };
+    // A session tracked from its start learns where its transcript is once Claude has written it.
+    if cursor.transcript_path.is_empty() { cursor.transcript_path = row.native_session_id.as_deref().map(|id| self::transcript::discover(AgentConversationProvider::Claude, id))
+        .transpose()?.flatten().map(|location| location.canonical_path.to_string_lossy().into_owned()).unwrap_or_default(); }
     let Ok(metadata) = std::fs::metadata(&cursor.transcript_path) else { return Ok(()) };
     if starting && cursor.imported_length.is_some_and(|length| metadata.len() <= length) { return Ok(()); }
     row.extra_json = merge_import_cursor(&row.extra_json, &ImportCursor { imported_length: (!starting).then_some(metadata.len()), ..cursor })?;
+    store.upsert_session(&row).map_err(|error| error.to_string())
+}
+
+/// A Claude session Assembly starts is tracked from then: its transcript's length is saved (nothing until Claude writes
+/// the file), so History reads it again only for turns taken elsewhere. Sessions from before this are never guessed at.
+pub fn track_new_transcript(store: &SessionStore, owned_id: &str, transcript: Option<&Path>) -> Result<(), String> {
+    let Some(mut row) = store.get_session(owned_id).map_err(|error| error.to_string())? else { return Ok(()) };
+    if optional_import_cursor(&row.extra_json)?.is_some() { return Ok(()); }
+    let cursor = ImportCursor { transcript_path: transcript.map(|path| path.to_string_lossy().into_owned()).unwrap_or_default(), reached_start: true,
+        imported_length: Some(transcript.and_then(|path| path.metadata().ok()).map_or(0, |metadata| metadata.len())), ..ImportCursor::default() };
+    row.extra_json = merge_import_cursor(&row.extra_json, &cursor)?;
     store.upsert_session(&row).map_err(|error| error.to_string())
 }
 
@@ -522,30 +536,12 @@ pub fn finish_import_session(
     // Reopening a session that already holds its transcript reads nothing. The
     // page this would fetch is the one already stored, and writing it again
     // would put every message in twice.
-    if store
-        .has_display_events(owned_id)
-        .map_err(|error| error.to_string())?
-    {
-        return Ok(0);
-    }
-    let mut session = store
-        .get_session(owned_id)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Imported session was not found".to_string())?;
+    if store.has_display_events(owned_id).map_err(|error| error.to_string())? { return Ok(0); }
+    let mut session = store.get_session(owned_id).map_err(|error| error.to_string())?.ok_or_else(|| "Imported session was not found".to_string())?;
     let cursor = import_cursor(&session.extra_json)?;
     let provider = self::transcript::parse_provider(&session.provider)?;
-    let native_session_id = session
-        .native_session_id
-        .clone()
-        .ok_or_else(|| "Imported session has no native session id".to_string())?;
-    let tail = read_tail(
-        provider,
-        &native_session_id,
-        Path::new(&cursor.transcript_path),
-        cursor.cutoff_offset,
-        max_bytes,
-        max_records,
-    )?;
+    let native_session_id = session.native_session_id.clone().ok_or_else(|| "Imported session has no native session id".to_string())?;
+    let tail = read_tail(provider, &native_session_id, Path::new(&cursor.transcript_path), cursor.cutoff_offset, max_bytes, max_records)?;
     // What this conversation actually ran on. Asking the agent is no use: an
     // adapter reports what it OFFERS, and Claude's answers "default" — true of a
     // session about to start, and wrong for one being picked up, which ran on

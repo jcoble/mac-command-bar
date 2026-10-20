@@ -208,17 +208,12 @@ function providerLabelFor(provider: string): string {
     .join(' ');
 }
 
+/** Runtime states of a session whose agent is running. */
+export const runningRuntimeStates = new Set(['starting', 'ready', 'working', 'waiting-approval', 'waiting-input', 'interrupting']);
+
 function statusHintFor(record: SessionLibraryRecord): 'Live' | 'Open' | null {
   if (record.source !== 'owned' || !record.owned) return null;
-  const activeRuntimeStates = new Set([
-    'starting',
-    'ready',
-    'working',
-    'waiting-approval',
-    'waiting-input',
-    'interrupting'
-  ]);
-  if (record.owned.state === 'live' || (record.runtimeState && activeRuntimeStates.has(record.runtimeState))) {
+  if (record.owned.state === 'live' || (record.runtimeState && runningRuntimeStates.has(record.runtimeState))) {
     return 'Live';
   }
   return record.owned.state === 'background' ? 'Open' : null;

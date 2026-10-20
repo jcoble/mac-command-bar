@@ -64,6 +64,32 @@ async fn turns_taken_outside_before_assembly_runs_the_session_are_still_read_aga
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a_claude_session_started_here_begins_with_its_transcript_length_saved() {
+    let fixture = fixture_manager_with_provider("new_claude_tracked", AgentConversationProvider::Claude, None).await;
+    let row = fixture.manager.store().get_session(&fixture.owned_id).unwrap().unwrap();
+    let cursor = serde_json::from_str::<Value>(&row.extra_json).unwrap()["import"].clone();
+    // No transcript has been written yet, so nothing of it is counted.
+    assert_eq!((cursor["importedLength"].as_u64(), cursor["reachedStart"].as_bool()), (Some(0), Some(true)));
+    let codex = fixture_manager_with_acp_session("new_codex_untracked").await;
+    let row = codex.manager.store().get_session(&codex.owned_id).unwrap().unwrap();
+    assert!(serde_json::from_str::<Value>(&row.extra_json).unwrap().get("import").is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_session_tracked_from_its_start_is_read_again_only_for_turns_taken_elsewhere() {
+    let fixture = fixture_manager_with_acp_session("suspend_runtime").await;
+    let transcript = fixture.root.join("tracked.jsonl");
+    fs::write(&transcript, "{\"type\":\"user\"}\n").unwrap();
+    crate::agent_conversation::history::track_new_transcript(&fixture.manager.store(), &fixture.owned_id, Some(&transcript)).unwrap();
+    assert!(fixture.manager.suspend_if_quiescent(&fixture.owned_id, fixture.generation).await.unwrap());
+    let native = fixture.manager.store().get_session(&fixture.owned_id).unwrap().unwrap().native_session_id.unwrap();
+    let import = || fixture.manager.begin_import_transcript_session(AgentConversationProvider::Codex, &native, &transcript, fixture.root.to_str().unwrap(), None, None);
+    assert_eq!(import().await, Ok((fixture.owned_id.clone(), false)));
+    fs::OpenOptions::new().append(true).open(&transcript).unwrap().write_all(b"{\"type\":\"user\",\"entrypoint\":\"cli\"}\n").unwrap();
+    assert_eq!(import().await, Ok((fixture.owned_id.clone(), true)));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn suspending_moves_the_saved_transcript_length_along() {
     let fixture = fixture_manager_with_acp_session("suspend_runtime").await;
     let (_, grown) = imported_and_grown(&fixture);

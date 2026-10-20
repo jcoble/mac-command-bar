@@ -138,6 +138,22 @@ run('a_held_remote_row_waits_for_its_machine_scan', () => {
   assert.match(host, /rail\.scanningMachines = /);
 });
 
+run('a_row_the_rail_has_open_just_opens', () => {
+  const open = record('open-session');
+  open.source = 'owned';
+  open.ownedId = 'open-session';
+  open.provider = 'claude';
+  open.logPath = '/tmp/open-transcript.jsonl';
+  // Reading it again would need it closed first, so a running session is only selected.
+  for (const runtimeState of ['ready', 'working', 'waiting-input'] as const) {
+    open.runtimeState = runtimeState;
+    assert.equal(sessionTranscriptImport(open), null, runtimeState);
+    assert.equal(sessionHistoryActions(open).find((action) => action.id === 'resume-assembly')?.enabled, true, runtimeState);
+  }
+  open.runtimeState = 'suspended';
+  assert.equal(sessionTranscriptImport(open)?.transcriptPath, open.logPath);
+});
+
 const remoteScan = {
   provider: 'claude', id: 'native-1', title: 'Can you hear me', model: null, projectPath: '/home/me/dev/work/EdiPlatform',
   lastActivity: null, resumeCommands: [], logPath: '/home/me/.claude/projects/edi/native-1.jsonl', machine: 'box'
