@@ -42,8 +42,9 @@ const allowedHits = new Set([
   "src/lib/shell/panels/tasks/TasksPanel.svelte:tick:import { onDestroy, onMount, tick } from 'svelte';",
   'src/lib/shell/panels/tasks/TasksPanel.svelte:tick:await tick();',
   // These one-shot timers are both stopped by the AbortSignal-owning surface.
-  'src/lib/shell/notionOAuth.ts:new Promise:await new Promise<void>((resolve, reject) => {',
-  'src/lib/shell/notionOAuth.ts:setTimeout:const timeout = window.setTimeout(finish, CLAIM_INTERVAL_MS);',
+  // TSK-1553: this callback wait owns one five-minute timer; claim, abort and browser-open failure clear it and remove its listener.
+  'src/lib/shell/notionOAuth.ts:new Promise:const code = new Promise<string>((resolve, reject) => {',
+  'src/lib/shell/notionOAuth.ts:setTimeout:const timeout = setTimeout(',
   'src/lib/shell/workflows/components/WorkflowRuns.svelte:setTimeout:const timer = window.setTimeout(() => {',
   // One five-second shot per active turn; the effect clears it when the turn ends or the composer unmounts.
   'src/lib/shell/conversation/components/ConversationComposer.svelte:setTimeout:const timer = setTimeout(() => (turnSettled = true), 5000);',
