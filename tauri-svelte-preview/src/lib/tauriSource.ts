@@ -2308,7 +2308,7 @@ export async function listOwnerInboxFromTauri(signal: AbortSignal): Promise<Owne
 }
 
 /** Invokes a command that reads other machines; aborting `signal` cancels it there and returns null. */
-async function invokeCancellable<T>(command: string, args: Record<string, unknown>, signal: AbortSignal): Promise<T | null> {
+export async function invokeCancellable<T>(command: string, args: Record<string, unknown>, signal: AbortSignal): Promise<T | null> {
   if (!isTauriRuntime() || signal.aborted) return null;
   const requestId = createAgentConversationRequestId();
   const { invoke } = await import('./workspaceInvoke.ts');

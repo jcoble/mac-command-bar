@@ -76,8 +76,7 @@ SELECT json_object(
         'created_at_ms',c.created_at_ms,'updated_at_ms',c.updated_at_ms,'snoozed_until_ms',c.snoozed_until_ms,
         'run_state',json_extract(r.run,'$.state'),'run_step',json_extract(r.step,'$.nodeId'),
         'session_state',linked.state,'notes',json(COALESCE(n.items,'[]')),
-        'stale',c.state IN ('running','in_review') AND c.updated_at_ms<=?2-86400000,
-        'state_count',COUNT(*) OVER (PARTITION BY c.state)) AS item
+        'stale',c.state IN ('running','in_review') AND c.updated_at_ms<=?2-86400000) AS item
     FROM board_cards c LEFT JOIN sessions s ON s.owned_id=c.written_by
     LEFT JOIN sessions linked ON linked.owned_id=c.session_owned_id
     LEFT JOIN runs r ON r.run_id=c.run_id LEFT JOIN notes n ON n.target='card:'||c.card_key
@@ -85,6 +84,8 @@ SELECT json_object(
     ORDER BY CASE c.state WHEN 'needs_you' THEN 0 WHEN 'running' THEN 1 WHEN 'in_review' THEN 2 ELSE 3 END,
         COALESCE(c.snoozed_until_ms>?2,0),c.updated_at_ms DESC,c.card_key LIMIT 40
 )),
+'counts',(SELECT json_group_object(state,n) FROM (SELECT state,COUNT(*) AS n FROM board_cards
+    WHERE dropped_at_ms IS NULL AND (state!='done' OR updated_at_ms>=?1) GROUP BY state)),
 'runs',(SELECT json_group_array(json(item)) FROM (
     SELECT json_object('id',r.run_id,'name',json_extract(run,'$.definition.name'),
         'task_title',json_extract(run,'$.inputSnapshot.task.title'),'task_key',json_extract(run,'$.inputSnapshot.task.key'),
@@ -279,6 +280,13 @@ mod tests {
         assert_eq!((b["runs"][0]["steps_done"].as_i64(),b["runs"][0]["steps_total"].as_i64()),(Some(1),Some(2)));
         assert_eq!(b["steps"][0]["reason"],"Review this"); assert_eq!(b["steps"][0]["notes"][0]["body"],"Owner note");
         assert!(b["session_notes"].is_array());
+    }
+    #[test]
+    fn board_counts_every_state_past_the_card_cap() {
+        let s=store(); for n in 0..41 { card(&s,&n.to_string(),"needs_you",2); } card(&s,"run","running",1);
+        card(&s,"old","done",1); card(&s,"drop","in_review",1); s.board_card("drop","drop",2).unwrap();
+        let b=s.board(2,3).unwrap(); assert_eq!(b["cards"].as_array().unwrap().len(),40);
+        assert_eq!(b["counts"],json!({"needs_you":41,"running":1}));
     }
     #[test]
     fn board_count_counts_needs_you_cards_and_waiting_steps_and_ignores_snoozed() {

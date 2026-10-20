@@ -1321,7 +1321,7 @@ impl RemoteConnectionManager {
     }
 
     /// A frontend `request_id` is the wire id, so cancelling it stops the read on the server.
-    async fn message_machine(&self, machine: &str, op: &str, args: serde_json::Value, request_id: Option<u64>) -> Result<serde_json::Value, String> {
+    pub(crate) async fn message_machine(&self, machine: &str, op: &str, args: serde_json::Value, request_id: Option<u64>) -> Result<serde_json::Value, String> {
         if machine == LOCAL_MACHINE {
             let host = self.message_host.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
                 .ok_or("target machine not reachable: this desktop's sessions are not open yet")?;

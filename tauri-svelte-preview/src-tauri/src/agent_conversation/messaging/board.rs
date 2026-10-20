@@ -1,5 +1,7 @@
+use super::super::{protocol::CommandResult, remote::RemoteConnectionManager};
 use mcb_core::session_store::SessionStore;
 use serde_json::{json, Value};
+use tokio::sync::broadcast::{error::RecvError, Receiver};
 
 pub fn tool() -> Value {
     json!({
@@ -48,5 +50,194 @@ pub(super) fn update(store: &SessionStore, caller: &str, role: &str, mut args: V
     let key = args["key"].as_str().ok_or("key must be a string")?;
     store.board_update(key, caller, role == "orchestrator", &args, chrono::Utc::now().timestamp_millis())
         .map_err(|error| error.to_string())?;
+    mcb_core::broker::messages_changed();
     Ok(json!({"key": key, "saved": true}))
+}
+
+/// The owner's board operations on this machine's own store; agents never reach these.
+pub(super) fn answer(store: &SessionStore, op: &str, args: &Value) -> Result<Value, String> {
+    let text = |key: &str| args[key].as_str().ok_or_else(|| format!("{key} is required"));
+    let number = |key: &str| args[key].as_i64().ok_or_else(|| format!("{key} is required"));
+    let result = match op {
+        "board" => store.board(number("today_ms")?, number("now_ms")?),
+        "board_count" => store.board_count(number("now_ms")?),
+        "board_card" => store.board_card(text("key")?, text("action")?, number("at")?).map(Value::Bool),
+        "board_note" => store.board_note(&uuid::Uuid::new_v4().to_string(), text("target")?, text("body")?, number("now_ms")?).map(Value::Bool),
+        _ => return Err(format!("Unknown messaging operation {op}")),
+    };
+    let value = result.map_err(|error| error.to_string())?;
+    if matches!(op, "board_card" | "board_note") && value == Value::Bool(true) {
+        mcb_core::broker::messages_changed();
+    }
+    Ok(value)
+}
+
+/// `board` and `board_count` read this desktop and every connected machine (a machine that cannot
+/// be reached is left out); any other board operation goes to the one machine in `args.machine`.
+pub(crate) async fn board_op(remote: &RemoteConnectionManager, op: &str, args: Value, request_id: u64) -> Result<Value, String> {
+    if !matches!(op, "board" | "board_count") {
+        let machine = args["machine"].as_str().ok_or("machine is required")?;
+        return remote.message_machine(machine, op, args.clone(), Some(request_id)).await;
+    }
+    let mut boards = Vec::new();
+    let mut count = 0;
+    let mut snoozed_until_ms: Option<i64> = None;
+    for machine in remote.message_machines("") {
+        let Ok(value) = remote.message_machine(&machine, op, args.clone(), Some(request_id)).await else { continue };
+        if op == "board" {
+            boards.push(json!({"machine": machine, "value": value}));
+        } else {
+            count += value["count"].as_i64().unwrap_or_default();
+            if let Some(at) = value["snoozed_until_ms"].as_i64() {
+                snoozed_until_ms = Some(snoozed_until_ms.map_or(at, |earliest| earliest.min(at)));
+            }
+        }
+    }
+    Ok(if op == "board" { json!(boards) } else { json!({"count": count, "snoozed_until_ms": snoozed_until_ms}) })
+}
+
+#[tauri::command]
+pub async fn board(remote: tauri::State<'_, RemoteConnectionManager>, op: String, args: Value, request_id: u64) -> CommandResult<Value> {
+    Ok(remote.unless_cancelled(request_id, board_op(&remote, &op, args, request_id)).await.transpose()?.unwrap_or(Value::Null))
+}
+
+/// Calls `changed` for every run change, so the board recounts; ends when the engine goes away.
+pub(super) async fn forward_run_changes(mut runs: Receiver<(String, usize)>, changed: impl Fn()) {
+    loop {
+        match runs.recv().await {
+            Ok(_) | Err(RecvError::Lagged(_)) => changed(),
+            Err(RecvError::Closed) => break,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_conversation::{manager::AgentRuntimeManager, providers::ProviderRegistry};
+    use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
+
+    fn store_with_a_waiting_card() -> SessionStore {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.board_update("one", "lead", false, &json!({"title": "Title", "state": "needs_you", "steps": ["Merge it"]}), 1).unwrap();
+        store
+    }
+
+    #[test]
+    fn successful_agent_and_owner_writes_signal_the_board_but_refused_writes_do_not() {
+        // The broker callback is process-wide and set once; isolate it from server tests.
+        if std::env::var_os("ASSEMBLY_BOARD_SIGNAL_TEST").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", concat!(module_path!(), "::successful_agent_and_owner_writes_signal_the_board_but_refused_writes_do_not"), "--nocapture"])
+                .env("ASSEMBLY_BOARD_SIGNAL_TEST", "1").output().unwrap();
+            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        let fired = Arc::new(AtomicUsize::new(0));
+        let counter = fired.clone();
+        mcb_core::broker::on_messages_changed(move || { counter.fetch_add(1, Ordering::SeqCst); });
+        let store = SessionStore::open_in_memory().unwrap();
+        update(&store, "lead", "top", json!({"key": "one", "title": "Title", "state": "needs_you"})).unwrap();
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+        assert!(update(&store, "helper", "helper", json!({"key": "one", "state": "done"})).is_err());
+        assert!(update(&store, "other", "top", json!({"key": "one", "state": "done"})).is_err());
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+        answer(&store, "board_note", &json!({"target": "card:one", "body": "Ready", "now_ms": 3})).unwrap();
+        assert_eq!(fired.load(Ordering::SeqCst), 2);
+        answer(&store, "board_card", &json!({"key": "one", "action": "done", "at": 4})).unwrap();
+        assert_eq!(fired.load(Ordering::SeqCst), 3);
+        answer(&store, "board_card", &json!({"key": "missing", "action": "done", "at": 4})).unwrap();
+        assert_eq!(fired.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn board_and_board_count_answer_with_the_machines_cards() {
+        let store = store_with_a_waiting_card();
+        let board = answer(&store, "board", &json!({"today_ms": 0, "now_ms": 5})).unwrap();
+        assert_eq!(board["cards"][0]["key"], "one");
+        assert_eq!(answer(&store, "board_count", &json!({"now_ms": 5})).unwrap()["count"], 1);
+    }
+
+    #[test]
+    fn a_card_action_and_an_owner_note_change_the_board() {
+        let store = store_with_a_waiting_card();
+        let note = json!({"target": "card:one", "body": "Looks right", "now_ms": 3});
+        assert_eq!(answer(&store, "board_note", &note).unwrap(), json!(true));
+        let board = answer(&store, "board", &json!({"today_ms": 0, "now_ms": 5})).unwrap();
+        assert_eq!(board["cards"][0]["notes"][0]["body"], "Looks right");
+        assert_eq!(answer(&store, "board_card", &json!({"key": "one", "action": "done", "at": 4})).unwrap(), json!(true));
+        assert_eq!(answer(&store, "board_count", &json!({"now_ms": 5})).unwrap()["count"], 0);
+        assert_eq!(answer(&store, "board_card", &json!({"key": "", "action": "clear_done", "at": 6})).unwrap(), json!(true));
+        assert_eq!(answer(&store, "board", &json!({"today_ms": 0, "now_ms": 7})).unwrap()["cards"], json!([]));
+    }
+
+    #[test]
+    fn a_board_operation_without_its_arguments_or_with_a_wrong_name_is_refused() {
+        let store = store_with_a_waiting_card();
+        assert_eq!(answer(&store, "board_count", &json!({})).unwrap_err(), "now_ms is required");
+        assert_eq!(answer(&store, "board_card", &json!({"key": "one", "action": "explode", "at": 1})).unwrap_err(), "unknown board card action");
+        assert_eq!(answer(&store, "board_nope", &json!({})).unwrap_err(), "Unknown messaging operation board_nope");
+    }
+
+    #[test]
+    fn snoozing_dropping_and_undoing_change_the_count_without_losing_the_card() {
+        let store = store_with_a_waiting_card();
+        for (action, at, count) in [("snooze", 99, 0), ("drop", 6, 0), ("undo", 7, 0), ("snooze", 0, 1)] {
+            assert_eq!(answer(&store, "board_card", &json!({"key": "one", "action": action, "at": at})).unwrap(), json!(true));
+            assert_eq!(answer(&store, "board_count", &json!({"now_ms": 5})).unwrap()["count"], count);
+        }
+        assert_eq!(answer(&store, "board", &json!({"today_ms": 0, "now_ms": 5})).unwrap()["cards"][0]["key"], "one");
+    }
+
+    #[test]
+    fn the_messaging_router_sends_board_operations_here() {
+        let store = store_with_a_waiting_card();
+        let count = super::super::answer(&store, None, "board_count", &json!({"now_ms": 5})).unwrap();
+        assert_eq!(count["count"], 1);
+    }
+
+    #[tokio::test]
+    async fn the_desktop_reads_its_board_and_routes_actions_to_the_named_machine() {
+        let directory = std::env::temp_dir().join(format!("assembly-board-ops-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let desktop = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("desktop.db")).unwrap();
+        desktop.store().board_update("one", "lead", false, &json!({"title": "Title", "state": "needs_you"}), 1).unwrap();
+        let connections = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), desktop.store_handle()).unwrap();
+        connections.set_message_host(desktop.clone());
+
+        let counts = board_op(&connections, "board_count", json!({"now_ms": 5}), 1).await.unwrap();
+        assert_eq!(counts, json!({"count": 1, "snoozed_until_ms": null}));
+        let boards = board_op(&connections, "board", json!({"today_ms": 0, "now_ms": 5}), 1).await.unwrap();
+        assert_eq!(boards[0]["machine"], "mac");
+        assert_eq!(boards[0]["value"]["cards"][0]["key"], "one");
+        board_op(&connections, "board_card", json!({"machine": "mac", "key": "one", "action": "snooze", "at": 99}), 2).await.unwrap();
+        assert_eq!(board_op(&connections, "board_count", json!({"now_ms": 5}), 3).await.unwrap(), json!({"count": 0, "snoozed_until_ms": 99}));
+        let done = board_op(&connections, "board_card", json!({"machine": "mac", "key": "one", "action": "done", "at": 4}), 2).await.unwrap();
+        assert_eq!(done, json!(true));
+        assert_eq!(board_op(&connections, "board_count", json!({"now_ms": 5}), 3).await.unwrap()["count"], 0);
+        let error = board_op(&connections, "board_card", json!({"machine": "away", "key": "one", "action": "done", "at": 4}), 4).await.unwrap_err();
+        assert!(error.contains("not reachable"), "{error}");
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unavailable_machine_is_omitted_from_reads_but_an_action_needs_a_machine() {
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
+        let connections = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store).unwrap();
+        assert_eq!(board_op(&connections, "board", json!({"today_ms": 0, "now_ms": 5}), 1).await.unwrap(), json!([]));
+        assert_eq!(board_op(&connections, "board_count", json!({"now_ms": 5}), 2).await.unwrap(), json!({"count": 0, "snoozed_until_ms": null}));
+        assert_eq!(board_op(&connections, "board_card", json!({"key": "one", "action": "done", "at": 4}), 3).await.unwrap_err(), "machine is required");
+    }
+
+    #[tokio::test]
+    async fn run_changes_fire_the_signal_even_after_missed_ones_and_forwarding_ends_when_the_engine_goes() {
+        let (changes, runs) = tokio::sync::broadcast::channel(2);
+        for run in 0..5 { changes.send((format!("run-{run}"), 0)).unwrap(); }
+        let fired = Arc::new(AtomicUsize::new(0));
+        let counter = fired.clone();
+        drop(changes);
+        forward_run_changes(runs, move || { counter.fetch_add(1, Ordering::SeqCst); }).await;
+        // One call for the three changes the receiver missed, then one for each of the two it kept.
+        assert_eq!(fired.load(Ordering::SeqCst), 3);
+    }
 }
