@@ -54,8 +54,7 @@ async fn receive(socket: &mut ServerSocket) -> ClientFrame {
 /// Accepts one client, announces this build's protocol, and reads its Resume and readiness request.
 async fn accept_handshake(listener: &tokio::net::TcpListener) -> (ServerSocket, BTreeMap<String, i64>) {
     let (stream, _) = listener.accept().await.unwrap();
-    let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-    send(&mut socket, ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }).await;
+    let mut socket = handshake::test_backend(stream, PROTOCOL_VERSION).await;
     let ClientFrame::Resume { cursors } = receive(&mut socket).await else { panic!("expected Resume first"); };
     assert!(matches!(receive(&mut socket).await,
         ClientFrame::Request { id: READINESS_REQUEST_ID, command: RemoteCommand::ListSessions }));
@@ -94,21 +93,19 @@ fn a_machine_cannot_take_the_desktops_name_or_an_unsafe_id() {
 
 #[tokio::test]
 async fn the_backend_refuses_a_socket_without_its_token_and_greets_with_its_protocol() {
-    // Pins the backend socket's bearer check (588413980) and its first frame, the protocol
-    // version the desktop compares against (b72f1946d).
-    let (address, server, directory) = start_backend("right-token").await;
-    for header in [None, Some("Bearer wrong-token"), Some("right-token")] {
-        let mut request = format!("ws://{address}/assembly").into_client_request().unwrap();
-        if let Some(header) = header { request.headers_mut().insert("authorization", header.parse().unwrap()); }
-        let error = tokio_tungstenite::connect_async(request).await.expect_err("socket must be refused");
-        assert!(matches!(&error, SocketError::Http(response) if response.status() == 401), "{header:?}: {error}");
-    }
-    let mut request = format!("ws://{address}/assembly").into_client_request().unwrap();
-    request.headers_mut().insert("authorization", "Bearer right-token".parse().unwrap());
+    // Pins the backend socket's token check (588413980, now the challenge proof of 9173f3552)
+    // and its first frame, the protocol version the desktop compares against (b72f1946d).
+    let (address, server, directory) = start_backend("test-token").await;
+    let error = tokio_tungstenite::connect_async(format!("ws://{address}/assembly")).await.expect_err("no challenge");
+    assert!(matches!(&error, SocketError::Http(response) if response.status() == 426), "{error}");
+    let (request, _) = handshake::upgrade_request(&format!("ws://{address}/assembly")).unwrap();
     let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
     let first = parse_server_frame(socket.next().await.unwrap().unwrap()).unwrap();
-    assert!(matches!(first, Some(ServerFrame::Ready { protocol_version: PROTOCOL_VERSION })));
-    drop(socket);
+    assert!(matches!(first, Some(ServerFrame::Ready { protocol_version: PROTOCOL_VERSION, .. })));
+    send_client_frame(&mut socket, &ClientFrame::Authenticate { proof: "forged".into() }).await.unwrap();
+    let answer = tokio::time::timeout(Duration::from_secs(5), socket.next()).await.expect("the backend must hang up");
+    assert!(!matches!(answer, Some(Ok(TungsteniteMessage::Text(_)))), "a forged proof must be refused: {answer:?}");
+    drop(handshake::test_client(&format!("ws://{address}/assembly")).await);
     server.abort();
     let _ = server.await;
     std::fs::remove_dir_all(directory).unwrap();
@@ -117,7 +114,8 @@ async fn the_backend_refuses_a_socket_without_its_token_and_greets_with_its_prot
 #[tokio::test]
 async fn connecting_with_a_stale_token_fails_at_once_with_the_authentication_message() {
     // Pins 00215d7a7: Connect answers a rejected token straight away instead of retrying
-    // until the 30 second connection timeout.
+    // until the 30 second connection timeout. Since 9173f3552 the token never crosses the
+    // tunnel, so the refusal is the desktop rejecting the backend's proof, not an HTTP 401.
     let (address, server, directory) = start_backend("current-token").await;
     let (_requests, mut receiver) = mpsc::channel(1);
     let (reply, answer) = oneshot::channel();
@@ -126,8 +124,7 @@ async fn connecting_with_a_stale_token_fails_at_once_with_the_authentication_mes
         &mut receiver, Arc::new(|_| Ok(())), None, Some(4), ready.clone(), &mut Some(reply), Arc::new(|| {}), None,
         (quiet_manager(), "box".into()))).await.expect("a refused first connection must not retry");
     let error = answer.await.unwrap().unwrap_err();
-    assert!(error.starts_with("Backend connection/authentication failed"), "{error}");
-    assert!(error.contains("401"), "{error}");
+    assert_eq!(error, "Backend did not prove it knows the token");
     assert!(!ready.load(Ordering::Acquire));
     server.abort();
     let _ = server.await;
@@ -142,8 +139,7 @@ async fn a_backend_on_another_protocol_fails_queued_requests_with_the_update_mes
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
-        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-        send(&mut socket, ServerFrame::Ready { protocol_version: PROTOCOL_VERSION - 1 }).await;
+        let mut socket = handshake::test_backend(stream, PROTOCOL_VERSION - 1).await;
         let _ = socket.next().await;
     });
     let (requests, mut receiver) = mpsc::channel(1);
