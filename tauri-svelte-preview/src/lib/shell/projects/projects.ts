@@ -4,7 +4,7 @@
  */
 
 import type { ProjectRecord, RepositoryCheckout } from '../../tauriSource.ts';
-import { parseRemoteWorkspacePath, remoteWorkspacePath } from '../../workspacePaths.ts';
+import { parseRemoteWorkspacePath, remoteWorkspacePath, runningSessionFolder } from '../../workspacePaths.ts';
 import { formatAge } from '../relativeTime.ts';
 
 /**
@@ -137,10 +137,7 @@ export function sessionWorkingIn<S extends { cwd: string; executionEnvironment: 
 ): S | null {
   const target = trimSlash(folder);
   return sessions.find((session) => {
-    if (session.state === 'exited' || ['suspended', 'closed', 'failed'].includes(session.runtimeState ?? '')) return false;
-    const remote = session.executionEnvironment === 'remote';
-    if (remote && (!session.remoteProfileId || !session.cwd.startsWith('/'))) return false;
-    const cwd = trimSlash(remote ? remoteWorkspacePath(session.remoteProfileId!, session.cwd) : session.cwd);
-    return cwd === target || cwd.startsWith(`${target}/`);
+    const cwd = runningSessionFolder(session);
+    return cwd !== null && (cwd === target || cwd.startsWith(`${target}/`));
   }) ?? null;
 }

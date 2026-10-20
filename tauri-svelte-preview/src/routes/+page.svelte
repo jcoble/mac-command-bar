@@ -760,7 +760,7 @@
 		<div class="pane-body" class:showing={paneShowing && topTabs.activeKind === "editor"}>
 			<EditorPanel
 				bind:this={editorPanel}
-				ownedId={selection.activeOwnedId}
+				ownedId={selection.activeOwnedId} sessionRoot={selection.durableSessionRoot}
 				showing={paneShowing && topTabs.activeKind === "editor"}
 				rootAvailable={selection.controlledEditorRootAvailable}
 				onCloseAllEditors={() => selection.editorSessions.clearActiveEditors()}

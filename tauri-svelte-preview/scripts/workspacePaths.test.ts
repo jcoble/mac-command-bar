@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mapWorkspaceSnapshotPaths, parseRemoteWorkspacePath, qualifyWorkspaceResult, remoteWorkspacePath, remoteWorkspaceRequest, sessionWorkspaceRoot, workspaceChangePath } from '../src/lib/workspacePaths.ts';
+import { assertSaveAllowed, mapWorkspaceSnapshotPaths, parseRemoteWorkspacePath, qualifyWorkspaceResult, remoteWorkspacePath, remoteWorkspaceRequest, sessionWorkspaceRoot, workspaceChangePath } from '../src/lib/workspacePaths.ts';
 
 test('a workspace keeps its machine even when another session is selected', () => {
   const first = remoteWorkspacePath('workbox', '/home/me/project/a.ts');
@@ -104,4 +104,18 @@ test('hosted PR results keep their machine for follow-up reads and writes', () =
   assert.deepEqual(qualifyWorkspaceResult({ items: [{ localRoot: '/home/me/repo', url: 'https://github.com/o/r/pull/1' }] }, 'workbox'), {
     items: [{ localRoot: 'assembly-remote://workbox/home/me/repo', url: 'https://github.com/o/r/pull/1' }]
   });
+});
+test('a save outside the session folder is refused while a running session works where the file is', () => {
+  const session = (cwd: string, runtimeState: string, title = 'Fix login', remoteProfileId: string | null = null) =>
+    ({ cwd, runtimeState, state: 'live', title, executionEnvironment: remoteProfileId ? 'remote' : 'local', remoteProfileId });
+  const other = session('/work/other', 'working');
+  assert.throws(() => assertSaveAllowed('/work/other/a.ts', '/work/mine', [other]), { message: '"Fix login" is working in this folder, so this file can\'t be saved here.' });
+  // Allowed: in the session's own folder, while the other session is suspended, or for a folder nobody works in.
+  assert.doesNotThrow(() => assertSaveAllowed('/work/mine/a.ts', '/work/mine', [session('/work/mine', 'working')]));
+  assert.doesNotThrow(() => assertSaveAllowed('/work/other/a.ts', '/work/mine', [session('/work/other', 'suspended')]));
+  assert.doesNotThrow(() => assertSaveAllowed('/work/other-2/a.ts', '/work/mine', [other]));
+  // Machines count: the same folder on Workbox Test does not block the Mac's copy.
+  const remote = session('/work/other', 'working', '', 'workbox-test');
+  assert.doesNotThrow(() => assertSaveAllowed('/work/other/a.ts', '/work/mine', [remote]));
+  assert.throws(() => assertSaveAllowed('assembly-remote://workbox-test/work/other/a.ts', '/work/mine', [remote]), /Another session is working/);
 });

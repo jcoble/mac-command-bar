@@ -37,6 +37,22 @@ export function sessionWorkspaceRoot(
   return path && session.remoteProfileId ? remoteWorkspacePath(session.remoteProfileId, path) : '';
 }
 
+type WorkingSession = { cwd: string; executionEnvironment: string; remoteProfileId?: string | null; state: string; runtimeState?: string; title?: string | null };
+/** A running session's working folder on its machine, without a trailing slash; null when it is not running. */
+export function runningSessionFolder(session: WorkingSession): string | null {
+  if (session.state === 'exited' || ['suspended', 'closed', 'failed'].includes(session.runtimeState ?? '')) return null;
+  const remote = session.executionEnvironment === 'remote';
+  if (remote && (!session.remoteProfileId || !session.cwd.startsWith('/'))) return null;
+  return (remote ? remoteWorkspacePath(session.remoteProfileId!, session.cwd) : session.cwd).replace(/\/+$/, '');
+}
+/** Throws when `path` is outside `sessionRoot` and a running session works in the folder that holds it. */
+export function assertSaveAllowed(path: string, sessionRoot: string, sessions: readonly WorkingSession[]): void {
+  const within = (folder: string): boolean => folder !== '' && (path === folder || path.startsWith(`${folder}/`));
+  if (within(sessionRoot.replace(/\/+$/, ''))) return;
+  const holder = sessions.find((session) => within(runningSessionFolder(session) ?? ''));
+  if (holder) throw new Error(`${holder.title ? `"${holder.title}"` : 'Another session'} is working in this folder, so this file can't be saved here.`);
+}
+
 const pathKeys = new Set(['root', 'path', 'directory', 'source', 'target', 'roots', 'paths', 'projectRoot', 'projectPath', 'worktreePath', 'checkoutPath', 'gitRoot', 'localRoot', 'projectFilter']);
 /** Hosted PR commands wrap their root in one request object. */
 const nestedRequestCommands = new Set(['list_github_pull_requests', 'read_github_pull_request_file', 'submit_github_pull_request_review', 'reply_github_pull_request_comment', 'comment_github_pull_request', 'merge_github_pull_request']);
