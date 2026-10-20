@@ -19,6 +19,8 @@
   import Plus from '@lucide/svelte/icons/plus';
   import Settings2 from '@lucide/svelte/icons/settings-2';
   import { onMount } from 'svelte';
+  import { exists } from '$lib/workspaceFs.ts';
+  import { remoteWorkspacePath } from '$lib/workspacePaths.ts';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import * as Command from '$lib/components/ui/command/index.js';
@@ -57,11 +59,31 @@
   let adding = $state(false);
   let pathField = $state<HTMLInputElement | null>(null);
   let listSequence = 0;
+  let checkedFolder = $state<{ path: string; machine: string; exists: boolean } | null>(null);
 
   const machineLabel = $derived(projectMachineLabel(machine, profiles));
-  const canAdd = $derived(Boolean(path.trim()) && !adding);
+  const pathChecked = $derived(checkedFolder?.path === path.trim() && checkedFolder?.machine === machine);
+  const canAdd = $derived(Boolean(path.trim()) && !adding && (Boolean(chooseFolder) || pathChecked));
   /** The path names a folder that is not there yet: Enter and the button create it. Choosing a folder creates none. */
-  const newFolder = $derived(!chooseFolder && isNewFolderPath(path, listing));
+  const newFolder = $derived(!chooseFolder && pathChecked && isNewFolderPath(path, listing, checkedFolder!.exists));
+
+  $effect(() => {
+    const requested = path.trim();
+    const owner = machine;
+    const stop = new AbortController();
+    checkedFolder = null;
+    if (requested && !chooseFolder) void checkFolder(owner, requested, stop.signal);
+    return () => stop.abort();
+  });
+
+  async function checkFolder(owner: string, requested: string, signal: AbortSignal): Promise<void> {
+    try {
+      const found = await exists(owner === 'local' ? requested : remoteWorkspacePath(owner, requested));
+      if (!signal.aborted) checkedFolder = { path: requested, machine: owner, exists: found };
+    } catch (error) {
+      if (!signal.aborted) message = describe(error);
+    }
+  }
 
   onMount(() => {
     if (step === 'folder') void startOnFolder();

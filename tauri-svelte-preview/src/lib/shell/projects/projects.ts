@@ -85,18 +85,19 @@ export function projectMachineLabel(
 
 /**
  * Whether the Add project path names a folder to create: its parent is the
- * listed folder and nothing of that name is listed there.
+ * listed folder and a direct check confirmed the path does not exist.
  */
 export function isNewFolderPath(
   path: string,
-  listing: { path: string; directories: readonly string[] } | null
+  listing: { path: string; directories: readonly string[] } | null,
+  pathExists: boolean
 ): boolean {
   const trimmed = path.trim().replace(/\/+$/, '');
   const slash = trimmed.lastIndexOf('/');
   const name = trimmed.slice(slash + 1);
   const parent = trimmed.slice(0, slash) || '/';
   return Boolean(listing) && slash >= 0 && parent === listing!.path
-    && name !== '' && name !== '.' && name !== '..' && !listing!.directories.includes(name);
+    && name !== '' && name !== '.' && name !== '..' && !pathExists;
 }
 
 /** A folder the right panel can show instead of the session's: a project's root or one of its other worktrees. */
