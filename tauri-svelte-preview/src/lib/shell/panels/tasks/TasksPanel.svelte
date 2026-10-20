@@ -206,7 +206,7 @@
       if (saved) {
         filters = saved.filters;
         searchDraft = search = saved.search;
-        projectFilter = saved.projectFilter;
+        projectFilter = projectToShow(sessionProject, saved.projectFilter);
         sortBy = saved.sortBy;
         sortDirection = saved.sortDirection;
       }
