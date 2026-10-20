@@ -4275,7 +4275,7 @@ impl AgentRuntimeManager {
             }
             return Err(error);
         }
-
+        if let Err(error) = super::history::follow_imported_length(&self.store, owned_id) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
         let mut sessions = self
             .sessions
             .lock()

@@ -26,13 +26,27 @@ fn saved_length(fixture: &FixtureManager) -> Option<u64> {
 async fn a_finished_turn_moves_the_saved_transcript_length_along() {
     let fixture = fixture_manager_with_acp_session("import_length_turn").await;
     let (transcript, grown) = imported_and_grown(&fixture);
+    let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+    fixture.manager.set_emitter(Arc::new(move |event: AgentConversationEvent| { let _ = sender.send(event.payload); }));
     fixture.manager.prompt(&fixture.owned_id, fixture.generation, test_prompt("hello")).await.expect("prompt starts");
-    wait_until(|| saved_length(&fixture) == Some(grown)).await;
+    // The turn's end is emitted after the length is saved.
+    while let Some(payload) = events.recv().await {
+        if matches!(payload, AgentConversationPayload::Turn { state: crate::agent_conversation::protocol::TurnState::Completed, .. }) { break; }
+    }
+    assert_eq!(saved_length(&fixture), Some(grown));
 
     let native = fixture.manager.snapshot(&fixture.owned_id).unwrap().unwrap().connection.native_session_id.unwrap();
     let imported = fixture.manager.begin_import_transcript_session(AgentConversationProvider::Codex, &native,
         &transcript, fixture.root.to_str().unwrap(), None, None).await;
     assert_eq!(imported, Ok((fixture.owned_id.clone(), false)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn warming_moves_the_saved_transcript_length_along() {
+    let fixture = fixture_manager_with_acp_session("suspend_runtime").await;
+    let (_, grown) = imported_and_grown(&fixture);
+    fixture.manager.warm_conversation_config(&fixture.owned_id, fixture.generation).await.expect("warm config");
+    assert_eq!(saved_length(&fixture), Some(grown));
 }
 
 #[tokio::test(flavor = "current_thread")]
