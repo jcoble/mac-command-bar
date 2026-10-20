@@ -4,6 +4,7 @@ import {
   saveLayout,
   clearLayout,
   gridPanelIds,
+  storedColumnWidth,
   paneviewPanelIds,
   panelSetMatches,
   CENTER_LAYOUT_KEY,
@@ -86,6 +87,43 @@ function memoryStorage(initial = {}) {
   };
   assert.deepEqual([...gridPanelIds(grid)].sort(), ['center', 'context', 'dock', 'rail']);
   assert.deepEqual([...gridPanelIds({})], [], 'malformed -> empty, no throw');
+}
+
+// storedColumnWidth reads the width a top-level column was saved at. Restoring
+// scales every column by the new grid width over the saved one, so the saved
+// number itself is what the sessions column must be given back (TSK-1544).
+{
+  const grid = {
+    grid: {
+      root: {
+        type: 'branch',
+        size: 900,
+        data: [
+          { type: 'leaf', size: 320, data: { id: 'sessions' } },
+          {
+            type: 'branch',
+            size: 680,
+            data: [
+              { type: 'leaf', size: 720, data: { id: 'center' } },
+              { type: 'leaf', size: 180, data: { id: 'dock' } }
+            ]
+          }
+        ]
+      },
+      width: 1000,
+      height: 900,
+      orientation: 'HORIZONTAL'
+    }
+  };
+  assert.equal(storedColumnWidth(grid, 'sessions'), 320, 'the saved width, not a scaled one');
+  assert.equal(storedColumnWidth(grid, 'center'), null, 'a leaf inside a column has no column width');
+  assert.equal(storedColumnWidth(grid, 'tools'), null, 'a missing column -> null');
+  assert.equal(storedColumnWidth({}, 'sessions'), null, 'malformed -> null, no throw');
+  assert.equal(
+    storedColumnWidth({ grid: { root: { type: 'branch', data: [{ type: 'leaf', data: { id: 'sessions' } }] } } }, 'sessions'),
+    null,
+    'a leaf with no size -> null'
+  );
 }
 
 // paneviewPanelIds reads SerializedPaneview.views[].data.id.

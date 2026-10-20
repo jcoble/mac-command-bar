@@ -531,6 +531,7 @@ mod tests {
         false
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn reaper_kills_marked_group_with_dead_owner() {
         let current = current_identity();
@@ -539,7 +540,6 @@ mod tests {
             start_time_micros: current.start_time_micros.saturating_sub(1),
         };
         let mut group = TestGroup::spawn(Some(("reaper-dead-owner", &dead_owner)));
-
         let reaped =
             reap_candidate_processes(&[group.pid()], &current, &HashSet::new(), TEST_GRACE);
 
@@ -667,12 +667,12 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn macos_process_marker_readback_preserves_provider_scope() {
         let current = current_identity();
         let group = TestGroup::spawn(Some(("provider:codex", &current)));
         let marker = read_adapter_marker(group.pid()).expect("read back adapter marker");
-
         assert_eq!(marker.session_id, "provider:codex");
         assert_eq!(marker.owner, Some(current));
     }
