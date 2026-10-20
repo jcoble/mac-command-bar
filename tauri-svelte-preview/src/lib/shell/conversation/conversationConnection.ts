@@ -17,7 +17,7 @@ import {
   subscribeSelectedConversation
 } from './conversationService.ts';
 import {
-  conversationChunksFromEvent,
+  conversationChunksFromEvent, conversationHasRunningTool,
   conversationMessagesAfterCustom,
   conversationMessagesFromEvents,
   conversationSnapshotChunks,
@@ -79,7 +79,7 @@ interface ActiveConversation {
   beforeCursor?: number;
   afterCursor?: number;
   latestWindowSize?: number; // Messages the latest page delivered; returning to the latest trims back to them.
-  replaceHistory?: boolean; // Jump to latest replaces the loaded history, unless a turn runs: its tools may sit above the latest page.
+  replaceHistory?: boolean; // Jump to latest replaces the loaded history, unless a tool still runs above the latest page.
   pendingSend: PendingSend | null;
   pendingAdmission: PendingAdmission | null;
   messageBytes: Map<string, number>;
@@ -372,7 +372,7 @@ function snapshotChunks(
   const pageMessages = messagesFromPage(snapshot.page);
   const current = getConversationSession(selection.historyOwnedId);
   selection.latestWindowSize = pageMessages.length;
-  const prefixEnd = selection.replaceHistory && !snapshot.activeTurnId ? -1 : selection.chat.messages.findIndex((message) => message.id === pageMessages[0]?.id);
+  const prefixEnd = selection.replaceHistory && !snapshot.activeTurnId && !conversationHasRunningTool(selection.chat.messages) ? -1 : selection.chat.messages.findIndex((message) => message.id === pageMessages[0]?.id);
   selection.replaceHistory = false;
   const prefix = prefixEnd > 0 ? selection.chat.messages.slice(0, prefixEnd) : [];
   let messages = [...prefix, ...pageMessages];
@@ -959,16 +959,16 @@ export async function trimSelectedConversationToLatest(historyOwnedId?: string):
   const selection = historyOwnedId && historyOwnedId !== active?.historyOwnedId ? childActive : active;
   const current = selection && getConversationSession(selection.historyOwnedId);
   const keep = selection?.latestWindowSize ?? 0;
-  // Nothing moves while a page, a send, a turn, a restore, a jump or a pending decision is in flight.
+  // Nothing moves while a page, a send, a turn, a running tool, a restore, a jump or a pending decision is in flight.
   if (!selection || !current || (historyOwnedId && selection.historyOwnedId !== historyOwnedId) || !selection.push
     || !keep || selection.chat.messages.length <= keep || selection.resolveReady || selection.pendingSend || current.activeTurnId
     || selection.pendingAdmission || selection.anchorAdmission || current.selectedLoadingOlder || current.selectedLoadingNewer
-    || Object.keys(current.pendingApprovals).length || Object.keys(current.pendingInputs).length) return;
+    || Object.keys(current.pendingApprovals).length || Object.keys(current.pendingInputs).length
+    || conversationHasRunningTool(selection.chat.messages)) return;
   // The older-page lock holds until the chat takes the trimmed snapshot, so no page merges into the old list.
   current.selectedHasBefore = true;
   setSelectedConversationPageLoading(selection.historyOwnedId, 'older', true);
-  resetReady(selection);
-  selection.push({ trimTo: keep });
+  resetReady(selection); selection.push({ trimTo: keep });
   selection.push({ type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: selection.historyOwnedId } as StreamChunk);
   await ignoreLeftSelection(selection.ready);
   if (isCurrent(selection)) setSelectedConversationPageLoading(selection.historyOwnedId, 'older', false);

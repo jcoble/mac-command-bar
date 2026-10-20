@@ -38,6 +38,8 @@ try {
 
 const PAGE = 10;
 const WITH_ATTACHMENT = new Set([12, 25]);
+/** A message number that is a background command still running, or 0 for none. */
+let runningToolAt = 0;
 
 /** Messages first..last, one user message per turn; 12 and 25 carry a screenshot. */
 function page(first: number, last: number, hasBefore: boolean) {
@@ -46,8 +48,10 @@ function page(first: number, last: number, hasBefore: boolean) {
     items: numbers.map((n) => ({ itemId: `u${n}`, stableId: `u${n}`, firstTimestampMs: n,
       firstSequence: n, lastSequence: n, positionKnown: true, prefixComplete: true })),
     events: numbers.map((n) => ({ ownedId: 'chat', provider: 'codex', generation: 1, sequence: n, timestampMs: n,
-      payload: { kind: 'userMessage', itemId: `u${n}`, turnId: `t${n}`, text: `message ${n}`,
-        ...(WITH_ATTACHMENT.has(n) ? { attachmentIds: [`a${n}`] } : {}) } })),
+      payload: n === runningToolAt
+        ? { kind: 'tool', itemId: `u${n}`, turnId: `t${n}`, name: 'Run command', state: 'started', rawInput: { command: 'sleep' } }
+        : { kind: 'userMessage', itemId: `u${n}`, turnId: `t${n}`, text: `message ${n}`,
+          ...(WITH_ATTACHMENT.has(n) ? { attachmentIds: [`a${n}`] } : {}) } })),
     turns: numbers.map((n) => ({ turnId: `t${n}` })),
     watermark: last, transferBytes: 0, oversized: false, hasBefore, hasAfter: false,
     hasEarlierTranscript: false, beforeCursor: first, afterCursor: last
@@ -189,4 +193,20 @@ test('jump_to_latest_replaces_history_unless_a_turn_runs', async () => {
   const idle = await openAndPageTwice('jump-idle');
   await idle.api.jumpSelectedConversationToLatest('jump-idle');
   assert.deepEqual(ids(idle.chat.messages), range(21, 30, 'u'), 'otherwise the latest page replaces it');
+});
+
+test('background_command_still_running_keeps_the_history', async () => {
+  // A command can outlive its turn; with no turn running, its row above the latest page must stay.
+  runningToolAt = 15;
+  try {
+    const trim = await openAndPageTwice('background-trim');
+    await trim.api.trimSelectedConversationToLatest();
+    await settle();
+    assert.deepEqual(ids(trim.chat.messages), range(1, 30, 'u'), 'the trim waits for the command');
+    const jump = await openAndPageTwice('background-jump');
+    await jump.api.jumpSelectedConversationToLatest('background-jump');
+    assert.deepEqual(ids(jump.chat.messages), range(1, 30, 'u'), 'the jump keeps the earlier pages');
+  } finally {
+    runningToolAt = 0;
+  }
 });
