@@ -79,10 +79,7 @@
   import { canonicalPath } from '$lib/shell/files/explorer/explorerStore.svelte';
   import { getConversationSession } from '$lib/shell/conversation/conversationStore.svelte';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
-  import type {
-    CheckoutScope,
-    SessionSourceControlWorkspace
-  } from '$lib/shell/sessionWorkspaces';
+  import type { SessionSourceControlWorkspace } from '$lib/shell/sessionWorkspaces';
   import { validateProjectRootFromTauri, type ProjectGitFileStatus } from '$lib/tauriSource';
   import { cn } from '$lib/utils';
 
@@ -111,8 +108,6 @@
     ownedId: string | null;
     /** False when the active session's checkout has disappeared. */
     rootAvailable?: boolean;
-    /** Route-owned checkout roots and generations for this source-control read. */
-    checkoutScope?: CheckoutScope;
     /** The working-copy service. The shell's singleton unless a test says otherwise. */
     service?: GitService;
     /** The per-commit file service, likewise. */
@@ -126,13 +121,14 @@
     onWorkspaceStateChange?(ownedId: string | null, state: SessionSourceControlWorkspace): void;
     /** Applies a selected linked worktree as the active session checkout. */
     onUseSessionCheckout?(root: string): void | Promise<void>;
+    /** Set while another session works in the folder shown: nothing here may change it. */
+    readOnlyReason?: string | null;
   }
   let {
     visible,
     root,
     ownedId,
     rootAvailable = true,
-    checkoutScope,
     service = defaultService,
     commitFiles = defaultCommitFilesService,
     commitFilesState = defaultCommitFilesState,
@@ -141,7 +137,8 @@
     onInspectionRootChange,
     workspaceState,
     onWorkspaceStateChange,
-    onUseSessionCheckout
+    onUseSessionCheckout,
+    readOnlyReason = null
   }: Props = $props();
   const workspaceOwnedId = untrack(() => ownedId);
   const initialWorkspaceState = untrack(() => workspaceState);
@@ -291,11 +288,7 @@
   $effect(() => {
     const becameVisible = visible && !wasVisible;
     wasVisible = visible;
-    const scopedRoot = checkoutScope?.gitInspectionRoot ?? null;
-    const target = scopedRoot && canonicalPath(scopedRoot) === canonicalPath(scopeRoot)
-      ? scopedRoot
-      : scopeRoot === '' ? sessionRoot : scopeRoot;
-    const readableTarget = rootAvailable || checkoutScope?.gitReadOnly === true ? target : '';
+    const readableTarget = rootAvailable ? (scopeRoot === '' ? sessionRoot : scopeRoot) : '';
     if (!visible || readableTarget === '') {
       releaseHistorySurface();
       return;
@@ -338,13 +331,11 @@
   let amend = $state(false);
 
   /** Can this panel change what it is looking at? Both answers have a sentence. */
-  const canChange = $derived(rootAvailable && canWrite && !readOnlyScope);
+  const canChange = $derived(rootAvailable && canWrite && !readOnlyScope && !readOnlyReason);
   const cannotChangeReason = $derived(
     !rootAvailable
       ? 'Checkout/Worktree deleted.'
-      : readOnlyScope
-        ? READ_ONLY_SCOPE_MESSAGE
-        : READ_ONLY_IN_BROWSER_MESSAGE
+      : readOnlyReason || (readOnlyScope ? READ_ONLY_SCOPE_MESSAGE : READ_ONLY_IN_BROWSER_MESSAGE)
   );
 
   /** A plain folder (never a bare repository) the panel may change can be made a repository. */

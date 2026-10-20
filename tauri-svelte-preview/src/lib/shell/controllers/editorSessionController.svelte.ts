@@ -87,7 +87,7 @@ export class EditorSessionController {
 			if (rootAvailable || !remote || message !== `Remote machine ${remote.profileId} is not connected`) throw error;
 			return null;
 		}
-		const snapshot = remote ? mapWorkspaceSnapshotPaths(stored, remote.profileId) as SessionWorkspaceSnapshot | null : stored;
+		const snapshot = mapWorkspaceSnapshotPaths(stored, remote?.profileId ?? null, stored?.viewedProjectRoot ?? '') as SessionWorkspaceSnapshot | null;
 		if (stopSignal.aborted) return null;
 		this.activeOwnedId = ownedId;
 		this.activeSnapshot = snapshot;

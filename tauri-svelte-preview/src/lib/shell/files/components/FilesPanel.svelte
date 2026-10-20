@@ -83,6 +83,8 @@
 		onInspectionRootChange?(root: string | null): void;
 		checkoutDiscoveryRoots?: readonly string[];
 		onUseSessionCheckout?(root: string): void | Promise<void>;
+		/** Set while another session works in the folder shown: nothing here may change it. */
+		readOnlyReason?: string | null;
 		/** Raised by the page (the `+` menu's "Open file…") to focus the filter. */
 		filterFocusRequest?: number;
 	}
@@ -120,6 +122,7 @@
 		onInspectionRootChange,
 		checkoutDiscoveryRoots = [],
 		onUseSessionCheckout,
+		readOnlyReason = null,
 		filterFocusRequest = 0,
 	}: Props = $props();
 
@@ -180,13 +183,9 @@
 
 	function canMutateFileTree(): boolean {
 		const sessionRoot = canonicalPath(root);
-		const listedRoot = canonicalPath(explorer.root ?? root);
-		return isNativeTauriRuntime() && Boolean(ownedId) && sessionRoot !== "" && listedRoot === sessionRoot;
+		return isNativeTauriRuntime() && Boolean(ownedId) && !readOnlyReason && sessionRoot !== "" && canonicalPath(explorer.root ?? root) === sessionRoot;
 	}
-
-	function fileTreeMutationReason(): string {
-		return isNativeTauriRuntime() ? READ_ONLY_SCOPE_MESSAGE : READ_ONLY_RUNTIME_MESSAGE;
-	}
+	const fileTreeMutationReason = (): string => readOnlyReason || (isNativeTauriRuntime() ? READ_ONLY_SCOPE_MESSAGE : READ_ONLY_RUNTIME_MESSAGE);
 
 	const loadedNodes = $derived(explorerNodes());
 	const sessionRoot = $derived(root.trim());
@@ -200,7 +199,7 @@
 		refreshChangedPath(path);
 	});
 	const readOnlyInspection = $derived(
-		Boolean(inspectedRoot) && canonicalPath(inspectedRoot) !== canonicalPath(sessionRoot),
+		Boolean(readOnlyReason) || (Boolean(inspectedRoot) && canonicalPath(inspectedRoot) !== canonicalPath(sessionRoot)),
 	);
 	const scopeOptions = $derived(
 		sessionRoot === ""

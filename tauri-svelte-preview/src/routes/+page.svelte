@@ -661,12 +661,12 @@
 		filesInspectionRoot={selection.activeWorkspaceSnapshot?.filesInspectionRoot ?? null}
 		sourceControlInspectionRoot={selection.activeWorkspaceSnapshot?.sourceControlInspectionRoot ?? null}
 		onFilesInspectionRootChange={(root) => selection.rememberWorkspaceState({ filesInspectionRoot: root })}
-		onSourceControlInspectionRootChange={(root) =>
-			selection.rememberWorkspaceState({ sourceControlInspectionRoot: root })}
+		onSourceControlInspectionRootChange={(root) => selection.rememberWorkspaceState({ sourceControlInspectionRoot: root })}
 		sourceControlWorkspace={selection.activeWorkspaceSnapshot?.sourceControl}
-		onSourceControlWorkspaceChange={(ownedId, sourceControl) => {
-			if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ sourceControl });
-		}}
+		onSourceControlWorkspaceChange={(ownedId, sourceControl) => { if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ sourceControl }); }}
+		viewedRoot={selection.activeWorkspaceSnapshot?.viewedProjectRoot ?? null}
+		onViewedRootChange={(root) => { if (selection.activeOwnedId) selection.persistWorkspaceState(selection.activeOwnedId, { viewedProjectRoot: root }); }}
+		onNewSessionHere={openNewSession}
 		checkoutDiscoveryRoots={selection.filesProjectionRoot ? [selection.filesProjectionRoot] : []}
 		onUseSessionCheckout={selection.controlledSession?.canChangeCheckout && selection.controlledSession.origin === "app"
 			? async (root) => {

@@ -3,7 +3,8 @@
  * The records themselves live in SQLite; see `projectRegistry.svelte.ts`.
  */
 
-import type { ProjectRecord } from '../../tauriSource.ts';
+import type { ProjectRecord, RepositoryCheckout } from '../../tauriSource.ts';
+import { parseRemoteWorkspacePath, remoteWorkspacePath } from '../../workspacePaths.ts';
 import { formatAge } from '../relativeTime.ts';
 
 /**
@@ -96,4 +97,50 @@ export function isNewFolderPath(
   const parent = trimmed.slice(0, slash) || '/';
   return Boolean(listing) && slash >= 0 && parent === listing!.path
     && name !== '' && name !== '.' && name !== '..' && !listing!.directories.includes(name);
+}
+
+/** A folder the right panel can show instead of the session's: a project's root or one of its other worktrees. */
+export type OtherProjectOption = { projectId: string; path: string; label: string; detail: string; worktree: boolean };
+
+const trimSlash = (path: string): string => path.replace(/\/+$/, '');
+
+/**
+ * Projects on this Mac, then on each connected saved machine, each followed by its other worktrees.
+ * Paths carry their machine; `checkouts` is keyed by that machine-qualified project root.
+ */
+export function otherProjectGroups(
+  projects: readonly ProjectRecord[],
+  profiles: readonly { id: string; name: string }[],
+  connections: Readonly<Record<string, string>>,
+  checkouts: Readonly<Record<string, readonly RepositoryCheckout[]>>
+): { machine: string; label: string; options: OtherProjectOption[] }[] {
+  const machines = ['local', ...profiles.filter((profile) => connections[profile.id] === 'connected').map((profile) => profile.id)];
+  return machines.map((machine) => {
+    const options = projects.filter((project) => project.machine === machine).flatMap((project) => {
+      const root = machine === 'local' ? project.rootPath : remoteWorkspacePath(machine, project.rootPath);
+      const worktrees = (checkouts[root] ?? []).filter((checkout) => trimSlash(checkout.path) !== trimSlash(root)).map((checkout) => {
+        const native = parseRemoteWorkspacePath(checkout.path)?.path ?? checkout.path;
+        const folder = trimSlash(native).split('/').at(-1) ?? native;
+        const branch = checkout.branch.trim();
+        return { projectId: project.id, path: checkout.path, label: branch ? `${folder} — ${branch}` : folder, detail: shortProjectPath(native), worktree: true };
+      });
+      return [{ projectId: project.id, path: root, label: project.title, detail: shortProjectPath(project.rootPath), worktree: false }, ...worktrees];
+    });
+    return { machine, label: projectMachineLabel(machine, profiles), options };
+  }).filter((group) => group.options.length > 0);
+}
+
+/** The running session whose working folder is `folder` or inside it, on the same machine; null when there is none. */
+export function sessionWorkingIn<S extends { cwd: string; executionEnvironment: string; remoteProfileId?: string | null; state: string; runtimeState?: string }>(
+  folder: string,
+  sessions: readonly S[]
+): S | null {
+  const target = trimSlash(folder);
+  return sessions.find((session) => {
+    if (session.state === 'exited' || ['suspended', 'closed', 'failed'].includes(session.runtimeState ?? '')) return false;
+    const remote = session.executionEnvironment === 'remote';
+    if (remote && (!session.remoteProfileId || !session.cwd.startsWith('/'))) return false;
+    const cwd = trimSlash(remote ? remoteWorkspacePath(session.remoteProfileId!, session.cwd) : session.cwd);
+    return cwd === target || cwd.startsWith(`${target}/`);
+  }) ?? null;
 }
