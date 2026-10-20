@@ -1128,7 +1128,7 @@ pub async fn begin_agent_conversation_import(
     if let Some(profile) = remote_profile_id {
         return command_result(remote.begin_import(profile, provider, native_session_id, transcript_path, cwd, title).await);
     }
-    command_result(manager.begin_import_transcript_session(provider, &native_session_id, std::path::Path::new(&transcript_path), &cwd, title).map(|(owned_id, _)| owned_id))
+    command_result(manager.begin_import_transcript_session(provider, &native_session_id, std::path::Path::new(&transcript_path), &cwd, title).await.map(|(owned_id, _)| owned_id))
 }
 
 #[tauri::command]

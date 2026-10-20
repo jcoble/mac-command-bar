@@ -23,7 +23,7 @@
     "tauri-svelte-preview/src-tauri/src/agent_conversation/remote/install.rs": 750,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/remote/mod.rs": 5830,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/history/transcript/mod.rs": 921,
-    "tauri-svelte-preview/src-tauri/src/agent_conversation/history/mod.rs": 1854,
+    "tauri-svelte-preview/src-tauri/src/agent_conversation/history/mod.rs": 1851,
     "tauri-svelte-preview/src-tauri/src/browser/mod.rs": 2976,
     "tauri-svelte-preview/src-tauri/src/claude_quota.rs": 1350,
     "tauri-svelte-preview/src-tauri/src/evidence.rs": 974,

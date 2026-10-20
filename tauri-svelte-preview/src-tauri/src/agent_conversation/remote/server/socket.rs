@@ -88,13 +88,12 @@ pub(in crate::agent_conversation::remote) async fn stream_history_download(state
 }
 
 /// A top-level transcript import that has not reached the start of its file: the file's size and where reading stopped.
+/// A transcript that is gone has nothing more to give, so its saved rows download as any others do.
 fn unread_transcript(store: &SessionStore, owned_id: &str) -> Result<Option<(u64, u64)>, String> {
     let Some(session) = store.get_session(owned_id).map_err(|e| e.to_string())? else { return Ok(None); };
     match crate::agent_conversation::history::optional_import_cursor(&session.extra_json)? {
-        Some(cursor) if !cursor.reached_start && cursor.parent_owned_id.is_none() => {
-            let length = std::fs::metadata(&cursor.transcript_path).map_err(|e| format!("Could not inspect transcript: {e}"))?.len();
-            Ok(Some((length, cursor.cutoff_offset)))
-        }
+        Some(cursor) if !cursor.reached_start && cursor.parent_owned_id.is_none() => Ok(std::fs::metadata(&cursor.transcript_path)
+            .ok().map(|metadata| (metadata.len(), cursor.cutoff_offset))),
         _ => Ok(None),
     }
 }
@@ -402,7 +401,7 @@ mod tests {
         let length = std::fs::metadata(&path).unwrap().len();
         let manager = manager(&directory);
         let (owned_id, _) = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
-            &path, &directory.to_string_lossy(), None).unwrap();
+            &path, &directory.to_string_lossy(), None).await.unwrap();
         manager.finish_import_transcript_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES,
             crate::agent_conversation::IMPORT_MAX_RECORDS).unwrap();
         let store = manager.store_handle();
@@ -430,7 +429,7 @@ mod tests {
         let path = transcript(&directory, 3, 100);
         let manager = manager(&directory);
         let (owned_id, _) = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
-            &path, &directory.to_string_lossy(), None).unwrap();
+            &path, &directory.to_string_lossy(), None).await.unwrap();
         manager.finish_import_transcript_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES,
             crate::agent_conversation::IMPORT_MAX_RECORDS).unwrap();
         // Reading back to the start leaves nothing to import, so the download is sized by its saved rows.
@@ -471,13 +470,13 @@ mod tests {
     }
 
     /// Imports `path` again over the wire and downloads it: the session, whether it was rebuilt, its sequences and each row's text, newest first.
-    async fn import_again(manager: AgentRuntimeManager, directory: &std::path::Path, path: &std::path::Path) -> (String, bool, Vec<i64>, Vec<String>) {
-        let RemoteResponse::Imported { owned_id, rebuilt } = super::super::execute_remote_command(&manager, directory,
+    async fn import_again(manager: &AgentRuntimeManager, directory: &std::path::Path, path: &std::path::Path) -> (String, bool, Vec<i64>, Vec<String>) {
+        let RemoteResponse::Imported { owned_id, rebuilt } = super::super::execute_remote_command(manager, directory,
             RemoteCommand::BeginImport { provider: AgentConversationProvider::Codex, native_session_id: "native".into(),
                 transcript_path: path.to_string_lossy().into(), cwd: directory.to_string_lossy().into(), title: None, project_id: None },
             Arc::new(|_| {})).await.unwrap() else { panic!("wrong begin response") };
         let store = manager.store_handle();
-        let state = server_state(manager, directory.to_path_buf(), Arc::from("test")).unwrap();
+        let state = server_state(manager.clone(), directory.to_path_buf(), Arc::from("test")).unwrap();
         let (_, _, _, sequences) = download(state, owned_id.clone()).await;
         let (low, high) = (*sequences.iter().min().unwrap(), *sequences.iter().max().unwrap());
         let texts = store.history_download_rows(&owned_id, low, high, None, 1 << 30, 0).unwrap().events.iter()
@@ -485,21 +484,27 @@ mod tests {
         (owned_id, rebuilt, sequences, texts)
     }
 
+    /// A new directory holding a transcript of `count` turns of `text_bytes` each, and a manager that has imported its newest page.
+    async fn imported(count: usize, text_bytes: usize) -> (std::path::PathBuf, std::path::PathBuf, AgentRuntimeManager, String) {
+        let directory = std::env::temp_dir().join(format!("import-again-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = transcript(&directory, count, text_bytes);
+        let manager = manager(&directory);
+        let (owned_id, _) = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
+            &path, &directory.to_string_lossy(), None).await.unwrap();
+        manager.finish_import_transcript_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES,
+            crate::agent_conversation::IMPORT_MAX_RECORDS).unwrap();
+        (directory, path, manager, owned_id)
+    }
+
     #[tokio::test]
     async fn importing_again_brings_in_turns_taken_outside_assembly_once() {
         use mcb_core::session_store::EventRow;
-        const BYTES: u64 = crate::agent_conversation::IMPORT_MAX_BYTES;
-        const RECORDS: usize = crate::agent_conversation::IMPORT_MAX_RECORDS;
         for (started_here, cli_turns) in [(false, true), (true, true), (true, false)] {
-            let directory = std::env::temp_dir().join(format!("import-again-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir(&directory).unwrap();
-            let path = transcript(&directory, 3, 100);
-            let manager = manager(&directory);
+            let (directory, path, manager, mut owned_id) = imported(3, 100).await;
             let store = manager.store_handle();
-            let (mut owned_id, _) = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
-                &path, &directory.to_string_lossy(), None).unwrap();
-            manager.finish_import_transcript_session(&owned_id, BYTES, RECORDS).unwrap();
-            manager.extend_imported_session(&owned_id, BYTES, RECORDS).unwrap();
+            manager.extend_imported_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES,
+                crate::agent_conversation::IMPORT_MAX_RECORDS).unwrap();
             if started_here {
                 // The same three turns in a session Assembly started, which has no import cursor.
                 let rows = store.history_download_rows(&owned_id, 1, 3, None, 1 << 30, 0).unwrap().events;
@@ -513,23 +518,62 @@ mod tests {
             }
             let mut expected = vec!["old"; 3];
             if cli_turns {
+                // Taken straight after the session's last turn here, so the file's time says nothing.
                 let mut text = std::fs::read_to_string(&path).unwrap();
                 for index in 4..=5 {
                     text.push_str(&format!("{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"id\":\"item-{index}\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"cli {index}\"}}]}}}}\n"));
                 }
                 std::fs::write(&path, text).unwrap();
-                // Written well after the session's last activity, as the CLI turns were.
-                std::fs::File::options().write(true).open(&path).unwrap()
-                    .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(600)).unwrap();
                 expected = vec!["cli 5", "cli 4", "old", "old", "old"];
             }
-            let (again, rebuilt, sequences, texts) = import_again(manager, &directory, &path).await;
             let case = format!("started_here={started_here} cli_turns={cli_turns}");
-            assert_eq!((again, rebuilt), (owned_id, cli_turns), "{case}: the same session, read again only when the CLI wrote to it");
+            let (again, rebuilt, sequences, texts) = import_again(&manager, &directory, &path).await;
+            assert_eq!((again.as_str(), rebuilt), (owned_id.as_str(), true), "{case}: the same session, read again from its transcript");
             assert_eq!(texts, expected, "{case}");
             assert_eq!(sequences.len(), expected.len(), "{case}: {sequences:?}");
             assert!(sequences.windows(2).all(|pair| pair[1] == pair[0] - 1), "{case}: newest first without gaps {sequences:?}");
+            assert!(*sequences.last().unwrap() > 3, "{case}: numbered on above the old head, which live delivery has passed {sequences:?}");
+            // Nothing new since: the second import reads nothing again.
+            let (_, rebuilt_twice, sequences_twice, texts_twice) = import_again(&manager, &directory, &path).await;
+            assert_eq!((rebuilt_twice, sequences_twice, texts_twice), (false, sequences, texts), "{case}");
             std::fs::remove_dir_all(directory).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn a_partly_imported_session_saved_by_its_runtime_keeps_reading_older_pages() {
+        let (directory, path, manager, owned_id) = imported(250, 20_000).await;
+        // The runtime's own save of the row, which writes its metadata without the import cursor.
+        manager.set_workflow_session_title(&owned_id, "Named").unwrap();
+        let (again, rebuilt, sequences, _) = import_again(&manager, &directory, &path).await;
+        assert_eq!((again, rebuilt), (owned_id, false));
+        assert_eq!(sequences.len(), 250, "the older pages still came in");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn importing_again_waits_for_the_session_lifecycle() {
+        let (directory, path, manager, owned_id) = imported(3, 100).await;
+        let lifecycle = manager.lifecycle_guard(&owned_id).await.unwrap();
+        let importer = manager.clone();
+        let cwd = directory.to_string_lossy().into_owned();
+        let import = tokio::spawn(async move {
+            importer.begin_import_transcript_session(AgentConversationProvider::Codex, "native", &path, &cwd, None).await });
+        for _ in 0..10 { tokio::task::yield_now().await; }
+        assert!(!import.is_finished(), "activation holds the guard, so the import waits");
+        drop(lifecycle);
+        assert_eq!(import.await.unwrap().unwrap().0, owned_id);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_download_of_an_import_whose_transcript_is_gone_sends_its_saved_rows() {
+        let (directory, path, manager, owned_id) = imported(250, 20_000).await;
+        let saved = manager.store_handle().history_download_facts(&owned_id, None).unwrap().row_count;
+        std::fs::remove_file(&path).unwrap();
+        let state = server_state(manager, directory.clone(), Arc::from("test")).unwrap();
+        let (_, _, _, sequences) = download(state, owned_id).await;
+        assert_eq!(u64::try_from(sequences.len()).unwrap(), saved);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

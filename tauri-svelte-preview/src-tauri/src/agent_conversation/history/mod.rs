@@ -39,6 +39,12 @@ pub struct ImportCursor {
     pub initial_tail_imported: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trailing_bytes: Vec<u8>,
+    /// The transcript's length when it was named for import; a longer file has turns added since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_length: Option<u64>,
+    /// Records read from the transcript are numbered above this: the head a session read again had.
+    #[serde(default)]
+    pub numbered_after: i64,
 }
 
 pub struct ImportedTail {
@@ -101,43 +107,26 @@ pub fn begin_import_session(
     title: Option<String>,
     open: bool,
 ) -> Result<(String, bool), String> {
-    // Resuming the same past session twice reopens the one already imported.
-    // Minting a second row for it produced two sessions holding one
-    // conversation, and because only one of them had been through a runtime and
-    // learnt its worktree, the rail filed them under two different folders.
-    let stored_provider = enum_storage_value(provider)?;
-    let existing = store
-        .list_sessions()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .find(|row| {
-            row.native_session_id.as_deref() == Some(native_session_id)
-                && row.provider == stored_provider
-        });
-    let metadata = path
-        .metadata()
-        .map_err(|error| format!("Could not inspect transcript: {error}"))?;
-    if let Some(mut row) = existing {
-        // A transcript written well after the session's last activity holds turns
-        // taken outside Assembly. It is the whole conversation, so the session is
-        // read from it again: its own events would only repeat the older turns.
-        let written_ms = metadata.modified().ok().and_then(|at| at.duration_since(UNIX_EPOCH).ok()).map_or(0, |since| since.as_millis());
-        let rebuild = written_ms > u128::try_from(row.last_activity_at_ms.saturating_add(60_000)).unwrap_or(0);
-        if rebuild && open {
+    let metadata = path.metadata().map_err(|error| format!("Could not inspect transcript: {error}"))?;
+    if let Some(mut row) = existing_import_session(store, provider, native_session_id)? {
+        // The transcript is the whole conversation. A session never read from it (one
+        // started here), or whose file has grown since it was, lacks turns its own events
+        // do not hold or would repeat, so it is read again from the file. Its events are
+        // numbered on above the old head, which live delivery has already passed.
+        let cursor = optional_import_cursor(&row.extra_json)?;
+        if cursor.and_then(|cursor| cursor.imported_length).is_some_and(|length| metadata.len() <= length) {
+            return Ok((row.owned_id, false));
+        }
+        if open {
             return Err("Close this session before importing the turns taken outside Assembly.".into());
         }
-        if rebuild {
-            store.enforce_event_cap(&row.owned_id, 0).map_err(|error| error.to_string())?;
-        }
-        // A session holding its turns without a cursor, as one started here does, has nothing older to read.
-        if rebuild || optional_import_cursor(&row.extra_json)?.is_none() {
-            let fully_read = !rebuild && store.has_display_events(&row.owned_id).map_err(|error| error.to_string())?;
-            let cursor = ImportCursor { transcript_path: path.to_string_lossy().into_owned(),
-                cutoff_offset: if fully_read { 0 } else { metadata.len() }, reached_start: fully_read, ..ImportCursor::default() };
-            row.extra_json = merge_import_cursor(&row.extra_json, &cursor)?;
-            store.upsert_session(&row).map_err(|error| error.to_string())?;
-        }
-        return Ok((row.owned_id, rebuild));
+        let head = store.latest_seq(&row.owned_id).map_err(|error| error.to_string())?;
+        store.enforce_event_cap(&row.owned_id, 0).map_err(|error| error.to_string())?;
+        let cursor = ImportCursor { transcript_path: path.to_string_lossy().into_owned(), cutoff_offset: metadata.len(),
+            imported_length: Some(metadata.len()), numbered_after: head, ..ImportCursor::default() };
+        row.extra_json = merge_import_cursor(&row.extra_json, &cursor)?;
+        store.upsert_session(&row).map_err(|error| error.to_string())?;
+        return Ok((row.owned_id, true));
     }
     let owned_id = Uuid::new_v4().to_string();
     // When the transcript was last written is when the session was last active.
@@ -152,7 +141,7 @@ pub fn begin_import_session(
     let cursor = ImportCursor {
         transcript_path: path.to_string_lossy().into_owned(),
         cutoff_offset: metadata.len(),
-        reached_start: false,
+        imported_length: Some(metadata.len()),
         ..ImportCursor::default()
     };
     let extra_json =
@@ -188,6 +177,14 @@ pub fn begin_import_session(
         .upsert_session(&session)
         .map_err(|error| error.to_string())?;
     Ok((owned_id, false))
+}
+
+/// The session already holding this provider conversation. Importing it again reuses the row:
+/// a second row for one conversation was filed under two folders once only one learnt its worktree.
+pub fn existing_import_session(store: &SessionStore, provider: AgentConversationProvider, native_session_id: &str) -> Result<Option<SessionRow>, String> {
+    let stored_provider = enum_storage_value(provider)?;
+    Ok(store.list_sessions().map_err(|error| error.to_string())?.into_iter()
+        .find(|row| row.native_session_id.as_deref() == Some(native_session_id) && row.provider == stored_provider))
 }
 
 pub fn ensure_child_import(
@@ -579,8 +576,8 @@ pub fn finish_import_session(
         .and_then(record_timestamp)
         .unwrap_or(created_at_ms);
     for (index, record) in records.into_iter().enumerate() {
-        let sequence = i64::try_from(index + 1)
-            .map_err(|_| "Imported event sequence exceeded the store limit".to_string())?;
+        let sequence = i64::try_from(index + 1).ok().and_then(|index| index.checked_add(cursor.numbered_after))
+            .ok_or_else(|| "Imported event sequence exceeded the store limit".to_string())?;
         append_imported_record(store, owned_id, provider, sequence, record, created_at_ms)?;
     }
     session.created_at_ms = created_at_ms;

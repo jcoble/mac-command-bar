@@ -339,7 +339,7 @@ pub(super) async fn execute_remote_command(
                 .map(|session| AgentSessionRecord { latest_turns: Vec::new(), ..session }).collect(),
         }).await.map(RemoteResponse::Transcripts).map_err(|error| error.to_string()),
         RemoteCommand::BeginImport { provider, native_session_id, transcript_path, cwd, title, project_id } => {
-            let (owned_id, rebuilt) = manager.begin_import_transcript_session(provider, &native_session_id, std::path::Path::new(&transcript_path), &cwd, title)?;
+            let (owned_id, rebuilt) = manager.begin_import_transcript_session(provider, &native_session_id, std::path::Path::new(&transcript_path), &cwd, title).await?;
             if let Some(project_id) = project_id {
                 manager.store().assign_session_projects(&serde_json::json!([[cwd, project_id]]).to_string()).map_err(|error| error.to_string())?;
             }
