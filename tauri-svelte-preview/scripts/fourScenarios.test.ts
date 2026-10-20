@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   buildState,
+  optionValue,
   parseAvailableGb,
   parseListeningPorts,
   pickFreeDisplay,
@@ -99,4 +100,15 @@ test('stop reaches descendants that started their own process group', () => {
     { pid: 20, ppid: 1, pgid: 20 } // unrelated
   ];
   assert.deepEqual(descendantGroups(rows, [10]).sort((a, b) => a - b), [10, 12, 14]);
+});
+
+
+test('path options require a value instead of accepting the next flag', () => {
+  for (const flag of ['--worktree', '--data', '--seed']) {
+    assert.equal(optionValue([], flag), undefined);
+    assert.equal(optionValue([flag, '/task/worktree'], flag), '/task/worktree');
+    for (const argv of [[flag], [flag, ''], [flag, '--data', '/proof/data']]) {
+      assert.throws(() => optionValue(argv, flag), new RegExp(`${flag} requires a path`));
+    }
+  }
 });

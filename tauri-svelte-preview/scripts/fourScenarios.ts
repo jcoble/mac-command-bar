@@ -162,8 +162,16 @@ function launch(name: string, file: string, args: string[], cwd: string, log: st
   return { name, pid: child.pid, startedAt: startTime(child.pid), log };
 }
 
+export function optionValue(argv: string[], flag: string): string | undefined {
+  const index = argv.indexOf(flag);
+  if (index === -1) return undefined;
+  const value = argv[index + 1];
+  if (!value || value.startsWith('--')) throw new Error(`${flag} requires a path`);
+  return value;
+}
+
 async function start(argv: string[]) {
-  const option = (flag: string) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
+  const option = (flag: string) => optionValue(argv, flag);
   const worktree = path.resolve(option('--worktree') ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '../..'));
   const preview = path.join(worktree, 'tauri-svelte-preview');
   const seed = option('--seed');
