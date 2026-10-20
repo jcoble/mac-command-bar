@@ -87,6 +87,7 @@
 		readOnlyReason?: string | null;
 		/** Raised by the page (the `+` menu's "Open file…") to focus the filter. */
 		filterFocusRequest?: number;
+		viewing?: boolean; // `root` is a project the session only views, so it is not called "(session)".
 	}
 
 	type PendingEntry = {
@@ -124,6 +125,7 @@
 		onUseSessionCheckout,
 		readOnlyReason = null,
 		filterFocusRequest = 0,
+		viewing = false,
 	}: Props = $props();
 
 	// A request counts once, and only while the panel is on screen; the filter
@@ -205,14 +207,12 @@
 		sessionRoot === ""
 			? []
 			: [
-					{ path: sessionRoot, label: `${folderName(sessionRoot)} (session)` },
+					{ path: sessionRoot, label: viewing ? folderName(sessionRoot) : `${folderName(sessionRoot)} (session)` },
 					...checkouts
 						.filter((checkout) => canonicalPath(checkout.path) !== canonicalPath(sessionRoot))
 						.map((checkout) => ({
 							path: checkout.path,
-							label: checkout.branch.trim()
-								? `${folderName(checkout.path)} — ${checkout.branch.trim()}`
-								: folderName(checkout.path),
+							label: checkout.branch.trim() ? `${folderName(checkout.path)} — ${checkout.branch.trim()}` : folderName(checkout.path),
 						})),
 				],
 	);
