@@ -123,6 +123,8 @@
     onUseSessionCheckout?(root: string): void | Promise<void>;
     /** Set while another session works in the folder shown: nothing here may change it. */
     readOnlyReason?: string | null;
+    /** True while `root` is a project the session only views, not the session's own folder. */
+    viewing?: boolean;
   }
   let {
     visible,
@@ -138,7 +140,8 @@
     workspaceState,
     onWorkspaceStateChange,
     onUseSessionCheckout,
-    readOnlyReason = null
+    readOnlyReason = null,
+    viewing = false
   }: Props = $props();
   const workspaceOwnedId = untrack(() => ownedId);
   const initialWorkspaceState = untrack(() => workspaceState);
@@ -156,7 +159,7 @@
   /** The checkout the reader picked, or '' while the session's own is showing. */
   let scopeRoot = $state('');
 
-  const scopeOptions = $derived(sourceControlScopeOptions(sessionRoot, worktreeManager.worktrees));
+  const scopeOptions = $derived(sourceControlScopeOptions(sessionRoot, worktreeManager.worktrees, viewing));
   const readOnlyScope = $derived(isSourceControlScopeReadOnly(sessionRoot, scopeRoot));
   const scopeValue = $derived(scopeRoot === '' ? sessionRoot : scopeRoot);
   const scopeLabel = $derived(
@@ -722,11 +725,7 @@
         {/if}
 
         {#if scopeOptions.length > 1 || (!rootAvailable && scopeOptions.length > 0)}
-          <Select.Root
-            type="single"
-            value={scopeValue}
-            onValueChange={setInspectionRoot}
-          >
+          <Select.Root type="single" value={scopeValue} onValueChange={setInspectionRoot}>
             <Select.Trigger
               size="sm"
               class="w-full min-w-0"

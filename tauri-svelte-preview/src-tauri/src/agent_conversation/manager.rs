@@ -1,4 +1,4 @@
-#[path = "session_project.rs"] pub mod session_project;
+#[path = "session_project.rs"] pub mod session_project; mod helper_close;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -1203,34 +1203,33 @@ impl AgentRuntimeManager {
         Ok(())
     }
 
-    /// Starts a helper session for `parent` in the parent's folder and project,
+    /// Starts a helper in `folder` or the parent's folder, filed under that folder's project,
     /// lists it among the parent's agents, and sends it `prompt` as its first
     /// turn. Returns the helper's owned id.
     pub(super) async fn start_helper(
-        &self,
-        parent: &str,
-        provider: AgentConversationProvider,
-        model: Option<String>,
-        name: &str,
-        prompt: &str,
+        &self, parent: &str, provider: AgentConversationProvider,
+        model: Option<String>, name: &str, prompt: &str, folder: Option<&str>,
     ) -> Result<String, String> {
         let parent_row = self.store.get_session(parent).map_err(|error| error.to_string())?
             .ok_or_else(|| "The calling session was not found".to_string())?;
+        let cwd = folder.unwrap_or(&parent_row.cwd);
+        let project_id = if let Some(folder) = folder {
+            if !std::path::Path::new(folder).is_absolute() || !std::path::Path::new(folder).is_dir() {
+                return Err("folder must be an existing folder on this machine".into());
+            }
+            crate::project_folders::match_local_folders(&self.store, &[folder.to_string()])?
+                .into_iter().next().map(|(_, id)| id).or(parent_row.project_id.clone())
+        } else { parent_row.project_id.clone() };
         // The helper hears its instructions as its parent's message, never as the owner's.
         let sender = self.store.directory_name(parent).map_err(|error| error.to_string())?
             .map_or_else(|| parent.to_string(), |(handle, title)| format!("{handle} · {title}"));
         self.providers.manifest(provider)?;
         let owned_id = uuid::Uuid::new_v4().to_string();
         let connection = self.ensure_async(EnsureAgentConversationRequest {
-            owned_id: owned_id.clone(),
-            provider,
-            cwd: parent_row.cwd.clone(),
-            native_session_id: None,
-            execution_environment: ExecutionEnvironment::Local,
-            remote_profile_id: None,
-            native_session_mode: AgentNativeSessionMode::Resume,
-            reasoning_effort: None,
-            project_id: parent_row.project_id.clone(),
+            owned_id: owned_id.clone(), provider, cwd: cwd.to_string(), native_session_id: None,
+            execution_environment: ExecutionEnvironment::Local, remote_profile_id: None,
+            native_session_mode: AgentNativeSessionMode::Resume, reasoning_effort: None,
+            project_id: project_id.clone(),
         }).await?;
         self.hydrate_overlay_from_store(&owned_id)?;
         {
@@ -1238,7 +1237,8 @@ impl AgentRuntimeManager {
             let session = current_session_mut(&mut sessions, &owned_id, connection.generation)?;
             session.helper_of = Some(parent.to_string());
             session.rail_meta.title = Some(name.to_string());
-            session.rail_meta.project = parent_row.project.clone();
+            session.rail_meta.project = if project_id == parent_row.project_id { parent_row.project.clone() }
+                else { None };
             session.title_source = Some(TITLE_SOURCE_USER.to_string());
             persist_session(session)?;
         }
@@ -7600,7 +7600,7 @@ fn canonical_event(
             state: ConversationConnectionState::Closed,
             ..
         } => AgentEventType::SessionClosed,
-        AgentConversationPayload::Connection { .. } => AgentEventType::SessionStateChanged,
+        AgentConversationPayload::Connection { .. } | AgentConversationPayload::SessionCompleted { .. } => AgentEventType::SessionStateChanged,
         AgentConversationPayload::UserMessage { .. } => AgentEventType::ItemCompleted,
         AgentConversationPayload::AssistantDelta { .. } => AgentEventType::ContentDelta,
         AgentConversationPayload::AssistantMessage { .. } => AgentEventType::ItemCompleted,
@@ -7612,8 +7612,7 @@ fn canonical_event(
         AgentConversationPayload::Plan { .. } => AgentEventType::PlanUpdated,
         AgentConversationPayload::AvailableCommandsUpdate { .. } => AgentEventType::CommandsUpdated,
         AgentConversationPayload::Turn {
-            state: super::protocol::TurnState::Started,
-            ..
+            state: super::protocol::TurnState::Started, ..
         } => AgentEventType::TurnStarted,
         AgentConversationPayload::Turn {
             state: super::protocol::TurnState::Interrupted,
@@ -7971,7 +7970,7 @@ mod tests {
     use crate::agent_conversation::protocol::AgentCommandDescriptor;
     mod checkout;
     mod model_effort;
-    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta;
+    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
@@ -8570,6 +8569,7 @@ mod tests {
             AgentConversationPayload::Usage { .. } => "usage",
             AgentConversationPayload::ContextCompaction { .. } => "contextCompaction",
             AgentConversationPayload::CheckoutChanged { .. } => "checkoutChanged",
+            AgentConversationPayload::SessionCompleted { .. } => "sessionCompleted",
             AgentConversationPayload::TerminalProjection(_) => "terminalProjection",
             AgentConversationPayload::Error { .. } => "error",
         }

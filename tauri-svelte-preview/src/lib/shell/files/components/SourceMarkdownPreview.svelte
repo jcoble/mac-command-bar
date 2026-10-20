@@ -179,6 +179,17 @@
     host.scrollTop = scrollTop;
   });
 
+  // A diagram mermaid fails to draw leaves its scratch element (`d` + the diagram id) on
+  // <body>. Mermaid draws one diagram at a time, so only the newest can still be in use:
+  // clear the older ones when the text changes and when Preview closes.
+  $effect(() => {
+    void content;
+    return () => {
+      const scratch = [...document.querySelectorAll('body > div[id^="dmermaid-"]')];
+      for (const left of scratch.slice(0, -1)) left.remove();
+    };
+  });
+
   onDestroy(() => {
     for (const url of localImages.values()) void revokeLocalImage(url);
     // The library keeps parsed documents for reuse; leaving Preview frees them.
