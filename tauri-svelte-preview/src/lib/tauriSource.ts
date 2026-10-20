@@ -45,6 +45,7 @@ import type {
   SourceTreeSearchPage,
   SourceWorkspaceSymbol
 } from './sourceData.ts';
+import { bridgeTokenHeader } from './devBridgeToken.ts';
 import { mapWorkspaceSnapshotPaths, parseRemoteWorkspacePath, remoteWorkspacePath } from './workspacePaths.ts';
 
 export const defaultSourceScanLimit = 10_000;
@@ -3412,9 +3413,7 @@ async function postLocalSourceBridge<T>(
   try {
     response = await fetch(`/__mcb/source/${action}`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json'
-      },
+      headers: { 'content-type': 'application/json', ...bridgeTokenHeader() },
       body: JSON.stringify(payload)
     });
   } catch {

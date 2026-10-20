@@ -7,6 +7,7 @@
 //! generic page-evaluation command or cookie/storage bridge is exposed.
 //! Native browser commands are async because synchronous Tauri commands run on the UI thread.
 
+#[cfg(test)] mod external_open_tests;
 use std::collections::HashMap;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
@@ -1073,12 +1074,7 @@ impl BrowserRegistry {
     fn open_external(&self, target: BrowserTarget) -> Result<(), BrowserCommandError> {
         let workspaces = self.validate_target(&target)?;
         let tab = Self::require_tab(&workspaces, &target)?;
-        let url = normalize_browser_url(&tab.url, false)?.ok_or_else(|| {
-            BrowserCommandError::new(
-                BrowserErrorCode::InvalidUrl,
-                "The browser tab has no safe address to open",
-            )
-        })?;
+        let url = normalize_browser_url(&tab.url, false)?.ok_or_else(|| BrowserCommandError::new(BrowserErrorCode::InvalidUrl, "The browser tab has no safe address to open"))?;
         open_external_url(&url)
     }
 
@@ -2375,6 +2371,10 @@ fn browser_source_hash(event: &BrowserElementSelectedEvent) -> String {
 }
 
 fn open_external_url(url: &str) -> Result<(), BrowserCommandError> {
+    // The system opener also runs local files (a `.command` file is a script), so only web pages go to it.
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(BrowserCommandError::new(BrowserErrorCode::InvalidUrl, "Only http and https addresses open in the external browser"));
+    }
     #[cfg(target_os = "macos")]
     let mut command = {
         let mut command = Command::new("open");

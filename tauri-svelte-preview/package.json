@@ -44,6 +44,7 @@
     "test:worktree-safety": "node --experimental-strip-types scripts/worktreeSafety.test.mjs",
     "test:worktree-agent-prompts": "node --experimental-strip-types scripts/worktreeAgentPrompts.test.ts",
     "test:local-source-fs": "node --experimental-strip-types scripts/localSourceFs.test.ts",
+    "test:dev-bridge-guard": "node --experimental-strip-types scripts/devBridgeGuard.test.ts",
     "test:session-scan-filter": "node --experimental-strip-types scripts/sessionScanFilter.test.mjs",
     "test:live-terminals": "node --experimental-strip-types scripts/liveConversationTerminals.test.ts",
     "test:owned-sessions": "node --experimental-strip-types scripts/ownedSessions.test.ts",

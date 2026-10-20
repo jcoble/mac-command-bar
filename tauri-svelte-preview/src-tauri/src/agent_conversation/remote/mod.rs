@@ -3,6 +3,7 @@
 mod handshake;
 mod history;
 mod transcripts;
+#[cfg(test)] mod routing_tests;
 pub(in crate::agent_conversation) mod install;
 pub(crate) mod install_flow;
 mod workspace;
@@ -515,7 +516,8 @@ impl RemoteConnectionManager {
         status_sink: Arc<dyn Fn(RemoteConnectionStatus) + Send + Sync>,
         store: Arc<SessionStore>,
     ) -> Result<Self, String> {
-        let cached_sessions = read_cached_sessions(&store)?;
+        // A saved claim on one of this Mac's own session ids is dropped (see `may_route`).
+        let cached_sessions: Vec<_> = read_cached_sessions(&store)?.into_iter().filter(|session| matches!(store.get_session(&session.owned_id), Ok(None))).collect();
         let remote_sessions = cached_sessions
             .iter()
             .filter_map(|session| {
@@ -623,6 +625,7 @@ impl RemoteConnectionManager {
         profile_id: &str,
         sessions: &[AgentConversationSessionRecord],
     ) -> Result<(), String> {
+        let sessions = &sessions.iter().filter(|session| self.may_route(&session.owned_id, profile_id)).cloned().collect::<Vec<_>>();
         let incoming_ids = sessions.iter().map(|session| session.owned_id.as_str()).collect::<std::collections::HashSet<_>>();
         let mut next = self.cached_sessions();
         let mut moved = Vec::new();
@@ -689,23 +692,15 @@ impl RemoteConnectionManager {
 
     fn cache_session(&self, mut session: AgentConversationSessionRecord) -> Result<(), String> {
         session.execution_environment = ExecutionEnvironment::Remote;
-        let owned_id = session.owned_id.clone();
-        let profile_id = session
-            .remote_profile_id
-            .clone()
-            .ok_or_else(|| "Remote session did not identify its machine".to_string())?;
+        let profile_id = session.remote_profile_id.clone().ok_or_else(|| "Remote session did not identify its machine".to_string())?;
+        if !self.remember(session.owned_id.clone(), profile_id) {
+            return Err(format!("Remote session {} uses the id of another session", session.owned_id));
+        }
         let mut next = self.cached_sessions();
         next.retain(|stored| stored.owned_id != session.owned_id);
         next.push(session);
-        next.sort_by(|left, right| {
-            right
-                .last_activity_at_ms
-                .cmp(&left.last_activity_at_ms)
-                .then_with(|| left.owned_id.cmp(&right.owned_id))
-        });
-        self.save_cached_sessions(next)?;
-        self.remember(owned_id, profile_id);
-        Ok(())
+        next.sort_by(|left, right| right.last_activity_at_ms.cmp(&left.last_activity_at_ms).then_with(|| left.owned_id.cmp(&right.owned_id)));
+        self.save_cached_sessions(next)
     }
 
     fn forget_cached_session(&self, owned_id: &str) -> Result<(), String> {
@@ -968,9 +963,7 @@ impl RemoteConnectionManager {
         // A removal while this attempt was in flight wins: the profile neither
         // gets its client back nor any report or session from this attempt.
         self.adopt_client(&attempt, candidate)?;
-        for session in &sessions {
-            self.remember(session.owned_id.clone(), profile.id.clone());
-        }
+        sessions.retain(|session| self.remember(session.owned_id.clone(), profile.id.clone()));
         if let Some(client) = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clients.get_mut(&profile.id) {
             client.profile = Some(profile.clone());
         }
@@ -1170,11 +1163,20 @@ impl RemoteConnectionManager {
             .contains_key(owned_id)
     }
 
-    fn remember(&self, owned_id: impl Into<String>, profile_id: impl Into<String>) {
-        self.remote_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(owned_id.into(), profile_id.into());
+    /// A machine may route only ids that are neither this Mac's own sessions nor routed to another machine;
+    /// otherwise a hostile backend could list a local session's id and receive its prompts and approvals.
+    fn may_route(&self, owned_id: &str, profile_id: &str) -> bool {
+        let other_machine = self.remote_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(owned_id).is_some_and(|owner| owner != profile_id);
+        let allowed = !other_machine && matches!(self.store.get_session(owned_id), Ok(None));
+        if !allowed { eprintln!("Ignored remote session {owned_id} from {profile_id}: the id belongs to another session"); }
+        allowed
+    }
+
+    fn remember(&self, owned_id: impl Into<String>, profile_id: impl Into<String>) -> bool {
+        let (owned_id, profile_id) = (owned_id.into(), profile_id.into());
+        let allowed = self.may_route(&owned_id, &profile_id);
+        if allowed { self.remote_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(owned_id, profile_id); }
+        allowed
     }
 
     pub(crate) fn profile_for_owned_id(&self, owned_id: &str) -> Result<String, String> {
@@ -1548,9 +1550,7 @@ impl RemoteConnectionManager {
                 session.remote_profile_id = Some(profile_id.clone());
             }
             self.replace_cached_profile_sessions(&profile_id, &sessions)?;
-            for session in &sessions {
-                self.remember(session.owned_id.clone(), profile_id.clone());
-            }
+            sessions.retain(|session| self.remember(session.owned_id.clone(), profile_id.clone()));
             all_sessions.extend(sessions);
         }
         if successful_profiles > 0 || first_error.is_none() {
