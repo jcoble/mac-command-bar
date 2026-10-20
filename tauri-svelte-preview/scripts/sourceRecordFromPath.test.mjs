@@ -96,4 +96,14 @@ const root = '/Users/dev/project';
   assert.equal(fileNameFromPath('///'), 'file');
 }
 
+// a file on a remote machine keeps its machine in the path the editor reads and
+// saves through, and is named relative to that machine's project root (725896a73)
+{
+  const remoteRoot = 'assembly-remote://workbox-test/home/me/repo/';
+  const record = sourceRecordFromPath(remoteRoot, 'assembly-remote://workbox-test/home/me/repo/src/main.rs');
+  assert.equal(record.path, 'assembly-remote://workbox-test/home/me/repo/src/main.rs');
+  assert.equal(record.relativePath, 'src/main.rs');
+  assert.equal(record.language, 'rust');
+}
+
 console.log('sourceRecordFromPath tests passed');

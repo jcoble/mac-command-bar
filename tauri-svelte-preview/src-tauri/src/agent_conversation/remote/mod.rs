@@ -1,5 +1,6 @@
 //! One authenticated WebSocket boundary for conversations owned by a remote machine.
 
+mod handshake;
 mod history;
 mod transcripts;
 pub(in crate::agent_conversation) mod install;
@@ -25,7 +26,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(debug_assertions)]
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TungsteniteMessage};
+use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 
 use self::wire::{decode_history_chunk, parse_server_frame, send_client_frame,
     ClientFrame, RemoteCommand, RemoteResponse, ServerFrame};
@@ -64,7 +65,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 22;
+pub(super) const PROTOCOL_VERSION: u16 = 23;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -2928,29 +2929,19 @@ async fn client_loop(
     let mut failed_connections = 0_u8;
     loop {
         ready.store(false, Ordering::Release);
-        let mut request = match url.as_str().into_client_request() {
+        let (request, challenge) = match handshake::upgrade_request(&url) {
             Ok(request) => request,
-            Err(error) => {
-                fail_queued_requests(requests, format!("Invalid remote URL: {error}"));
-                return;
-            }
+            Err(error) => { fail_queued_requests(requests, error); return; }
         };
-        let auth = format!("Bearer {token}");
-        match auth.parse() {
-            Ok(value) => {
-                request.headers_mut().insert("authorization", value);
-            }
-            Err(error) => {
-                fail_queued_requests(requests, format!("Invalid remote token: {error}"));
-                return;
-            }
-        }
         let connected = tokio_tungstenite::connect_async_with_config(request, None, true).await;
         let (mut socket, _) = match connected {
             Ok(socket) => socket,
             Err(error) => {
                 if let Some(reply) = initial_ready.take() {
-                    let _ = reply.send(Err(format!("Backend connection/authentication failed: {error}")));
+                    let message = if matches!(&error, tokio_tungstenite::tungstenite::Error::Http(response) if matches!(response.status().as_u16(), 401 | 426)) {
+                        "Remote backend needs an update: challenge authentication is required".to_string()
+                    } else { format!("Backend connection/authentication failed: {error}") };
+                    let _ = reply.send(Err(message));
                     return;
                 }
             failed_connections = failed_connections.saturating_add(1);
@@ -2962,15 +2953,7 @@ async fn client_loop(
             }
         };
         failed_connections = 0;
-        let handshake = tokio::time::timeout(Duration::from_secs(15), async {
-            let hello = socket.next().await.ok_or("Backend closed before protocol readiness")?
-                .map_err(|error| error.to_string())?;
-            match parse_server_frame(hello)? {
-                Some(ServerFrame::Ready { protocol_version }) if protocol_version == PROTOCOL_VERSION => Ok(()),
-                Some(ServerFrame::Ready { protocol_version }) => Err(if protocol_version > PROTOCOL_VERSION { format!("This Assembly client needs an update: backend protocol {protocol_version}, client protocol {PROTOCOL_VERSION}") } else { format!("Remote backend needs an update: protocol {protocol_version}, this Assembly requires {PROTOCOL_VERSION}") }),
-                _ => Err("Backend did not announce protocol readiness".into()),
-            }
-        }).await.unwrap_or_else(|_| Err("Backend readiness timed out".into()));
+        let handshake = handshake::sign_in(&mut socket, &token, &challenge).await;
         if let Err(error) = handshake {
             if let Some(reply) = initial_ready.take() { let _ = reply.send(Err(error.clone())); }
             fail_queued_requests(requests, error);
@@ -3172,7 +3155,7 @@ async fn client_loop(
                                 Err(error) => { interruption = error; break 'connected; }
                             }
                         }
-                        ServerFrame::Ready { protocol_version } if protocol_version != PROTOCOL_VERSION => {
+                        ServerFrame::Ready { protocol_version, .. } if protocol_version != PROTOCOL_VERSION => {
                             for (_, reply) in pending.drain() {
                                 let _ = reply.send(Err(format!("Unsupported remote protocol {protocol_version}")));
                             }
@@ -3573,8 +3556,8 @@ mod connection_tests {
     }
 
     #[test]
-    fn history_download_protocol_22_round_trips_compressed_chunks() {
-        assert_eq!(PROTOCOL_VERSION, 22);
+    fn history_download_protocol_23_round_trips_compressed_chunks() {
+        assert_eq!(PROTOCOL_VERSION, 23);
         let rows = vec![history_event(3), history_event(-2)];
         let encoded = encode_history_chunk(&rows).unwrap();
         assert_eq!(decode_history_chunk(&encoded).unwrap(), rows);
@@ -4901,10 +4884,7 @@ mod connection_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(axum::serve(listener, Router::new().route("/assembly", get(upgrade_remote_socket)).with_state(state.clone())).into_future());
-        let mut request = format!("ws://{address}/assembly").into_client_request().unwrap();
-        request.headers_mut().insert("Authorization", "Bearer test-token".parse().unwrap());
-        let (mut client, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-        client.next().await.unwrap().unwrap(); // Ready; socket subscriptions now exist.
+        let mut client = handshake::test_client(&format!("ws://{address}/assembly")).await;
         for sequence in 1..=32 {
             let mut event = large_history_event(4 * 1024 * 1024);
             event.sequence = sequence;
@@ -4934,7 +4914,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn readiness_requires_protocol_and_session_response() {
-        assert_eq!(PROTOCOL_VERSION, 22);
+        assert_eq!(PROTOCOL_VERSION, 23);
         for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -4942,8 +4922,7 @@ mod connection_tests {
             let (release_tx, release_rx) = oneshot::channel();
             let server = tokio::spawn(async move {
                 let (stream, _) = listener.accept().await.unwrap();
-                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-                socket.send(TungsteniteMessage::Text(serde_json::to_string(&ServerFrame::Ready { protocol_version: version }).unwrap().into())).await.unwrap();
+                let mut socket = handshake::test_backend(stream, version).await;
                 if version != PROTOCOL_VERSION { return; }
                 let _resume = socket.next().await.unwrap().unwrap();
                 let request = socket.next().await.unwrap().unwrap();
@@ -4988,10 +4967,7 @@ mod connection_tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            socket.send(TungsteniteMessage::Text(serde_json::to_string(
-                &ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }
-            ).unwrap().into())).await.unwrap();
+            let mut socket = handshake::test_backend(stream, PROTOCOL_VERSION).await;
             let _resume = socket.next().await.unwrap().unwrap();
             let _readiness = socket.next().await.unwrap().unwrap();
             let request = socket.next().await.unwrap().unwrap();
@@ -5029,9 +5005,7 @@ mod connection_tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            socket.send(TungsteniteMessage::Text(serde_json::to_string(
-                &ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }).unwrap().into())).await.unwrap();
+            let mut socket = handshake::test_backend(stream, PROTOCOL_VERSION).await;
             assert!(matches!(serde_json::from_str::<ClientFrame>(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap(), ClientFrame::Resume { cursors } if cursors.is_empty()));
             let _readiness = socket.next().await.unwrap().unwrap();
             let mut first = large_history_event(32);
@@ -5049,9 +5023,7 @@ mod connection_tests {
             assert!(tokio::time::timeout(Duration::from_millis(100), socket.next()).await.is_err(), "events must not produce Ack frames");
             socket.close(None).await.unwrap();
             let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            socket.send(TungsteniteMessage::Text(serde_json::to_string(
-                &ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }).unwrap().into())).await.unwrap();
+            let mut socket = handshake::test_backend(stream, PROTOCOL_VERSION).await;
             let resume: ClientFrame = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
             assert!(matches!(resume, ClientFrame::Resume { cursors }
                 if cursors.get("large-history") == Some(&2) && cursors.get("other-history") == Some(&1)));
@@ -5198,9 +5170,7 @@ mod connection_tests {
             let saved = manager.clone();
             let server = tokio::spawn(async move {
                 let (stream, _) = listener.accept().await.unwrap();
-                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-                socket.send(TungsteniteMessage::Text(encode_server_frame(&ServerFrame::Ready {
-                    protocol_version: PROTOCOL_VERSION }).unwrap().into())).await.unwrap();
+                let mut socket = handshake::test_backend(stream, PROTOCOL_VERSION).await;
                 let resume: ClientFrame = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
                 assert!(matches!(resume, ClientFrame::Resume { cursors } if cursors == BTreeMap::from([("large-history".into(), 0)])));
                 let _readiness = socket.next().await.unwrap().unwrap();
@@ -5263,9 +5233,7 @@ mod connection_tests {
         let saved = manager.clone();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            socket.send(TungsteniteMessage::Text(encode_server_frame(&ServerFrame::Ready {
-                protocol_version: PROTOCOL_VERSION }).unwrap().into())).await.unwrap();
+            let mut socket = handshake::test_backend(stream, PROTOCOL_VERSION).await;
             let resume: ClientFrame = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
             assert!(matches!(resume, ClientFrame::Resume { cursors } if cursors.get("large-history") == Some(&10)));
             let _readiness = socket.next().await.unwrap().unwrap();
@@ -5414,10 +5382,7 @@ mod connection_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(axum::serve(listener, Router::new().route("/assembly", get(upgrade_remote_socket)).with_state(state.clone())).into_future());
-        let mut request = format!("ws://{address}/assembly").into_client_request().unwrap();
-        request.headers_mut().insert("authorization", "Bearer test-token".parse().unwrap());
-        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-        assert!(matches!(parse_server_frame(socket.next().await.unwrap().unwrap()).unwrap(), Some(ServerFrame::Ready { .. })));
+        let mut socket = handshake::test_client(&format!("ws://{address}/assembly")).await;
         send_client_frame(&mut socket, &ClientFrame::Resume { cursors: BTreeMap::from([("large-history".into(), 0)]) }).await.unwrap();
         let first = parse_server_frame(socket.next().await.unwrap().unwrap()).unwrap().unwrap();
         assert!(matches!(first, ServerFrame::ReplayStart { .. }));
@@ -5460,10 +5425,7 @@ mod connection_tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            socket.send(TungsteniteMessage::Text(serde_json::to_string(
-                &ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }
-            ).unwrap().into())).await.unwrap();
+            let mut socket = handshake::test_backend(stream, PROTOCOL_VERSION).await;
             let _resume = socket.next().await.unwrap().unwrap();
             let _readiness = socket.next().await.unwrap().unwrap();
             socket.send(TungsteniteMessage::Text(serde_json::to_string(

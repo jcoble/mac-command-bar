@@ -512,6 +512,13 @@
   const canCommit = $derived(canChange && !busy && staged && panel.commitMessage.trim() !== '');
   const canAmend = $derived(canChange && !busy && panel.commitMessage.trim() !== '');
   const canDiscardAll = $derived(canChange && !busy && files.length > 0);
+  /** Why each more-actions row is off, or null while it can run. The menu disables a row exactly when it has a reason. */
+  const stillRunning = 'Wait for the current source-control action to finish.';
+  const refreshReason = $derived(!scopeAvailable ? cannotChangeReason
+    : panel.statusLoading || panel.historyLoading ? 'Source control is already refreshing.' : null);
+  const discardAllReason = $derived(canDiscardAll ? null : !canChange ? cannotChangeReason
+    : busy ? stillRunning : 'There are no changes to discard.');
+  const addRemoteReason = $derived(canAddRemote ? null : canChange ? stillRunning : cannotChangeReason);
 
   const stageHint = $derived.by(() => {
     if (!canChange) return cannotChangeReason;
@@ -612,9 +619,17 @@
 >
   <PanelHeader title="Source control" count={diffstat.filesChanged} data-testid="source-control-header">
     {#snippet actions()}
-      <!-- Refresh, discard all, fetch, pull, push, publish and add remote. Each item that cannot run
-           carries the sentence saying why — usually a read-only folder or a
-           branch with no upstream. -->
+      <!-- Refresh, discard all, fetch, pull, push, publish and add remote. A row that cannot run
+           shows why on a second, muted line: a disabled row never shows a tooltip. The row keeps
+           full opacity and dims only its label, so the reason stays readable. -->
+      {#snippet menuAction(testId: string, label: string, reason: string | null, onSelect: () => void)}
+        <DropdownMenu.Item data-testid={testId} disabled={reason !== null} class="data-disabled:opacity-100" {onSelect}>
+          <span class="flex min-w-0 flex-col">
+            <span class="group-data-disabled/dropdown-menu-item:opacity-50">{label}</span>
+            {#if reason !== null}<span class="text-sm text-muted-foreground">{reason}</span>{/if}
+          </span>
+        </DropdownMenu.Item>
+      {/snippet}
       <DropdownMenu.Root onOpenChange={moreMenuOpenChange}>
         <DropdownMenu.Trigger
           class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'rounded-full')}
@@ -623,35 +638,13 @@
         >
           <Ellipsis aria-hidden="true" />
         </DropdownMenu.Trigger>
-        <DropdownMenu.Content align="end">
-          <DropdownMenu.Item
-            data-testid="source-control-refresh"
-            disabled={!scopeAvailable || panel.statusLoading || panel.historyLoading}
-            title={scopeAvailable ? undefined : cannotChangeReason}
-            onSelect={() => void service.refresh()}
-          >
-            Refresh
-          </DropdownMenu.Item>
-          <DropdownMenu.Item
-            data-testid="source-control-discard-all"
-            disabled={!canDiscardAll}
-            title={canDiscardAll
-              ? undefined
-              : canChange
-                ? 'There are no changes to discard.'
-                : cannotChangeReason}
-            onSelect={() => askToDiscardAll()}
-          >
-            Discard all…
-          </DropdownMenu.Item>
+        <!-- Wide enough for a reason to wrap onto two or three lines instead of one word per line. -->
+        <DropdownMenu.Content align="end" class="w-auto max-w-72">
+          {@render menuAction('source-control-refresh', 'Refresh', refreshReason, () => void service.refresh())}
+          {@render menuAction('source-control-discard-all', 'Discard all…', discardAllReason, askToDiscardAll)}
           <DropdownMenu.Separator />
           {#each remoteActions as item (item.id)}
-            <DropdownMenu.Item
-              data-testid={`source-control-remote-${item.id}`}
-              disabled={!item.enabled}
-              title={item.enabled ? undefined : item.disabledReason}
-              onSelect={() => runRemote(item.id)}>{item.label}</DropdownMenu.Item
-            >
+            {@render menuAction(`source-control-remote-${item.id}`, item.label, item.disabledReason, () => runRemote(item.id))}
           {/each}
           <!-- Only while the branch has no upstream. One remote publishes straight
                to it; several open a submenu so the remote is always chosen. -->
@@ -667,29 +660,12 @@
                 </DropdownMenu.SubContent>
               </DropdownMenu.Sub>
             {:else}
-              <DropdownMenu.Item
-                data-testid="source-control-publish"
-                disabled={publishReason !== null}
-                title={publishReason ?? undefined}
-                onSelect={() => publish(remotes[0])}
-              >
-                {publishReason === null ? `Publish to ${remotes[0]}` : 'Publish branch'}
-              </DropdownMenu.Item>
+              {@const label = publishReason === null ? `Publish to ${remotes[0]}` : 'Publish branch'}
+              {@render menuAction('source-control-publish', label, publishReason, () => publish(remotes[0]))}
             {/if}
           {/if}
           <DropdownMenu.Separator />
-          <DropdownMenu.Item
-            data-testid="source-control-add-remote"
-            disabled={!canAddRemote}
-            title={canAddRemote
-              ? undefined
-              : canChange
-                ? 'Wait for the current source-control action to finish.'
-                : cannotChangeReason}
-            onSelect={openAddRemote}
-          >
-            Add remote…
-          </DropdownMenu.Item>
+          {@render menuAction('source-control-add-remote', 'Add remote…', addRemoteReason, openAddRemote)}
         </DropdownMenu.Content>
       </DropdownMenu.Root>
     {/snippet}

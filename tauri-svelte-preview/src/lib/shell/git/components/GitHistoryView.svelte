@@ -75,11 +75,8 @@
     gitPanel,
     isNotARepositoryError
   } from '$lib/shell/git/gitPanelStore.svelte';
-  import {
-    absolutePathWithin,
-    COMMIT_HISTORY_LIMIT,
-    gitService
-  } from '$lib/shell/git/gitService';
+  import { absolutePathWithin, COMMIT_HISTORY_LIMIT, gitService } from '$lib/shell/git/gitService';
+  import { nativeWorkspacePath } from '$lib/workspacePaths.ts';
   import { worktreeManager } from '$lib/shell/worktrees/worktreeManagerStore.svelte';
   import { formatLastActivity } from '$lib/shell/relativeTime';
   import { openFileInEditor, showCenterTab, showRightTab } from '$lib/shell/workbenchNavigation';
@@ -299,11 +296,11 @@
         projectRoot: historyPanel.root
       });
     } else if (action === 'copy-commit-path') {
-      await copyText(
+      await copyText(nativeWorkspacePath(
         historyPanel.root
           ? absolutePathWithin(historyPanel.root, menu.target.file.relativePath)
           : menu.target.file.relativePath
-      );
+      ));
     }
   }
 
