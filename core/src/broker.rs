@@ -102,6 +102,7 @@ pub struct TrafficMessage {
 pub struct TrafficQuery<'a> {
     pub run_id: Option<&'a str>,
     pub session: Option<&'a str>,
+    pub qualified_sender: Option<&'a str>,
     pub status: Option<&'a str>,
     pub search: Option<&'a str>,
     pub sort: &'a str,
@@ -109,23 +110,22 @@ pub struct TrafficQuery<'a> {
     pub before_key: Option<&'a str>,
     pub limit: i64,
 }
-
-const MESSAGE_SCOPE: &str = "(?2 IS NULL OR m.from_owned_id = ?2 OR m.to_owned_id = ?2 OR m.run_id IN
+const MESSAGE_SCOPE: &str = "(?2 IS NULL OR m.from_owned_id = ?2 OR m.from_owned_id = ?3 OR m.to_owned_id = ?2 OR m.run_id IN
     (SELECT run_id FROM orchestration_events WHERE json_extract(payload_json,'$.workflowPayload.run.inputSnapshot.started_by')=?2))";
 const RECEIVER: &str = "COALESCE(s.handle || ' · ' || s.title, s.handle, m.to_owned_id)";
 
 fn traffic_sql(sort: &str) -> String {
     let key = match sort { "sender" => "m.sender_name", "receiver" => RECEIVER, _ => "" };
-    let cursor = if key.is_empty() { "(?5 IS NULL OR (m.created_at_ms,m.id)<(?5,?6))".to_string() }
-        else { format!("(?5 IS NULL OR {key}>?7 OR ({key}=?7 AND (m.created_at_ms,m.id)<(?5,?6)))") };
+    let cursor = if key.is_empty() { "(?6 IS NULL OR (m.created_at_ms,m.id)<(?6,?7))".to_string() }
+        else { format!("(?6 IS NULL OR {key}>?8 OR ({key}=?8 AND (m.created_at_ms,m.id)<(?6,?7)))") };
     let order = if key.is_empty() { "m.created_at_ms DESC,m.id DESC".to_string() }
         else { format!("{key} ASC,m.created_at_ms DESC,m.id DESC") };
     format!("SELECT m.id,m.created_at_ms,m.sender_name,m.from_owned_id,m.to_owned_id,{RECEIVER},
         m.body,m.receipt,m.run_id,m.kind FROM workflow_messages m LEFT JOIN sessions s ON s.owned_id=m.to_owned_id
         WHERE m.kind='message' AND (?1 IS NULL OR m.run_id=?1) AND {MESSAGE_SCOPE}
-        AND (?3 IS NULL OR m.receipt=?3) AND (?4 IS NULL OR m.sender_name LIKE ?4 ESCAPE '\\'
-          OR {RECEIVER} LIKE ?4 ESCAPE '\\' OR m.body LIKE ?4 ESCAPE '\\') AND {cursor}
-        ORDER BY {order} LIMIT ?8")
+        AND (?4 IS NULL OR m.receipt=?4) AND (?5 IS NULL OR m.sender_name LIKE ?5 ESCAPE '\\'
+          OR {RECEIVER} LIKE ?5 ESCAPE '\\' OR m.body LIKE ?5 ESCAPE '\\') AND {cursor}
+        ORDER BY {order} LIMIT ?9")
 }
 
 static MESSAGE_LISTENER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
@@ -523,7 +523,7 @@ impl SessionStore {
             format!("%{}%", text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
         let mut statement = db("could not prepare the message list", connection.prepare(&sql))?;
         let rows = db("could not list messages", statement.query_map(
-            params![query.run_id, query.session, query.status, pattern,
+            params![query.run_id, query.session, query.qualified_sender, query.status, pattern,
                 query.before.map(|(at, _)| at), query.before.map(|(_, id)| id), query.before_key, query.limit],
             |row| Ok(TrafficMessage {
                 id: row.get(0)?, created_at_ms: row.get(1)?, sender_name: row.get(2)?,
@@ -533,11 +533,11 @@ impl SessionStore {
         db("could not read messages", rows.collect())
     }
 
-    pub fn count_messages(&self, session: &str, after_ms: i64) -> Result<i64> {
+    pub fn count_messages(&self, session: &str, after_ms: i64, sender: Option<&str>) -> Result<i64> {
         let connection = self.lock()?;
         db("could not count messages", connection.query_row(&format!(
             "SELECT COUNT(*) FROM workflow_messages m WHERE m.kind='message' AND m.created_at_ms>?1 AND {MESSAGE_SCOPE}"),
-            params![after_ms, session], |row| row.get(0)))
+            params![after_ms, session, sender], |row| row.get(0)))
     }
 
     pub fn list_open_groups(&self) -> Result<Vec<(String, String, Option<String>, Vec<String>)>> {
@@ -815,7 +815,7 @@ mod tests {
         assert_eq!(messages[1].receiver, "gone");
         let connection = store.lock().unwrap();
         let mut statement = connection.prepare(&format!("EXPLAIN QUERY PLAN {}", traffic_sql("time"))).unwrap();
-        let details = statement.query_map(params![None::<String>, None::<String>, None::<String>, None::<String>, None::<i64>, None::<String>, None::<String>, 10], |row| row.get::<_, String>(3)).unwrap()
+        let details = statement.query_map(params![None::<String>, None::<String>, None::<String>, None::<String>, None::<String>, None::<i64>, None::<String>, None::<String>, 10], |row| row.get::<_, String>(3)).unwrap()
             .collect::<rusqlite::Result<Vec<_>>>().unwrap().join("\n");
         assert!(details.contains("idx_workflow_messages_created"), "{details}");
         assert!(!details.contains("TEMP B-TREE"), "{details}");
@@ -861,9 +861,9 @@ mod tests {
     fn count_messages_after() {
         let store = SessionStore::open_in_memory().unwrap();
         let message = store.append_message("", "sender", "target", MessageKind::Message, "hello").unwrap();
-        assert_eq!(store.count_messages("target", message.created_at_ms - 1).unwrap(), 1);
-        assert_eq!(store.count_messages("sender", message.created_at_ms).unwrap(), 0);
-        assert_eq!(store.count_messages("other", 0).unwrap(), 0);
+        assert_eq!(store.count_messages("target", message.created_at_ms - 1, None).unwrap(), 1);
+        assert_eq!(store.count_messages("sender", message.created_at_ms, None).unwrap(), 0);
+        assert_eq!(store.count_messages("other", 0, None).unwrap(), 0);
     }
 
     #[test]
@@ -875,7 +875,7 @@ mod tests {
         let owner = std::thread::current().id();
         super::on_messages_changed(move || {
             // Taking the same database lock proves notification happens after release.
-            if std::thread::current().id() == owner && observed.count_messages("listener-target", 0).unwrap() > 0 { count.fetch_add(1, Ordering::SeqCst); }
+            if std::thread::current().id() == owner && observed.count_messages("listener-target", 0, None).unwrap() > 0 { count.fetch_add(1, Ordering::SeqCst); }
         });
         let message = store.append_message("", "sender", "listener-target", MessageKind::Message, "hello").unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);

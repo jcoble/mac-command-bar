@@ -2,6 +2,7 @@
 
 mod handshake;
 mod history;
+mod relay_trust;
 mod transcripts;
 #[cfg(test)] mod routing_tests;
 pub(in crate::agent_conversation) mod install;
@@ -66,7 +67,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 23;
+pub(super) const PROTOCOL_VERSION: u16 = 24;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -1203,11 +1204,10 @@ impl RemoteConnectionManager {
         })
     }
 
-    /// Carries one messaging operation from a session on `source` to the machines it concerns.
-    /// The desktop is the only router: remote machines reach each other through it. A sender's
-    /// label gets `@source` after its handle, so the receiver can answer it from anywhere.
-    async fn route_message(&self, source: &str, op: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+    /// Routes messages across machines with a replyable label identifying their source.
+    async fn route_message(&self, source: &str, op: &str, mut args: serde_json::Value) -> Result<serde_json::Value, String> {
         use serde_json::json;
+        relay_trust::prepare(&self.store, source, op, &mut args)?;
         match op {
             "directory" => {
                 let mut entries = Vec::new();
@@ -1236,10 +1236,10 @@ impl RemoteConnectionManager {
                     }
                 };
                 let sender = args["sender"].as_str().unwrap_or_default();
-                let sender = match sender.split_once(" · ") {
+                let sender = if source != LOCAL_MACHINE { format!("{source}: {sender}") } else { match sender.split_once(" · ") {
                     Some((handle, label)) => format!("{handle}@{source} · {label}"),
                     None => format!("{sender}@{source}"),
-                };
+                }};
                 let id = self.message_machine(&machine, "enqueue",
                     json!({"to": name, "text": args["text"], "from": args["from"], "sender": sender, "role": args["role"]}), None).await?;
                 Ok(json!(format!("{machine}:{}", id.as_str().unwrap_or_default())))
@@ -1300,29 +1300,6 @@ impl RemoteConnectionManager {
         if let Err(error) = self.message_machine(machine, "designate", serde_json::json!({"owned_id": owned_id}), None).await {
             crate::debug_log::stderr_log!("Could not restore the orchestrator mark on {machine}: {error}");
         }
-    }
-
-    /// One ordered page of agent-to-agent messages from `machine` or from this desktop and
-    /// every connected machine. Each message is stored once, on its receiver's machine, so the
-    /// pages merge in the requested order; a machine that cannot be reached is left out.
-    pub async fn list_messages(&self, machine: Option<&str>, args: serde_json::Value, request_id: u64) -> Vec<serde_json::Value> {
-        let machines = machine.map_or_else(|| self.message_machines(""), |machine| vec![machine.to_string()]);
-        let mut pages = Vec::new();
-        for machine in machines {
-            let Ok(serde_json::Value::Array(page)) = self.message_machine(&machine, "messages", args.clone(), Some(request_id)).await else { continue };
-            pages.push((machine, page));
-        }
-        merge_message_pages(pages, args["limit"].as_i64().unwrap_or(100).clamp(1, super::messaging::MAX_MESSAGE_PAGE) as usize, args["sort"].as_str().unwrap_or("time"))
-    }
-
-    pub async fn count_messages(&self, session: &str, after_ms: i64, request_id: u64) -> i64 {
-        let mut count = 0;
-        for machine in self.message_machines("") {
-            if let Ok(value) = self.message_machine(&machine, "count", serde_json::json!({"session":session,"after_ms":after_ms}), Some(request_id)).await {
-                count += value.as_i64().unwrap_or_default();
-            }
-        }
-        count
     }
 
     /// Runs `work` until it ends or the desktop cancels `request_id`; a cancelled call gives `None`.
@@ -3329,7 +3306,7 @@ mod connection_tests {
     use super::*;
     use super::super::protocol::{BackgroundWorkItem, BackgroundWorkKind};
 
-    fn add_session(manager: &AgentRuntimeManager, owned_id: &str, title: &str) {
+    pub(super) fn add_session(manager: &AgentRuntimeManager, owned_id: &str, title: &str) {
         manager.store().upsert_session(&mcb_core::session_store::SessionRow {
             owned_id: owned_id.into(), native_session_id: None, provider: "codex".into(), model: None,
             effort: None, cwd: "/work".into(), worktree: None, branch: None, title: Some(title.into()),
@@ -3340,7 +3317,7 @@ mod connection_tests {
     }
 
     /// A message's sender label and text, read from the store file, whatever delivery did to it since.
-    fn stored_message(database: &std::path::Path, id: &str) -> (String, String) {
+    pub(super) fn stored_message(database: &std::path::Path, id: &str) -> (String, String) {
         rusqlite::Connection::open(database).unwrap().query_row(
             "SELECT sender_name, body FROM workflow_messages WHERE id = ?", [id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
     }
@@ -3556,8 +3533,8 @@ mod connection_tests {
     }
 
     #[test]
-    fn history_download_protocol_23_round_trips_compressed_chunks() {
-        assert_eq!(PROTOCOL_VERSION, 23);
+    fn history_download_protocol_24_round_trips_compressed_chunks() {
+        assert_eq!(PROTOCOL_VERSION, 24);
         let rows = vec![history_event(3), history_event(-2)];
         let encoded = encode_history_chunk(&rows).unwrap();
         assert_eq!(decode_history_chunk(&encoded).unwrap(), rows);
@@ -3733,6 +3710,7 @@ mod connection_tests {
         connections.client.lock().unwrap().clients.insert("workbox-test".into(), RemoteClient {
             requests: Some(requests), profile: Some(profile("workbox-test")), target_key: None, task: None, ready });
 
+        connections.remember("there", "workbox-test");
         // The remote session finds the desktop's session by its title, through the desktop.
         let there = MessagingEndpoint::start().unwrap();
         there.set_relay(state.relay.relay());
@@ -3748,8 +3726,12 @@ mod connection_tests {
         assert!(id.starts_with("mac:"), "{sent}");
         let (sender, body) = stored_message(&directory.join("desktop.db"), &id["mac:".len()..]);
         let there_handle = remote.store().directory_name("there").unwrap().unwrap().0;
-        assert_eq!(sender, format!("{there_handle}@workbox-test · There"));
+        assert_eq!(sender, format!("workbox-test: {there_handle} · There"));
         assert_eq!(body, "hello from there");
+        let traffic = connections.list_messages(None, json!({"session":"there","limit":10}), 90).await;
+        assert_eq!(traffic.len(), 1);
+        assert_eq!(traffic[0]["fromOwnedId"], "workbox-test:there");
+        assert_eq!(connections.count_messages("there", 0, 91).await, 1);
         // These test machines run no agent, so delivery may already have failed it.
         let status = tool(&there, &there_token, json!({"name":"message_status","arguments":{"id":id}})).await;
         assert!(["queued", "delivered", "failed"].contains(&status["status"].as_str().unwrap()), "{status}");
@@ -3766,6 +3748,7 @@ mod connection_tests {
         let here_handle = desktop.store().directory_name("here").unwrap().unwrap().0;
         assert_eq!(sender, format!("{here_handle}@mac · Here"));
         assert_eq!(body, "hello back");
+        assert_eq!(connections.count_messages("here", 0, 92).await, 2);
         let status = tool(&here, &here_token, json!({"name":"message_status","arguments":{"id":reply_id}})).await;
         assert!(["queued", "delivered", "failed"].contains(&status["status"].as_str().unwrap()), "{status}");
 
@@ -4914,7 +4897,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn readiness_requires_protocol_and_session_response() {
-        assert_eq!(PROTOCOL_VERSION, 23);
+        assert_eq!(PROTOCOL_VERSION, 24);
         for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
