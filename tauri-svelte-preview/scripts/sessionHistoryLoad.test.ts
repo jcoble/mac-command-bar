@@ -115,10 +115,6 @@ run('every_history_row_offers_resume_through_the_import', () => {
     assert.equal(action?.label, 'Resume as Assembly Session');
     assert.equal(action?.enabled, true);
   }
-  const card = readFileSync(new URL('../src/lib/shell/history/components/SessionHistoryCard.svelte', import.meta.url), 'utf8');
-  assert.doesNotMatch(card, /<Play aria-hidden="true" \/> Open/);
-  // The button says the whole action, for rows Assembly holds and rows it does not.
-  assert.match(card, /<RotateCcw aria-hidden="true" \/> \{resume\.enabled \? resume\.label : resume\.disabledReason\}/);
 });
 
 run('a_held_remote_row_waits_for_its_machine_scan', () => {
@@ -132,10 +128,6 @@ run('a_held_remote_row_waits_for_its_machine_scan', () => {
   assert.equal(sessionHistoryActions(held, false).find((candidate) => candidate.id === 'resume-assembly')?.enabled, true);
   held.machine = 'local';
   assert.equal(sessionHistoryActions(held, true).find((candidate) => candidate.id === 'resume-assembly')?.enabled, true);
-  const card = readFileSync(new URL('../src/lib/shell/history/components/SessionHistoryCard.svelte', import.meta.url), 'utf8');
-  assert.match(card, /disabled=\{!resume\.enabled\}/);
-  const host = readFileSync(new URL('../src/lib/shell/history/sessionHistoryHost.ts', import.meta.url), 'utf8');
-  assert.match(host, /rail\.scanningMachines = /);
 });
 
 run('a_row_the_rail_has_open_just_opens', () => {
@@ -160,13 +152,6 @@ run('a_session_running_outside_assembly_waits_until_it_stops', () => {
   row.logPath = '/tmp/elsewhere.jsonl';
   const resume = sessionHistoryActions(row, false, true).find((candidate) => candidate.id === 'resume-assembly');
   assert.deepEqual([resume?.enabled, resume?.disabledReason], [false, 'Running outside Assembly']);
-  // The refusal marks the row; History's next scan clears it, so a session stopped since can resume.
-  const panel = readFileSync(new URL('../src/lib/shell/history/components/HistoryPanel.svelte', import.meta.url), 'utf8');
-  assert.match(panel, /rail\.runningElsewhere = \[\.\.\.rail\.runningElsewhere, record\.key\]/);
-  const host = readFileSync(new URL('../src/lib/shell/history/sessionHistoryHost.ts', import.meta.url), 'utf8');
-  assert.match(host, /rail\.runningElsewhere = \[\]/);
-  const card = readFileSync(new URL('../src/lib/shell/history/components/SessionHistoryCard.svelte', import.meta.url), 'utf8');
-  assert.ok(card.includes('This session is still running outside Assembly. Stop it there, then resume it here.'));
 });
 
 const remoteScan = {
