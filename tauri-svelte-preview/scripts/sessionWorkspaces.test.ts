@@ -421,39 +421,16 @@ const BASE_RECORD = {
   rightTab: 'tasks'
 };
 
-test('the tasks view round-trips through a stored record', () => {
+test('a session workspace record no longer carries the Tasks view', () => {
   const tasksView = {
     search: 'drawer',
-    filters: { status: ['Doing'], priority: ['High', 'Low'] },
+    filters: { status: ['Doing'], priority: ['High'] },
     projectFilter: 'Assembly',
     sortBy: 'title',
     sortDirection: 'asc'
   };
-  const snapshot = normalizeWorkspaceSnapshot(JSON.parse(JSON.stringify({ ...BASE_RECORD, tasksView })));
 
-  assert.deepEqual(snapshot?.tasksView, tasksView);
-});
-
-test('junk in a stored tasks view becomes its default', () => {
-  const snapshot = normalizeWorkspaceSnapshot({
-    ...BASE_RECORD,
-    tasksView: {
-      search: 42,
-      filters: { status: ['Doing', 7, 'Doing'], priority: 'High' },
-      projectFilter: null,
-      sortBy: 'createdAt',
-      sortDirection: 'sideways'
-    }
-  });
-
-  assert.deepEqual(snapshot?.tasksView, {
-    search: '',
-    filters: { status: ['Doing'], priority: [] },
-    projectFilter: '',
-    sortBy: 'taskNumber',
-    sortDirection: 'desc'
-  });
-  assert.equal(normalizeWorkspaceSnapshot({ ...BASE_RECORD, tasksView: 'all' })?.tasksView, undefined);
+  assert.equal(normalizeWorkspaceSnapshot({ ...BASE_RECORD, tasksView })?.tasksView, undefined);
 });
 
 test('an old history panel record disappears on normalize', () => {

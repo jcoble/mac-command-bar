@@ -37,9 +37,10 @@
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { registerNotionTaskNavigation } from '$lib/shell/workbenchNavigation.ts';
   import { matchNotionProject } from '$lib/shell/notionProjectMatch.ts';
-  import type { SessionTasksWorkspace } from '$lib/shell/sessionWorkspaces.ts';
+  import { readAssemblySettingFromTauri, writeAssemblySettingFromTauri } from '$lib/tauriSource.ts';
   import { cn } from '$lib/utils.js';
   import NotionTaskViewer from './NotionTaskViewer.svelte';
+  import { normalizeTasksView, projectToShow, TASKS_VIEW_SETTING_KEY } from './tasksView.ts';
 
   const PAGE_SIZE = 25;
   const TASK_ROW_HEIGHT = 64;
@@ -48,17 +49,10 @@
   interface Props {
     /** The active session's folder; the list follows the Notion project it maps to. */
     root?: string;
-    /** The session the panel opened for; its view is saved to that session only. */
+    /** The active session; a file link on a task page opens against its folder. */
     ownedId?: string | null;
-    /** The search, filters and sort this session last used, read once at mount. */
-    initialView?: SessionTasksWorkspace;
-    /** Told the view on every reload and once more on unmount, to save with the
-     * session. The caller drops it unless that session is still selected. */
-    onViewChange?(ownedId: string, view: SessionTasksWorkspace): void;
   }
-  let { root = '', ownedId = null, initialView, onViewChange }: Props = $props();
-  const restoredView = untrack(() => initialView);
-  const mountedOwnedId = untrack(() => ownedId);
+  let { root = '', ownedId = null }: Props = $props();
 
   let settings = $state<NotionTaskSettings | null>(null);
   let tasks = $state<NotionTaskRow[]>([]);
@@ -66,19 +60,14 @@
   let statuses = $state<string[]>([]);
   let priorities = $state<string[]>([]);
   /** Selected pill values per group id: `status` and `priority`. Empty means unfiltered. */
-  let filters = $state<Record<string, string[]>>({
-    status: restoredView?.filters.status ?? [],
-    priority: restoredView?.filters.priority ?? []
-  });
-  let searchDraft = $state(restoredView?.search ?? '');
-  let search = $state(restoredView?.search ?? '');
-  let projectFilter = $state(restoredView?.projectFilter ?? '');
-  let sortBy = $state(restoredView?.sortBy ?? 'taskNumber');
-  let sortDirection = $state(restoredView?.sortDirection ?? 'desc');
-  /** A restored project choice wins over the session's own project until that
-   * project first resolves; later changes of it are followed again. A restored
-   * "All projects" is not a choice: the list still defaults to the open project. */
-  let keepRestoredProject = Boolean(restoredView?.projectFilter);
+  let filters = $state<Record<string, string[]>>({ status: [], priority: [] });
+  let searchDraft = $state('');
+  let search = $state('');
+  let projectFilter = $state('');
+  let sortBy = $state('taskNumber');
+  let sortDirection = $state('desc');
+  /** Until the saved view is read, saving would overwrite it with these defaults. */
+  let viewRestored = false;
   let loading = $state(true);
   let refreshing = $state(false);
   let saving = $state(false);
@@ -153,10 +142,10 @@
     hasMore = page.hasMore;
   }
 
-  /** The view as it stands, with the search as typed, submitted or not. */
+  /** The one view every session shares, with the search as typed, submitted or not. */
   function saveView(): void {
-    if (!mountedOwnedId) return;
-    onViewChange?.(mountedOwnedId, {
+    if (!viewRestored) return;
+    void writeAssemblySettingFromTauri(TASKS_VIEW_SETTING_KEY, {
       search: searchDraft.trim(),
       filters: { status: [...(filters.status ?? [])], priority: [...(filters.priority ?? [])] },
       projectFilter,
@@ -212,6 +201,16 @@
 
   async function initialize(owner: number): Promise<void> {
     try {
+      const saved = normalizeTasksView(await readAssemblySettingFromTauri(TASKS_VIEW_SETTING_KEY));
+      if (owner !== generation) return;
+      if (saved) {
+        filters = saved.filters;
+        searchDraft = search = saved.search;
+        projectFilter = projectToShow(sessionProject, saved.projectFilter);
+        sortBy = saved.sortBy;
+        sortDirection = saved.sortDirection;
+      }
+      viewRestored = true;
       settings = await readNotionTaskSettings();
       if (owner !== generation) return;
       dataSourceId = settings.dataSourceId;
@@ -321,12 +320,9 @@
   $effect(() => {
     const next = sessionProject;
     untrack(() => {
-      if (keepRestoredProject) {
-        if (next) keepRestoredProject = false;
-        return;
-      }
-      if (next === projectFilter) return;
-      projectFilter = next;
+      const shown = projectToShow(next, projectFilter);
+      if (shown === projectFilter) return;
+      projectFilter = shown;
       void reloadCached();
     });
   });

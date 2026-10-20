@@ -78,15 +78,6 @@ export interface SessionSourceControlWorkspace {
   scrollTop: number;
 }
 
-/** The Tasks panel's search, filters and sort; every value its query reads. */
-export interface SessionTasksWorkspace {
-  search: string;
-  filters: { status: string[]; priority: string[] };
-  projectFilter: string;
-  sortBy: string;
-  sortDirection: string;
-}
-
 export interface SessionWorkspaceFileState {
   /** Unsaved text only. Saved file contents are always read from disk. */
   draftContent?: string;
@@ -143,8 +134,6 @@ export interface SessionWorkspaceSnapshot {
   sourceControlInspectionRoot?: string | null;
   /** Small view state for the lazily mounted Source Control panel. */
   sourceControl?: SessionSourceControlWorkspace;
-  /** The Tasks panel's query, so reopening the drawer shows the same list. */
-  tasksView?: SessionTasksWorkspace;
 }
 
 /** Current checkout ownership as the /next route hands it to inspection panels. */
@@ -509,21 +498,6 @@ function normalizeSourceControl(value: unknown): SessionSourceControlWorkspace |
   };
 }
 
-function normalizeTasksView(value: unknown): SessionTasksWorkspace | null {
-  if (!isRecord(value)) return null;
-  const filters = isRecord(value.filters) ? value.filters : {};
-  return {
-    search: typeof value.search === 'string' ? value.search : '',
-    filters: {
-      status: [...new Set(stringsOf(filters.status))],
-      priority: [...new Set(stringsOf(filters.priority))]
-    },
-    projectFilter: typeof value.projectFilter === 'string' ? value.projectFilter : '',
-    sortBy: value.sortBy === 'title' ? 'title' : 'taskNumber',
-    sortDirection: value.sortDirection === 'asc' ? 'asc' : 'desc'
-  };
-}
-
 function isPathAtOrBelow(path: string, root: string): boolean {
   if (path === root) return true;
   if (root === '/') return path.startsWith('/');
@@ -597,8 +571,6 @@ export function normalizeWorkspaceSnapshot(value: unknown): SessionWorkspaceSnap
   if (sourceControlInspectionRoot) snapshot.sourceControlInspectionRoot = sourceControlInspectionRoot;
   const sourceControl = normalizeSourceControl(entry.sourceControl);
   if (sourceControl) snapshot.sourceControl = sourceControl;
-  const tasksView = normalizeTasksView(entry.tasksView);
-  if (tasksView) snapshot.tasksView = tasksView;
   return snapshot;
 }
 

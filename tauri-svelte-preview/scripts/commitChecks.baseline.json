@@ -74,9 +74,9 @@
     "tauri-svelte-preview/src/lib/shell/files/components/FilesPanel.svelte": 1489,
     "tauri-svelte-preview/src/lib/shell/history/components/HistoryPanel.svelte": 895,
     "tauri-svelte-preview/src/lib/shell/git/components/sourceControl/SourceControlPanel.svelte": 958,
-    "tauri-svelte-preview/src/lib/shell/panels/tasks/TasksPanel.svelte": 636,
+    "tauri-svelte-preview/src/lib/shell/panels/tasks/TasksPanel.svelte": 632,
     "tauri-svelte-preview/src/lib/shell/resources/ResourceManagerPanel.svelte": 628,
-    "tauri-svelte-preview/src/lib/shell/sessionWorkspaces.ts": 657,
+    "tauri-svelte-preview/src/lib/shell/sessionWorkspaces.ts": 629,
     "tauri-svelte-preview/src/lib/shell/stacks/stackStore.svelte.ts": 1014,
     "tauri-svelte-preview/src/lib/shell/terminal/terminalService.ts": 1059,
     "tauri-svelte-preview/src/lib/shell/settings/themes/themeRegistry.ts": 717,
@@ -87,7 +87,7 @@
     "tauri-svelte-preview/src/lib/workspaceSnapshot.ts": 613,
     "tauri-svelte-preview/src/lib/worktreeCleanupRunbook.ts": 878,
     "tauri-svelte-preview/src/lib/worktreeSafety.ts": 1141,
-    "tauri-svelte-preview/src/routes/+page.svelte": 1131
+    "tauri-svelte-preview/src/routes/+page.svelte": 1129
   },
   "providerBranches": {
     "core/src/scanners/sessions.rs": 6,

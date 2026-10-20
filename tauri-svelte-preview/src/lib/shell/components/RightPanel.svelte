@@ -15,8 +15,7 @@
   import type { RightTabId } from '$lib/shell/workbenchNavigation';
   import type {
     CheckoutScope,
-    SessionSourceControlWorkspace,
-    SessionTasksWorkspace
+    SessionSourceControlWorkspace
   } from '$lib/shell/sessionWorkspaces';
 
   import AgentsPanel from '$lib/shell/panels/agents/AgentsPanel.svelte';
@@ -57,8 +56,6 @@
     onSourceControlInspectionRootChange?(root: string | null): void;
     sourceControlWorkspace?: SessionSourceControlWorkspace;
     onSourceControlWorkspaceChange?(ownedId: string | null, state: SessionSourceControlWorkspace): void;
-    tasksView?: SessionTasksWorkspace;
-    onTasksViewChange?(ownedId: string, view: SessionTasksWorkspace): void;
     onUseSessionCheckout?(root: string): void | Promise<void>;
     messagesUnread: number;
     onMessagesSeen(): void;
@@ -84,8 +81,6 @@
     onSourceControlInspectionRootChange,
     sourceControlWorkspace,
     onSourceControlWorkspaceChange,
-    tasksView,
-    onTasksViewChange,
     onUseSessionCheckout,
     messagesUnread,
     onMessagesSeen,
@@ -148,7 +143,7 @@
         <HistoryPanel visible={true} {root} {ownedId} />
       </div>
     {:else if visible && activeId === 'tasks'}
-      <div class="panel-body showing"><TasksPanel {root} {ownedId} initialView={tasksView} onViewChange={onTasksViewChange} /></div>
+      <div class="panel-body showing"><TasksPanel {root} {ownedId} /></div>
     {/if}
   </div>
 </div>
