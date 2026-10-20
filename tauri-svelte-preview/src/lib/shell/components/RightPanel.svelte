@@ -14,7 +14,9 @@
    */
   import type { RightTabId } from '$lib/shell/workbenchNavigation';
   import type { SessionSourceControlWorkspace } from '$lib/shell/sessionWorkspaces';
-  import { canonicalPath } from '$lib/shell/files/explorer/explorerStore.svelte';
+  import { untrack } from 'svelte';
+  import { canonicalPath, explorer } from '$lib/shell/files/explorer/explorerStore.svelte';
+  import { activate as activateExplorer } from '$lib/shell/files/explorer/explorerService';
   import { sessionWorkingIn } from '$lib/shell/projects/projects.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
 
@@ -98,6 +100,11 @@
   const readOnlyReason = $derived(
     working ? `${working.title ? `"${working.title}"` : 'Another session'} is working in this folder, so it is read-only here.` : null
   );
+  // Switching sessions points the shared file tree at the session's own folder; while viewing, point it back.
+  $effect(() => {
+    if (!viewing || !visible || activeId !== 'files') return;
+    if (canonicalPath(explorer.root ?? '') === canonicalPath(filesRoot ?? root)) untrack(() => activateExplorer(viewedRoot));
+  });
 </script>
 
 <div class="right-panel">
