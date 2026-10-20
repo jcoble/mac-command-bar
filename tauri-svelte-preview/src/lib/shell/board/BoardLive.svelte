@@ -2,15 +2,18 @@
 <script lang="ts">
   import Check from '@lucide/svelte/icons/check';
   import CircleStop from '@lucide/svelte/icons/circle-stop';
+  import MessageSquarePlus from '@lucide/svelte/icons/message-square-plus';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
+  import { HoverActionButton, HoverActions } from '$lib/components/ui/hover-actions/index.js';
   import { sessionWaitsOnYou, type OwnedSession } from '$lib/shell/ownedSessions.ts';
   import { projectMachineLabel } from '$lib/shell/projects/projects.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { answerInboxStep, waitingOn, type InboxDecision } from '$lib/shell/workflows/ownerInboxActions.ts';
-  import type { BoardStep, MachineBoard } from './boardSource.ts';
+  import BoardNotes from './BoardNotes.svelte';
+  import type { BoardNote, BoardStep, MachineBoard } from './boardSource.ts';
 
   interface Props {
     boards: MachineBoard[];
@@ -28,6 +31,8 @@
   const HEADING = 'flex items-center gap-2 px-1 text-[13px] font-semibold';
   const ROW = 'flex min-w-0 flex-col gap-1 rounded-lg bg-muted/50 px-3 py-2';
   let busy = $state(false);
+  /** The live row whose note field is showing. */
+  let adding = $state<string | null>(null);
 
   const machineName = (machine: string): string => projectMachineLabel(machine, rail.remoteProfiles);
   const sessionMachine = (session: OwnedSession): string =>
@@ -47,8 +52,13 @@
     return [...groups];
   });
 
+  /** Notes on a session live on the machine that runs it. */
+  const sessionBoard = (session: OwnedSession): string =>
+    session.executionEnvironment === 'remote' ? (session.remoteProfileId ?? '') : 'mac';
+  const sessionNotes = (machine: string, target: string): BoardNote[] =>
+    boards.find((board) => board.machine === machine)?.value.session_notes.find((item) => item.target === target)?.notes ?? [];
+
   function status(session: OwnedSession): string {
-    if (sessionWaitsOnYou(session)) return waitingOn(session);
     return session.runtimeState === 'working' || session.runtimeState === 'interrupting' ? 'Working' : 'Idle';
   }
 
@@ -69,15 +79,39 @@
   }
 </script>
 
+{#snippet addNote(target: string)}
+  <HoverActions class="absolute top-1 right-1.5" label="Note actions">
+    <HoverActionButton label="Add note" size="xs" onclick={() => (adding = target)}><MessageSquarePlus /></HoverActionButton>
+  </HoverActions>
+{/snippet}
+
+{#snippet notesFor(notes: BoardNote[], machine: string, target: string)}
+  {#if notes.length || adding === target}
+    <div class="flex min-w-0 flex-col gap-1 pt-1">
+      <BoardNotes {notes} {machine} {target} {signal} adding={adding === target} {onError} onDone={() => (adding = null)} />
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet sessionRow(session: OwnedSession)}
-  <button
-    type="button"
-    class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/60 focus-visible:ring-3 focus-visible:ring-ring/50"
-    onclick={() => onOpenSession(session.ownedId)}
-  >
-    <span class="min-w-0 flex-1 truncate text-[13px] font-medium">{session.title}</span>
-    <span class="flex-none text-xs text-muted-foreground">{status(session)}</span>
-  </button>
+  {@const machine = sessionBoard(session)}
+  {@const target = `session:${session.ownedId}`}
+  <div class="group relative">
+    <button
+      type="button"
+      class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/60 focus-visible:ring-3 focus-visible:ring-ring/50"
+      onclick={() => onOpenSession(session.ownedId)}
+    >
+      <span class="min-w-0 flex-1 truncate text-[13px] font-medium">{session.title}</span>
+      {#if sessionWaitsOnYou(session)}
+        <Chip tone="attention">{waitingOn(session)}</Chip>
+      {:else}
+        <span class="flex-none text-xs text-muted-foreground">{status(session)}</span>
+      {/if}
+    </button>
+    {@render addNote(target)}
+  </div>
+  <div class="px-2">{@render notesFor(sessionNotes(machine, target), machine, target)}</div>
 {/snippet}
 
 <div class="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto border-l border-border p-3" data-testid="board-live">
@@ -88,7 +122,8 @@
     {/if}
     <ul class="flex flex-col gap-2">
       {#each steps as { machine, step } (`${machine}:${step.run_id}:${step.node_id}`)}
-        <li class={ROW}>
+        <li class={`${ROW} group relative`}>
+          {@render addNote(`step:${step.run_id}/${step.node_id}`)}
           <span class="flex min-w-0 items-center gap-2 text-sm">
             <span class="min-w-0 flex-1 truncate font-medium">
               {[notion ? step.task_key : null, step.workflow_name].filter(Boolean).join(' · ') || step.run_id}
@@ -110,19 +145,11 @@
               <Button size="sm" variant="ghost" onclick={() => onOpenSession(ownedId)}>Open</Button>
             {/if}
           </span>
+          {@render notesFor(step.notes, machine, `step:${step.run_id}/${step.node_id}`)}
         </li>
       {/each}
       {#each sessions as session (session.ownedId)}
-        <li>
-          <button
-            type="button"
-            class="flex w-full min-w-0 items-center gap-2 rounded-lg bg-muted/50 px-3 py-2 text-left hover:bg-accent/60 focus-visible:ring-3 focus-visible:ring-ring/50"
-            onclick={() => onOpenSession(session.ownedId)}
-          >
-            <span class="min-w-0 flex-1 truncate text-[13px] font-medium">{session.title}</span>
-            <Chip tone="attention">{waitingOn(session)}</Chip>
-          </button>
-        </li>
+        <li class="rounded-lg bg-muted/50 py-0.5">{@render sessionRow(session)}</li>
       {/each}
     </ul>
   </section>
@@ -132,7 +159,8 @@
       <h3 class={HEADING}>Workflow runs <span class="font-normal text-muted-foreground tabular-nums">{runs.length}</span></h3>
       <ul class="flex flex-col gap-2">
         {#each runs as { machine, run } (`${machine}:${run.id}`)}
-          <li class={ROW}>
+          <li class={`${ROW} group relative`}>
+            {@render addNote(`run:${run.id}`)}
             <span class="flex min-w-0 items-center gap-2 text-sm">
               <span class="min-w-0 truncate font-medium">{run.name ?? run.id}</span>
               {#if notion && run.task_key}<span class="flex-none text-[13px] text-muted-foreground">{run.task_key}</span>{/if}
@@ -142,6 +170,7 @@
               {[run.current_step ? `Step ${run.current_step}` : null, run.state, run.round !== null ? `round ${run.round}` : null,
                 run.findings !== null ? `${run.findings} found` : null, machineName(machine === 'mac' ? 'local' : machine)].filter(Boolean).join(' · ')}
             </span>
+            {@render notesFor(run.notes, machine, `run:${run.id}`)}
           </li>
         {/each}
       </ul>

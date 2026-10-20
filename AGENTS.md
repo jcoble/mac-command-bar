@@ -223,3 +223,12 @@ one next to it doesn't. Before calling work done, name which of these you covere
 - `docs/operations/` holds maintainer procedures. Plans, recon notes and lane reports that are
   committed go in `docs/plans/<YYYY-MM-DD>/`, never the repo root. Scratch stays out of the worktree.
 - Plain English in everything a person reads. Spell terms out; no invented shorthand.
+
+## The build board
+
+- The owner reads the Board (top bar) to see what is running and what needs them. Write to it with the
+  Assembly MCP tool `board_update`.
+- The session the owner gave a task to keeps one card for it; the main orchestrator may update any card.
+  Helpers and workflow workers don't post. Key: the task key if there is one, else a name no other session would pick.
+- Post when you start, update when the state changes, and use `needs_you` only when the owner must act,
+  with `steps` saying what to do. Link `run_id` and `pr_url`.

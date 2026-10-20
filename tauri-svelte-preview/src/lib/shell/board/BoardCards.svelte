@@ -11,6 +11,7 @@
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
   import { cn } from '$lib/utils.js';
+  import BoardNotes from './BoardNotes.svelte';
   import { changeBoardCard, type BoardCard, type BoardCardAction, type MachineBoard } from './boardSource.ts';
 
   interface Props {
@@ -166,6 +167,10 @@
               <p class="text-sm whitespace-pre-wrap">{card.note}</p>
             </section>
           {/if}
+          <section class="flex flex-col gap-1.5">
+            <h4 class={LABEL}>Your notes</h4>
+            <BoardNotes notes={card.notes} machine={entry.machine} target={`card:${card.key}`} {signal} adding {onError} />
+          </section>
           {#if card.pr_url || (notion && card.task_url) || card.run_id || card.session_owned_id}
             <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-[13px]">
               {#if card.pr_url}
