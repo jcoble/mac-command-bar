@@ -60,6 +60,7 @@ function loadConnection() {
   const olderCursors: number[] = [];
   let admitSend: (receipt: unknown) => void = () => undefined;
   let liveEvent: (event: unknown) => void = () => undefined;
+  const snapshotState: { activeTurnId?: string } = {};
   const createChat = (options: any) => {
     const processor = new StreamProcessor();
     const chat = {
@@ -96,7 +97,7 @@ function loadConnection() {
     sendStructuredMessage: () => new Promise((resolve) => { admitSend = resolve; }),
     subscribeSelectedConversation: async (options: any) => {
       liveEvent = options.onEvent;
-      options.onSnapshot({ page: page(21, 30, true), pendingEvents: [], pendingSequence: 30, suspended: false,
+      options.onSnapshot({ page: page(21, 30, true), pendingEvents: [], pendingSequence: 30, suspended: false, ...snapshotState,
         connection: { generation: 1, provider: 'codex', state: 'connected' } });
       return () => undefined;
     },
@@ -108,9 +109,9 @@ function loadConnection() {
   };
   const api = Function(...Object.keys(dependencies), `${stripTypeScriptTypes(body, { mode: 'strip' })}
     return { selectConversationChat, selectedConversationChatReady, pageSelectedConversation,
-      trimSelectedConversationToLatest, sendSelectedConversationMessage };
+      trimSelectedConversationToLatest, sendSelectedConversationMessage, jumpSelectedConversationToLatest };
   `)(...Object.values(dependencies));
-  return { api, olderCursors, admitSend: (receipt: unknown) => admitSend(receipt), liveEvent: (event: unknown) => liveEvent(event) };
+  return { api, olderCursors, admitSend: (receipt: unknown) => admitSend(receipt), liveEvent: (event: unknown) => liveEvent(event), snapshotState };
 }
 
 /** Lets the attachment reads a page started finish. */
@@ -176,4 +177,16 @@ test('trim_waits_while_a_turn_runs', async () => {
   await api.trimSelectedConversationToLatest();
   await settle();
   assert.deepEqual(ids(chat.messages), range(1, 30, 'u'), 'nothing is dropped while a turn runs');
+});
+
+test('jump_to_latest_replaces_history_unless_a_turn_runs', async () => {
+  const running = await openAndPageTwice('jump-running');
+  // A running tool may sit above the latest page; the jump keeps the earlier pages until the turn ends.
+  running.snapshotState.activeTurnId = 't30';
+  await running.api.jumpSelectedConversationToLatest('jump-running');
+  assert.deepEqual(ids(running.chat.messages), range(1, 30, 'u'), 'a running turn keeps the loaded history');
+
+  const idle = await openAndPageTwice('jump-idle');
+  await idle.api.jumpSelectedConversationToLatest('jump-idle');
+  assert.deepEqual(ids(idle.chat.messages), range(21, 30, 'u'), 'otherwise the latest page replaces it');
 });

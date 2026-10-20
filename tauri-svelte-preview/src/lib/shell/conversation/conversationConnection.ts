@@ -79,7 +79,7 @@ interface ActiveConversation {
   beforeCursor?: number;
   afterCursor?: number;
   latestWindowSize?: number; // Messages the latest page delivered; returning to the latest trims back to them.
-  replaceHistory?: boolean; // Jump to latest asked the next snapshot to replace the loaded history.
+  replaceHistory?: boolean; // Jump to latest replaces the loaded history, unless a turn runs: its tools may sit above the latest page.
   pendingSend: PendingSend | null;
   pendingAdmission: PendingAdmission | null;
   messageBytes: Map<string, number>;
@@ -372,7 +372,7 @@ function snapshotChunks(
   const pageMessages = messagesFromPage(snapshot.page);
   const current = getConversationSession(selection.historyOwnedId);
   selection.latestWindowSize = pageMessages.length;
-  const prefixEnd = selection.replaceHistory ? -1 : selection.chat.messages.findIndex((message) => message.id === pageMessages[0]?.id);
+  const prefixEnd = selection.replaceHistory && !snapshot.activeTurnId ? -1 : selection.chat.messages.findIndex((message) => message.id === pageMessages[0]?.id);
   selection.replaceHistory = false;
   const prefix = prefixEnd > 0 ? selection.chat.messages.slice(0, prefixEnd) : [];
   let messages = [...prefix, ...pageMessages];
