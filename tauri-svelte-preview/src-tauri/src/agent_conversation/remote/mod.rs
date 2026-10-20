@@ -1177,7 +1177,7 @@ impl RemoteConnectionManager {
             .insert(owned_id.into(), profile_id.into());
     }
 
-    fn profile_for_owned_id(&self, owned_id: &str) -> Result<String, String> {
+    pub(crate) fn profile_for_owned_id(&self, owned_id: &str) -> Result<String, String> {
         self.remote_sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

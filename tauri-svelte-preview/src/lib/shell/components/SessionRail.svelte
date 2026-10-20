@@ -339,6 +339,7 @@
 		x={contextMenu.x}
 		y={contextMenu.y}
 		items={contextMenuItems}
+		session={contextMenu.session}
 		onSelect={runContextAction}
 		onClose={() => {
 			contextMenu = null;

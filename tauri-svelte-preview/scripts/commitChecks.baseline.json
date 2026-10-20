@@ -87,7 +87,7 @@
     "tauri-svelte-preview/src/lib/workspaceSnapshot.ts": 613,
     "tauri-svelte-preview/src/lib/worktreeCleanupRunbook.ts": 878,
     "tauri-svelte-preview/src/lib/worktreeSafety.ts": 1141,
-    "tauri-svelte-preview/src/routes/+page.svelte": 1129
+    "tauri-svelte-preview/src/routes/+page.svelte": 1128
   },
   "providerBranches": {
     "core/src/scanners/sessions.rs": 6,

@@ -1,3 +1,4 @@
+#[path = "session_project.rs"] pub mod session_project;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -6,7 +7,6 @@ use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
 use mcb_core::session_store::{
     AnnotationRow, EventCoverage, EventRow, ItemPage, ProjectRow, SessionRow, SessionStore,
 };

@@ -51,3 +51,10 @@ export async function refreshRailProjects(): Promise<void> {
     });
   }
 }
+
+/** Moves only the desktop record; the agent keeps its working folder. */
+export async function moveSessionProject(ownedId: string, projectId: string): Promise<void> {
+  const { invoke } = await import('../../workspaceInvoke.ts');
+  await invoke('set_session_project', { ownedId, projectId });
+  await refreshRailProjects();
+}

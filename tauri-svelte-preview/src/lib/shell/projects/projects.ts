@@ -141,3 +141,11 @@ export function sessionWorkingIn<S extends { cwd: string; executionEnvironment: 
     return cwd !== null && (cwd === target || cwd.startsWith(`${target}/`) || target.startsWith(`${cwd}/`));
   }) ?? null;
 }
+
+export function moveProjectDestinations(
+  projects: readonly ProjectRecord[],
+  session: { executionEnvironment?: string; remoteProfileId?: string | null }
+): ProjectRecord[] {
+  const machine = session.executionEnvironment === 'remote' ? session.remoteProfileId : 'local';
+  return machine ? filterProjects(projects, machine, '') : [];
+}

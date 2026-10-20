@@ -63,7 +63,6 @@
 	import type { ThreadStartRequest } from "$lib/shell/conversation/newSession/threadStartFlow";
 	import { ownedSessionMetaForBackend, type OwnedSession } from "$lib/shell/ownedSessions";
 	import ProjectsScreen from "$lib/shell/projects/ProjectsScreen.svelte";
-	import { projectRegistry } from "$lib/shell/projects/projectRegistry.svelte";
 	import { diffPathFor } from "$lib/shell/sessionWorkspaces";
 	import { ownedSessionStatusPatch, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
 	import type { CenterTabId } from "$lib/shell/workbenchNavigation";
@@ -348,10 +347,10 @@
 		return () => popups.disconnect();
 	});
 
-	// A session is rooted at its project. Each time the registry is read again (a
-	// project's folder changed, or it was removed), a session whose root moved opens there.
+	// Follow the active session's project assignment and its registered folder.
+	// A background move must not select that session.
 	$effect(() => {
-		void projectRegistry.projects;
+		void selection.durableSessionRoot;
 		untrack(() => {
 			const ownedId = selection.activeOwnedId;
 			if (ownedId && selection.treeRootMoved) void openSession(ownedId);

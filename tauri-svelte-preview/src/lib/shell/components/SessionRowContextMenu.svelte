@@ -1,16 +1,33 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import type { OwnedSession } from '../ownedSessions';
+  import { moveProjectDestinations } from '../projects/projects';
+  import { hydrateProjects, moveSessionProject, projectRegistry } from '../projects/projectRegistry.svelte';
+  import { rail } from '../stores/sessionRailStore.svelte';
   import type { SessionRowMenuAction, SessionRowMenuItem } from './sessionRowMenu.ts';
 
   interface Props {
     x: number;
     y: number;
     items: SessionRowMenuItem[];
+    session: OwnedSession;
     onSelect(action: SessionRowMenuAction): void;
     onClose(): void;
   }
 
-  let { x, y, items, onSelect, onClose }: Props = $props();
+  let { x, y, items, session, onSelect, onClose }: Props = $props();
+  let choosingProject = $state(false);
+  let moving = $state(false);
+  const destinations = $derived(moveProjectDestinations(projectRegistry.projects, session));
+  async function move(projectId: string): Promise<void> {
+    moving = true;
+    try {
+      await moveSessionProject(session.ownedId, projectId);
+      onClose();
+    } catch (error) {
+      rail.error = error instanceof Error ? error.message : String(error);
+    } finally { moving = false; }
+  }
   let menu: HTMLDivElement | null = null;
   let left = $state(0);
   let top = $state(0);
@@ -43,6 +60,12 @@
   style={`left:${left}px;top:${top}px`}
   oncontextmenu={(event) => event.preventDefault()}
 >
+  {#if choosingProject}
+    <button type="button" role="menuitem" disabled={moving} onclick={() => { choosingProject = false; }}>Back</button>
+    {#each destinations as project (project.id)}
+      <button type="button" role="menuitem" disabled={moving || project.id === session.projectId} onclick={() => void move(project.id)}>{project.title}</button>
+    {/each}
+  {:else}
   {#each items as item (item.id)}
     {#if item.startsGroup}<span class="separator" aria-hidden="true"></span>{/if}
     <button
@@ -51,9 +74,14 @@
       disabled={!item.enabled}
       class:destructive={item.destructive}
       title={item.enabled ? item.hint ?? item.label : item.disabledReason ?? item.label}
-      onclick={() => { if (item.enabled) onSelect(item.id); }}
+      onclick={() => {
+        if (!item.enabled) return;
+        if (item.id === 'move-to-project') { choosingProject = true; void hydrateProjects(); }
+        else onSelect(item.id);
+      }}
     >{item.label}</button>
   {/each}
+  {/if}
 </div>
 
 <style>

@@ -954,7 +954,7 @@ pub struct SessionRow {
     /// counts as the first prompt.
     pub title_source: Option<String>,
     pub project: Option<String>,
-    /// The registry project the session was started in. Written once.
+    /// Automatic assignment is write-once; an explicit move can replace it.
     pub project_id: Option<String>,
     pub state: String,
     pub suspended: bool,
@@ -1531,11 +1531,9 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Gives each session a remote machine listed its cached row here, in one
-    /// statement. `rows_json` is `[[owned_id, project_id, last_activity_at]]`;
-    /// a new row starts with `extra_json` and no events. A row keeps the
-    /// first project it got and the newest activity. Rows that are local or
-    /// another machine's are left alone.
+    /// Files remote rows in one statement, retaining saved projects and newest activity.
+    /// `rows_json` is `[[owned_id, project_id, last_activity_at, extra_json]]`.
+    /// Local rows and rows on other machines are left alone.
     pub fn file_remote_sessions(&self, profile_id: &str, rows_json: &str) -> Result<()> {
         self.lock_write()?.execute(
             "INSERT INTO sessions (owned_id, provider, cwd, state, suspended, created_at,
@@ -2096,17 +2094,8 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Saves the next session row and its optional event as one durable change.
-    ///
-    /// The immediate transaction guarantees that a failed event insert cannot
-    /// leave the session row ahead of its journal.
-    ///
-    /// Nothing is trimmed here. This used to keep only the newest ten thousand
-    /// events of a session, which was a reasonable guard when opening a
-    /// conversation meant handing over all of them. It stopped being one once a
-    /// window became a bounded read: history costs disk and nothing else, and
-    /// the trim silently deleted the reading a person had just scrolled back to
-    /// fetch, on their next message.
+    /// Saves the row and optional event atomically: a failed event cannot leave the row ahead.
+    /// Do not trim old events: bounded history reads need them when the person scrolls back.
     pub fn upsert_session_with_event(
         &self,
         session: &SessionRow,
@@ -2463,20 +2452,36 @@ impl SessionStore {
                 params![row.id, row.machine, row.root_path, row.title, row.repo_key, row.created_at_ms],
             )
             .map_err(|error| StoreError::sqlite("could not save the project", error))?;
-        let project = connection
-            .query_row(
-                &project_query("WHERE p.machine = ? AND p.root_path = ?"),
-                params![row.machine, row.root_path],
-                project_from_row,
-            )
+        let project = connection.query_row(
+            &project_query("WHERE p.machine = ? AND p.root_path = ?"),
+            params![row.machine, row.root_path], project_from_row,
+        )
             .map_err(|error| StoreError::sqlite("could not read the project", error))?;
         Ok((project, inserted == 0))
     }
 
-    pub fn get_project(&self, id: &str) -> Result<Option<ProjectRow>> {
+    /// Explicit moves affect only the desktop record, on the same machine.
+    pub fn move_session_project(&self, owned_id: &str, project_id: &str) -> Result<bool> {
+        self.lock_write()?.execute(
+            "UPDATE sessions SET project_id = ?2 WHERE owned_id = ?1 AND EXISTS (
+                SELECT 1 FROM projects WHERE id = ?2 AND machine = COALESCE(sessions.cached_remote_profile_id, 'local'))",
+            params![owned_id, project_id],
+        ).map(|changed| changed == 1).map_err(|error| StoreError::sqlite("could not move the session", error))
+    }
+
+    /// Saved assignments in input order, for one rail read across machines.
+    pub fn session_projects(&self, ids_json: &str) -> Result<Vec<Option<String>>> {
         let connection = self.lock()?;
-        connection
-            .query_row(&project_query("WHERE p.id = ?"), [id], project_from_row)
+        let mut statement = connection.prepare(
+            "SELECT s.project_id FROM json_each(?1) j LEFT JOIN sessions s ON s.owned_id = j.value ORDER BY j.key"
+        ).map_err(|error| StoreError::sqlite("could not prepare session projects", error))?;
+        let rows = statement.query_map([ids_json], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not read session projects", error))?;
+        rows.collect::<rusqlite::Result<_>>().map_err(|error| StoreError::sqlite("could not read session projects", error))
+    }
+
+    pub fn get_project(&self, id: &str) -> Result<Option<ProjectRow>> {
+        self.lock()?.query_row(&project_query("WHERE p.id = ?"), [id], project_from_row)
             .optional()
             .map_err(|error| StoreError::sqlite("could not read the project", error))
     }
@@ -2556,9 +2561,8 @@ impl SessionStore {
         Ok(removed == 1)
     }
 
-    /// The project group for each `[id, project_id]` pair in `pairs_json`, as
-    /// `(id, key, label)` in input order, in one statement against `projects`.
-    /// The id is whatever the caller keys its records by: an owned id or a folder.
+    /// Returns `(id, key, label)` for `[id, project_id]` pairs in input order.
+    /// One query accepts owned ids or folders as keys.
     pub fn project_groups(&self, pairs_json: &str) -> Result<Vec<(String, String, String)>> {
         let connection = self.lock()?;
         let mut statement = connection
@@ -2660,20 +2664,16 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not list the unassigned folders", error))
     }
 
-    /// Files local sessions that have no project yet under the project matched
-    /// to their folder. `matches_json` is a JSON array of `[folder, project_id]`.
-    /// A session that already has a project keeps it. Returns the rows changed.
+    /// Files unassigned local sessions; existing assignments stay. Returns rows changed.
+    /// `matches_json` is an array of `[folder, project_id]`.
     pub fn assign_session_projects(&self, matches_json: &str) -> Result<usize> {
-        let connection = self.lock_write()?;
-        connection
-            .execute(
+        self.lock_write()?.execute(
                 "UPDATE sessions SET project_id = json_extract(m.value, '$[1]')
                  FROM json_each(?1) m
                  WHERE sessions.project_id IS NULL AND sessions.cached_remote_profile_id IS NULL
                    AND sessions.cwd = json_extract(m.value, '$[0]')",
                 [matches_json],
-            )
-            .map_err(|error| StoreError::sqlite("could not file sessions under their projects", error))
+            ).map_err(|error| StoreError::sqlite("could not file sessions under their projects", error))
     }
 
     /// The newest local project's creation time, when it is newer than the last
