@@ -26,13 +26,14 @@ const anonymousAsyncIifePattern =
 const cssHasPattern = /:has\s*\(/gi;
 const tailwindHasPattern = /\b(?:(?:group|peer)-)?has-(?:\[[^\]\r\n]+\]|[A-Za-z][\w-]*)(?:\/[\w-]+)?:/g;
 // Animations end (AGENTS.md): an endless loop repaints every frame, so CSS, inline styles and the
-// Tailwind loop classes may not repeat forever. Only the files below are exempt, each with its reason.
+// Tailwind loop classes may not repeat forever. A value ends at a quote, except a quoted keyframe name.
+// Only the files below are exempt, each with its reason.
 const endlessAnimationAllowedFiles = new Set([
   // Owner-chosen working indicator (TSK-1391); pauses off screen, in a hidden window and with reduced
   // motion; motion pending the owner's decision in TSK-1564.
   'src/lib/shell/components/feedback/WorkingSpinner.svelte'
 ]);
-const endlessAnimationPattern = /\banimation(?:-iteration-count)?\s*(?::|=\s*\{?\s*["'`]?)[^;{}"'`<>]*?\binfinite\b|\banimate-(?:spin|pulse|ping|bounce)\b/gi;
+const endlessAnimationPattern = /\banimation(?:-iteration-count)?\s*(?::|=\s*\{?\s*["'`]?)(?:[^;{}"'`<>]|(["'])[\w-]*\1)*?\binfinite\b|\banimate-(?:spin|pulse|ping|bounce)\b/gi;
 
 const allowedHits = new Set([
   'src/lib/shell/components/UtilityStrip.svelte:setInterval:const refreshInterval = window.setInterval(() => {',
