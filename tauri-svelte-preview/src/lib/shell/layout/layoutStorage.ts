@@ -88,6 +88,21 @@ export function gridPanelIds(serialized: unknown): Set<string> {
 }
 
 /**
+ * The width a top-level column was saved at, or null when the layout has no
+ * such column or no number for it. dockview restores every column scaled by
+ * the new grid width over the saved one, so this saved number, not what the
+ * restore produced, is the width the user left the column at.
+ */
+export function storedColumnWidth(serialized: unknown, id: string): number | null {
+  const columns = (serialized as { grid?: { root?: { data?: unknown } } } | null)?.grid?.root?.data;
+  if (!Array.isArray(columns)) return null;
+  const column = columns.find(
+    (node) => node?.type === 'leaf' && (node.data as { id?: unknown } | undefined)?.id === id
+  ) as { size?: unknown } | undefined;
+  return typeof column?.size === 'number' ? column.size : null;
+}
+
+/**
  * Pane ids inside a `SerializedPaneview` (dockview-core 6.6.1 shape:
  * `{ size, views: [{ size, expanded?, data: { id, component, title, … } }] }`).
  * Collapsed panes are in `views` exactly like open ones, so this returns the

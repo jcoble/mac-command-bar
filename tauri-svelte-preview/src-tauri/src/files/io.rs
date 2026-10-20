@@ -180,3 +180,68 @@ pub(crate) fn write_source_file_sync(
 
     read_source_file_sync(path)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_folder() -> PathBuf {
+        let folder = std::env::temp_dir().join(format!("assembly-source-io-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    /// Switching sessions advances the editor's read generation (c5e39e47d, fd487f8f4):
+    /// a newer read supersedes an older one, and a cancel that arrives late for an
+    /// older generation cannot stop the newer owner's read.
+    #[test]
+    fn a_late_cancel_for_an_older_read_never_stops_the_newer_one() {
+        let owner = SourceFileReadOwner::default();
+        assert!(owner.advance(1));
+        assert!(owner.advance(2), "a newer read takes over");
+        assert!(!owner.advance(1), "the older read is no longer current");
+        let current = owner.generation();
+        assert_eq!(current.load(Ordering::Acquire), 2, "the late cancel left the newer generation in place");
+        assert!(owner.advance(2), "the current read stays current");
+    }
+
+    /// A read whose owner moved on stops and returns nothing, so a released
+    /// file is never decoded or sent to the window.
+    #[test]
+    fn a_read_whose_owner_moved_on_returns_nothing() {
+        let folder = temp_folder();
+        let file = folder.join("a.ts");
+        std::fs::write(&file, "export {};\n").unwrap();
+        assert!(read_source_file_sync_while(file.clone(), || false).unwrap().is_none());
+        assert_eq!(read_source_file_sync(file).unwrap().content, "export {};\n");
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    /// The revision is a hash of the bytes, so identical text read twice has the
+    /// same revision and any change to the text gives a new one.
+    #[test]
+    fn the_revision_follows_the_file_bytes() {
+        let folder = temp_folder();
+        let file = folder.join("a.txt");
+        std::fs::write(&file, "one\n").unwrap();
+        let first = read_source_file_sync(file.clone()).unwrap().revision;
+        assert_eq!(read_source_file_sync(file.clone()).unwrap().revision, first);
+        std::fs::write(&file, "two\n").unwrap();
+        assert_ne!(read_source_file_sync(file).unwrap().revision, first);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    /// Files over the 4 MiB preview cap and files that are not UTF-8 are refused
+    /// with a sentence instead of being loaded into the window.
+    #[test]
+    fn oversized_and_non_utf8_files_are_refused() {
+        let folder = temp_folder();
+        let big = folder.join("big.log");
+        std::fs::write(&big, vec![b'a'; MAX_PREVIEW_BYTES as usize + 1]).unwrap();
+        assert!(read_source_file_sync(big).unwrap_err().starts_with("Source file is too large"));
+        let binary = folder.join("blob.bin");
+        std::fs::write(&binary, [0xff, 0xfe, 0x00, 0x80]).unwrap();
+        assert!(read_source_file_sync(binary).unwrap_err().contains("UTF-8"));
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+}

@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   buildState,
+  currentRunLink,
   parseAvailableGb,
   parseListeningPorts,
   pickFreeDisplay,
@@ -99,4 +100,24 @@ test('stop reaches descendants that started their own process group', () => {
     { pid: 20, ppid: 1, pgid: 20 } // unrelated
   ];
   assert.deepEqual(descendantGroups(rows, [10]).sort((a, b) => a - b), [10, 12, 14]);
+});
+
+test('two worktrees keep independent run state when one is stopped', () => {
+  const linkA = currentRunLink('/proof', '/work/repo-a/review');
+  const linkB = currentRunLink('/proof', '/work/repo-b/review');
+  assert.notEqual(linkA, linkB, 'equal folder names in different worktrees must stay separate');
+  const state = (worktree: string, pid: number) => buildState({
+    runDir: `/proof/run-${pid}`, display: 140 + pid, port: 5300 + pid,
+    dataDir: `/proof/run-${pid}/data`, worktree,
+    processes: [{ name: 'app', pid, startedAt: 'now', log: '' }]
+  });
+  const runs = new Map([[linkA, state('/work/repo-a/review', 10)], [linkB, state('/work/repo-b/review', 20)]]);
+  const live = new Set([10, 20]);
+  const isLive = (p: { pid: number }) => live.has(p.pid);
+  assert.throws(() => refuseWhileRunning(runs.get(linkA), isLive), /still running/);
+  assert.throws(() => refuseWhileRunning(runs.get(linkB), isLive), /still running/);
+  for (const p of runs.get(linkA)!.processes) live.delete(p.pid);
+  assert.doesNotThrow(() => refuseWhileRunning(runs.get(linkA), isLive));
+  assert.throws(() => refuseWhileRunning(runs.get(linkB), isLive), /still running/);
+  assert.deepEqual([...live], [20]);
 });
