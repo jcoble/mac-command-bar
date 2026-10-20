@@ -959,9 +959,9 @@ export async function trimSelectedConversationToLatest(historyOwnedId?: string):
   const selection = historyOwnedId && historyOwnedId !== active?.historyOwnedId ? childActive : active;
   const current = selection && getConversationSession(selection.historyOwnedId);
   const keep = selection?.latestWindowSize ?? 0;
-  // Nothing moves while a page, a send, a restore, a jump or a pending decision is in flight.
+  // Nothing moves while a page, a send, a turn, a restore, a jump or a pending decision is in flight.
   if (!selection || !current || (historyOwnedId && selection.historyOwnedId !== historyOwnedId) || !selection.push
-    || !keep || selection.chat.messages.length <= keep || selection.resolveReady || selection.pendingSend
+    || !keep || selection.chat.messages.length <= keep || selection.resolveReady || selection.pendingSend || current.activeTurnId
     || selection.pendingAdmission || selection.anchorAdmission || current.selectedLoadingOlder || current.selectedLoadingNewer
     || Object.keys(current.pendingApprovals).length || Object.keys(current.pendingInputs).length) return;
   // The older-page lock holds until the chat takes the trimmed snapshot, so no page merges into the old list.

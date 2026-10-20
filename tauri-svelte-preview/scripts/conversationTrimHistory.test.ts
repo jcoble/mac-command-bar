@@ -167,3 +167,13 @@ test('trim_keeps_live_output_queued_before_it', async () => {
   await settle();
   assert.deepEqual(ids(chat.messages), [...range(22, 30, 'u'), 'live'], 'the reply that arrived first is kept');
 });
+
+test('trim_waits_while_a_turn_runs', async () => {
+  const { api, chat, liveEvent } = await openAndPageTwice('running');
+  // A running tool may sit above the latest window; dropping it would lose its output to the next update.
+  liveEvent({ ownedId: 'running', provider: 'codex', generation: 1, sequence: 31, timestampMs: 31,
+    payload: { kind: 'turn', turnId: 't31', state: 'started' } });
+  await api.trimSelectedConversationToLatest();
+  await settle();
+  assert.deepEqual(ids(chat.messages), range(1, 30, 'u'), 'nothing is dropped while a turn runs');
+});
