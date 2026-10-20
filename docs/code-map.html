@@ -750,7 +750,6 @@
   <li><strong>Some files are still very large.</strong> The size check stops them growing but does not shrink them: <code>agent_conversation/manager.rs</code> 16,013 lines, <code>core/src/session_store.rs</code> 8,345, <code>files/lsp.rs</code> 8,078, <code>main.rs</code> 7,331, <code>remote/mod.rs</code> 5,865, <code>workflow/mod.rs</code> 5,826 (all from the baseline file).</li>
   <li><strong>Not everything moved.</strong> Usage, resources, Notion and some older frontend stores and helpers are still flat files, and <code>main.rs</code> still holds some git helpers. The plan lists these as deliberate limits, not unfinished steps.</li>
   <li><strong>The refactor plan and module map are not in the repository.</strong> They were kept outside it as working notes, per <code>AGENTS.md</code>. The Notion task <a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a> is the record.</li>
-  <li><strong><code>AGENTS.md</code> mentions <code>packages/contracts</code> and <code>packages/client-runtime</code>.</strong> Neither folder exists on main. The wire types live in <code>agent_conversation/protocol.rs</code> and <code>remote/wire.rs</code>.</li>
 </ul>
 
 <h2 id="next">7. Where to look next</h2>
