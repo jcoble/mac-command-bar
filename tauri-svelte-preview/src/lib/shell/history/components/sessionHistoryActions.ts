@@ -128,7 +128,7 @@ export function sessionHistoryActions(record: SessionLibraryRecord): SessionHist
   // specific first — a row with no id at all is a different problem from a row
   // whose agent this app cannot read.
   const canResumeAssembly = sessionTranscriptImport(record) !== null;
-  const resumeLabel = record.ownedId ? 'Open Assembly Session' : 'Resume as Assembly Session';
+  const resumeLabel = 'Resume as Assembly Session';
   const resumeReason = !record.nativeSessionId?.trim()
     ? NO_SESSION_ID
     : !hasLog

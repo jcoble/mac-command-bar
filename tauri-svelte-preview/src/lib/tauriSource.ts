@@ -493,6 +493,8 @@ export type AgentSession = {
    */
   projectGroupKey: string;
   projectGroupLabel: string;
+  /** The saved machine whose scanner found it; this Mac's scan leaves it out. */
+  machine?: string;
 };
 
 /** One remembered turn of a scanned session: who spoke, and what they said. */
@@ -1977,33 +1979,28 @@ export async function listGitRepositorySummariesFromTauri(
   return invoke<GitRepositorySummary[]>('list_git_repository_summaries', { projects });
 }
 
-export async function listAgentSessionsFromTauri(): Promise<AgentSession[] | null> {
-  if (!isTauriRuntime()) {
-    return null;
-  }
-
+/** This Mac's past sessions, or with `remoteProfileId` the ones that machine's own scanner finds. */
+export async function listAgentSessionsFromTauri(remoteProfileId: string | null = null): Promise<AgentSession[] | null> {
+  if (!isTauriRuntime()) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<AgentSession[]>('list_agent_sessions');
+  return invoke<AgentSession[]>('list_agent_sessions', { remoteProfileId });
 }
 
 export async function listAgentSessionsForProjectFromTauri(
   path: string
 ): Promise<AgentSession[] | null> {
-  if (!isTauriRuntime()) {
-    return null;
-  }
-
+  if (!isTauriRuntime()) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<AgentSession[]>('list_agent_sessions_for_project', { projectPath: path });
 }
 
 export async function readAgentSessionDetailsFromTauri(
-  logPath: string
+  logPath: string,
+  remoteProfileId: string | null = null
 ): Promise<AgentSession[] | null> {
   if (!isTauriRuntime()) return null;
-
   const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<AgentSession[]>('read_agent_session_details', { logPath });
+  return invoke<AgentSession[]>('read_agent_session_details', { logPath, remoteProfileId });
 }
 
 export interface RemoteSavedSessionDetails {
@@ -2760,11 +2757,13 @@ export interface AgentConversationTranscriptImport {
   /** What the past session was already called. Stored with the row, so the rail
    * still knows the name after it next reloads from the database. */
   title?: string | null;
+  /** The saved machine the transcript is on; that machine names the session and reads its newest page. */
+  remoteProfileId?: string | null;
 }
 
 /**
  * Name a provider's past transcript as an app-owned conversation and hand back
- * its id, without reading any of it. This is the fast half of resuming: the
+ * its id and whether a session already here was cleared to be read again, without reading any of it. This is the fast half of resuming: the
  * session exists, with its name and its agent, and can be shown at once.
  *
  * Reading the transcript is `finishAgentConversationImportFromTauri`, which the
@@ -2772,10 +2771,10 @@ export interface AgentConversationTranscriptImport {
  */
 export async function beginAgentConversationImportFromTauri(
   request: AgentConversationTranscriptImport
-): Promise<string | null> {
+): Promise<[ownedId: string, rebuilt: boolean] | null> {
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<string>('begin_agent_conversation_import', { ...request });
+  return invoke<[string, boolean]>('begin_agent_conversation_import', { remoteProfileId: null, ...request });
 }
 
 /**

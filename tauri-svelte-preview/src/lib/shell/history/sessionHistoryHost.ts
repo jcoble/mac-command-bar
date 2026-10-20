@@ -23,7 +23,7 @@ export interface SessionHistoryHostHandle {
   release(): void;
 }
 
-async function listProviderSessions(projectPath?: string): Promise<AgentSession[]> {
+async function listLocalProviderSessions(projectPath?: string): Promise<AgentSession[]> {
   try {
     const nativeSessions = projectPath
       ? await listAgentSessionsForProjectFromTauri(projectPath)
@@ -32,6 +32,20 @@ async function listProviderSessions(projectPath?: string): Promise<AgentSession[
   } catch {
     return (await listAgentSessionsFromLocalBridge()) ?? [];
   }
+}
+
+/** This Mac's scan, and for the whole list each connected machine's own scan, labelled with that machine. */
+async function listProviderSessions(projectPath?: string): Promise<AgentSession[]> {
+  const machines = projectPath ? [] : Object.keys(rail.remoteConnections).filter((id) => rail.remoteConnections[id] === 'connected');
+  const remote = await Promise.all(machines.map(async (machine) => {
+    try {
+      return ((await listAgentSessionsFromTauri(machine)) ?? []).map((session) => ({ ...session, machine }));
+    } catch (error) {
+      console.warn(`[history] could not scan ${machine}`, error);
+      return [];
+    }
+  }));
+  return [...(await listLocalProviderSessions(projectPath)), ...remote.flat()];
 }
 
 /** Own the History panel's scanner and action bridge for the primary shell. */
@@ -43,8 +57,9 @@ export function registerSessionHistoryHost(options: SessionHistoryHostOptions): 
       getAvailableSessions: () => rail.available,
       listProviderSessions,
       readRemoteSavedSessionDetails: readRemoteSavedSessionDetailsFromTauri,
-      readProviderSessionDetails: async (logPath) =>
-        (await readAgentSessionDetailsFromTauri(logPath)) ?? []
+      readProviderSessionDetails: async (logPath, machine = 'local') => machine === 'local'
+        ? (await readAgentSessionDetailsFromTauri(logPath)) ?? []
+        : ((await readAgentSessionDetailsFromTauri(logPath, machine)) ?? []).map((session) => ({ ...session, machine }))
     },
     {
       onOpen: async (record: SessionLibraryRecord) => {

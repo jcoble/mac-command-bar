@@ -1114,7 +1114,7 @@ const IMPORT_MAX_RECORDS: usize = 2_000;
 
 #[tauri::command]
 /// Names a past provider transcript as an owned conversation and returns its owned id, reading no records.
-/// A transcript on a remote machine is named there, which reads its newest page there too.
+/// A remote transcript is named, and its newest page read, there. Also answers whether a session already here was read again.
 pub async fn begin_agent_conversation_import(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
@@ -1124,11 +1124,11 @@ pub async fn begin_agent_conversation_import(
     cwd: String,
     title: Option<String>,
     remote_profile_id: Option<String>,
-) -> CommandResult<String> {
+) -> CommandResult<(String, bool)> {
     if let Some(profile) = remote_profile_id {
         return command_result(remote.begin_import(profile, provider, native_session_id, transcript_path, cwd, title).await);
     }
-    command_result(manager.begin_import_transcript_session(provider, &native_session_id, std::path::Path::new(&transcript_path), &cwd, title, None).await.map(|(owned_id, _)| owned_id))
+    command_result(manager.begin_import_transcript_session(provider, &native_session_id, std::path::Path::new(&transcript_path), &cwd, title, None).await)
 }
 
 #[tauri::command]

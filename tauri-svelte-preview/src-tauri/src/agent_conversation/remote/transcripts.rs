@@ -23,7 +23,7 @@ impl RemoteConnectionManager {
     /// project for that folder, and caches the session here. The machine reads the
     /// newest page; the history download brings the rest when the session opens.
     pub async fn begin_import(&self, profile: String, provider: AgentConversationProvider, native_session_id: String,
-        transcript_path: String, cwd: String, title: Option<String>) -> Result<String, String> {
+        transcript_path: String, cwd: String, title: Option<String>) -> Result<(String, bool), String> {
         let project_id = self.store.match_folders_by_path(&serde_json::json!([cwd]).to_string(), &profile)
             .map_err(|error| error.to_string())?.into_iter().next().map(|(_, project_id)| project_id);
         let RemoteResponse::Imported { owned_id, rebuilt } = self.request_for_profile(&profile, RemoteCommand::BeginImport {
@@ -36,7 +36,7 @@ impl RemoteConnectionManager {
             self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).forget(&profile, &owned_id)?;
         }
         self.list_sessions(self.next_request_id.fetch_add(1, Ordering::Relaxed)).await?;
-        Ok(owned_id)
+        Ok((owned_id, rebuilt))
     }
 
     pub async fn extend_import(&self, owned_id: String) -> Result<ExtendedImport, String> {
@@ -97,7 +97,7 @@ mod tests {
         reply.send(Ok(RemoteResponse::Imported { owned_id: "large-history".into(), rebuilt: true })).unwrap();
         let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected listing"); };
         reply.send(Ok(RemoteResponse::Sessions(Vec::new()))).unwrap();
-        assert_eq!(import.await.unwrap().unwrap(), "large-history");
+        assert_eq!(import.await.unwrap().unwrap(), ("large-history".to_string(), true));
         assert!(manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().is_none());
     }
 

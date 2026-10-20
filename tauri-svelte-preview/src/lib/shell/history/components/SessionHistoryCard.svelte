@@ -19,7 +19,6 @@
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
   import FileText from '@lucide/svelte/icons/file-text';
   import FolderOpen from '@lucide/svelte/icons/folder-open';
-  import Play from '@lucide/svelte/icons/play';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import Trash2 from '@lucide/svelte/icons/trash-2';
 
@@ -321,7 +320,7 @@
                  hover:bg-[color-mix(in_srgb,var(--color-accent)_20%,transparent)]"
           onclick={() => onAction('resume-assembly')}
         >
-          {#if record.ownedId}<Play aria-hidden="true" /> Open{:else}<RotateCcw aria-hidden="true" /> Resume{/if}
+          <RotateCcw aria-hidden="true" /> Resume
         </Button>
       {/if}
       {#if can('copy-resume-command')}

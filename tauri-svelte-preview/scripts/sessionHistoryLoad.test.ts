@@ -10,7 +10,9 @@ import {
   type RepositoryCheckouts
 } from '../src/lib/shell/history/sessionHistoryLoad.ts';
 import { sessionHistoryActions, sessionTranscriptImport } from '../src/lib/shell/history/components/sessionHistoryActions.ts';
-import type { SessionLibraryRecord } from '../src/lib/shell/history/library/sessionLibraryModel.ts';
+import { buildSessionLibrary, type SessionLibraryRecord } from '../src/lib/shell/history/library/sessionLibraryModel.ts';
+import type { AgentSession } from '../src/lib/tauriSource.ts';
+import type { OwnedSession } from '../src/lib/shell/ownedSessions.ts';
 
 function record(key: string): SessionLibraryRecord {
   return {
@@ -99,16 +101,47 @@ run('everything_present_is_ready', () => {
   assert.deepEqual(outcome.checkouts, checkouts);
 });
 
-run('an_owned_history_row_opens_instead_of_importing_a_duplicate', () => {
+run('every_history_row_offers_resume_through_the_import', () => {
   const owned = record('owned-session');
   owned.source = 'owned';
   owned.ownedId = 'owned-session';
   owned.provider = 'codex';
   owned.logPath = '/tmp/provider-transcript.jsonl';
-  const action = sessionHistoryActions(owned).find((candidate) => candidate.id === 'resume-assembly');
+  const scanned = record('scanned-session');
+  scanned.provider = 'codex';
+  scanned.logPath = '/tmp/other-transcript.jsonl';
+  for (const row of [owned, scanned]) {
+    const action = sessionHistoryActions(row).find((candidate) => candidate.id === 'resume-assembly');
+    assert.equal(action?.label, 'Resume as Assembly Session');
+    assert.equal(action?.enabled, true);
+  }
+  const card = readFileSync(new URL('../src/lib/shell/history/components/SessionHistoryCard.svelte', import.meta.url), 'utf8');
+  assert.doesNotMatch(card, /<Play aria-hidden="true" \/> Open/);
+});
 
-  assert.equal(action?.label, 'Open Assembly Session');
-  assert.equal(action?.enabled, true);
+const remoteScan = {
+  provider: 'claude', id: 'native-1', title: 'Can you hear me', model: null, projectPath: '/home/me/dev/work/EdiPlatform',
+  lastActivity: null, resumeCommands: [], logPath: '/home/me/.claude/projects/edi/native-1.jsonl', machine: 'box'
+} as AgentSession;
+
+run('a_remote_scan_keeps_its_machine_and_can_be_imported', () => {
+  const [scanned] = buildSessionLibrary([], [remoteScan]);
+  assert.equal(scanned.machine, 'box');
+  assert.equal(sessionTranscriptImport(scanned)?.transcriptPath, remoteScan.logPath);
+});
+
+run('a_remote_owned_row_takes_its_scanned_transcript_and_keeps_resume', () => {
+  const owned = {
+    ownedId: 'owned-1', agent: 'claude', viaCmux: false, source: 'fresh', title: 'Can you hear me', projectGroupKey: 'none',
+    projectGroupLabel: 'No project', cwd: '/home/me/dev/work/EdiPlatform', resumeCommand: null, nativeSessionId: 'native-1',
+    ptySessionId: null, state: 'background', completedAt: null, settledAt: null, branch: null, taskId: null, pullRequest: null,
+    messageCount: null, latestTurnPreview: null, lastActivity: null, executionEnvironment: 'remote', remoteProfileId: 'box'
+  } as unknown as OwnedSession;
+  const records = buildSessionLibrary([owned], [remoteScan]);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].ownedId, 'owned-1');
+  assert.equal(records[0].machine, 'box');
+  assert.equal(sessionTranscriptImport(records[0])?.transcriptPath, remoteScan.logPath);
 });
 
 run('project_and_detail_reads_have_independent_lifecycles', () => {
