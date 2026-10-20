@@ -2,7 +2,9 @@
 
 mod handshake;
 mod history;
+mod relay_trust;
 mod transcripts;
+#[cfg(test)] mod routing_tests;
 pub(in crate::agent_conversation) mod install;
 pub(crate) mod install_flow;
 mod workspace;
@@ -65,7 +67,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 22;
+pub(super) const PROTOCOL_VERSION: u16 = 24;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -515,7 +517,8 @@ impl RemoteConnectionManager {
         status_sink: Arc<dyn Fn(RemoteConnectionStatus) + Send + Sync>,
         store: Arc<SessionStore>,
     ) -> Result<Self, String> {
-        let cached_sessions = read_cached_sessions(&store)?;
+        // A saved claim on one of this Mac's own session ids is dropped (see `may_route`).
+        let cached_sessions: Vec<_> = read_cached_sessions(&store)?.into_iter().filter(|session| matches!(store.get_session(&session.owned_id), Ok(None))).collect();
         let remote_sessions = cached_sessions
             .iter()
             .filter_map(|session| {
@@ -623,6 +626,7 @@ impl RemoteConnectionManager {
         profile_id: &str,
         sessions: &[AgentConversationSessionRecord],
     ) -> Result<(), String> {
+        let sessions = &sessions.iter().filter(|session| self.may_route(&session.owned_id, profile_id)).cloned().collect::<Vec<_>>();
         let incoming_ids = sessions.iter().map(|session| session.owned_id.as_str()).collect::<std::collections::HashSet<_>>();
         let mut next = self.cached_sessions();
         let mut moved = Vec::new();
@@ -689,23 +693,15 @@ impl RemoteConnectionManager {
 
     fn cache_session(&self, mut session: AgentConversationSessionRecord) -> Result<(), String> {
         session.execution_environment = ExecutionEnvironment::Remote;
-        let owned_id = session.owned_id.clone();
-        let profile_id = session
-            .remote_profile_id
-            .clone()
-            .ok_or_else(|| "Remote session did not identify its machine".to_string())?;
+        let profile_id = session.remote_profile_id.clone().ok_or_else(|| "Remote session did not identify its machine".to_string())?;
+        if !self.remember(session.owned_id.clone(), profile_id) {
+            return Err(format!("Remote session {} uses the id of another session", session.owned_id));
+        }
         let mut next = self.cached_sessions();
         next.retain(|stored| stored.owned_id != session.owned_id);
         next.push(session);
-        next.sort_by(|left, right| {
-            right
-                .last_activity_at_ms
-                .cmp(&left.last_activity_at_ms)
-                .then_with(|| left.owned_id.cmp(&right.owned_id))
-        });
-        self.save_cached_sessions(next)?;
-        self.remember(owned_id, profile_id);
-        Ok(())
+        next.sort_by(|left, right| right.last_activity_at_ms.cmp(&left.last_activity_at_ms).then_with(|| left.owned_id.cmp(&right.owned_id)));
+        self.save_cached_sessions(next)
     }
 
     fn forget_cached_session(&self, owned_id: &str) -> Result<(), String> {
@@ -968,9 +964,7 @@ impl RemoteConnectionManager {
         // A removal while this attempt was in flight wins: the profile neither
         // gets its client back nor any report or session from this attempt.
         self.adopt_client(&attempt, candidate)?;
-        for session in &sessions {
-            self.remember(session.owned_id.clone(), profile.id.clone());
-        }
+        sessions.retain(|session| self.remember(session.owned_id.clone(), profile.id.clone()));
         if let Some(client) = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clients.get_mut(&profile.id) {
             client.profile = Some(profile.clone());
         }
@@ -1170,11 +1164,20 @@ impl RemoteConnectionManager {
             .contains_key(owned_id)
     }
 
-    fn remember(&self, owned_id: impl Into<String>, profile_id: impl Into<String>) {
-        self.remote_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(owned_id.into(), profile_id.into());
+    /// A machine may route only ids that are neither this Mac's own sessions nor routed to another machine;
+    /// otherwise a hostile backend could list a local session's id and receive its prompts and approvals.
+    fn may_route(&self, owned_id: &str, profile_id: &str) -> bool {
+        let other_machine = self.remote_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(owned_id).is_some_and(|owner| owner != profile_id);
+        let allowed = !other_machine && matches!(self.store.get_session(owned_id), Ok(None));
+        if !allowed { eprintln!("Ignored remote session {owned_id} from {profile_id}: the id belongs to another session"); }
+        allowed
+    }
+
+    fn remember(&self, owned_id: impl Into<String>, profile_id: impl Into<String>) -> bool {
+        let (owned_id, profile_id) = (owned_id.into(), profile_id.into());
+        let allowed = self.may_route(&owned_id, &profile_id);
+        if allowed { self.remote_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(owned_id, profile_id); }
+        allowed
     }
 
     pub(crate) fn profile_for_owned_id(&self, owned_id: &str) -> Result<String, String> {
@@ -1201,11 +1204,10 @@ impl RemoteConnectionManager {
         })
     }
 
-    /// Carries one messaging operation from a session on `source` to the machines it concerns.
-    /// The desktop is the only router: remote machines reach each other through it. A sender's
-    /// label gets `@source` after its handle, so the receiver can answer it from anywhere.
-    async fn route_message(&self, source: &str, op: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+    /// Routes messages across machines with a replyable label identifying their source.
+    async fn route_message(&self, source: &str, op: &str, mut args: serde_json::Value) -> Result<serde_json::Value, String> {
         use serde_json::json;
+        relay_trust::prepare(&self.store, source, op, &mut args)?;
         match op {
             "project_root" => self.store.project_root(if source == LOCAL_MACHINE { "local" } else { source },
                 args["project"].as_str().ok_or("project must be a project folder or title")?)
@@ -1237,10 +1239,10 @@ impl RemoteConnectionManager {
                     }
                 };
                 let sender = args["sender"].as_str().unwrap_or_default();
-                let sender = match sender.split_once(" · ") {
+                let sender = if source != LOCAL_MACHINE { format!("{source}: {sender}") } else { match sender.split_once(" · ") {
                     Some((handle, label)) => format!("{handle}@{source} · {label}"),
                     None => format!("{sender}@{source}"),
-                };
+                }};
                 let id = self.message_machine(&machine, "enqueue",
                     json!({"to": name, "text": args["text"], "from": args["from"], "sender": sender, "role": args["role"]}), None).await?;
                 Ok(json!(format!("{machine}:{}", id.as_str().unwrap_or_default())))
@@ -1301,29 +1303,6 @@ impl RemoteConnectionManager {
         if let Err(error) = self.message_machine(machine, "designate", serde_json::json!({"owned_id": owned_id}), None).await {
             crate::debug_log::stderr_log!("Could not restore the orchestrator mark on {machine}: {error}");
         }
-    }
-
-    /// One ordered page of agent-to-agent messages from `machine` or from this desktop and
-    /// every connected machine. Each message is stored once, on its receiver's machine, so the
-    /// pages merge in the requested order; a machine that cannot be reached is left out.
-    pub async fn list_messages(&self, machine: Option<&str>, args: serde_json::Value, request_id: u64) -> Vec<serde_json::Value> {
-        let machines = machine.map_or_else(|| self.message_machines(""), |machine| vec![machine.to_string()]);
-        let mut pages = Vec::new();
-        for machine in machines {
-            let Ok(serde_json::Value::Array(page)) = self.message_machine(&machine, "messages", args.clone(), Some(request_id)).await else { continue };
-            pages.push((machine, page));
-        }
-        merge_message_pages(pages, args["limit"].as_i64().unwrap_or(100).clamp(1, super::messaging::MAX_MESSAGE_PAGE) as usize, args["sort"].as_str().unwrap_or("time"))
-    }
-
-    pub async fn count_messages(&self, session: &str, after_ms: i64, request_id: u64) -> i64 {
-        let mut count = 0;
-        for machine in self.message_machines("") {
-            if let Ok(value) = self.message_machine(&machine, "count", serde_json::json!({"session":session,"after_ms":after_ms}), Some(request_id)).await {
-                count += value.as_i64().unwrap_or_default();
-            }
-        }
-        count
     }
 
     /// Runs `work` until it ends or the desktop cancels `request_id`; a cancelled call gives `None`.
@@ -1551,9 +1530,7 @@ impl RemoteConnectionManager {
                 session.remote_profile_id = Some(profile_id.clone());
             }
             self.replace_cached_profile_sessions(&profile_id, &sessions)?;
-            for session in &sessions {
-                self.remember(session.owned_id.clone(), profile_id.clone());
-            }
+            sessions.retain(|session| self.remember(session.owned_id.clone(), profile_id.clone()));
             all_sessions.extend(sessions);
         }
         if successful_profiles > 0 || first_error.is_none() {
@@ -3332,7 +3309,7 @@ mod connection_tests {
     use super::*;
     use super::super::protocol::{BackgroundWorkItem, BackgroundWorkKind};
 
-    fn add_session(manager: &AgentRuntimeManager, owned_id: &str, title: &str) {
+    pub(super) fn add_session(manager: &AgentRuntimeManager, owned_id: &str, title: &str) {
         manager.store().upsert_session(&mcb_core::session_store::SessionRow {
             owned_id: owned_id.into(), native_session_id: None, provider: "codex".into(), model: None,
             effort: None, cwd: "/work".into(), worktree: None, branch: None, title: Some(title.into()),
@@ -3343,7 +3320,7 @@ mod connection_tests {
     }
 
     /// A message's sender label and text, read from the store file, whatever delivery did to it since.
-    fn stored_message(database: &std::path::Path, id: &str) -> (String, String) {
+    pub(super) fn stored_message(database: &std::path::Path, id: &str) -> (String, String) {
         rusqlite::Connection::open(database).unwrap().query_row(
             "SELECT sender_name, body FROM workflow_messages WHERE id = ?", [id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
     }
@@ -3559,8 +3536,8 @@ mod connection_tests {
     }
 
     #[test]
-    fn history_download_protocol_21_round_trips_compressed_chunks() {
-        assert_eq!(PROTOCOL_VERSION, 22);
+    fn history_download_protocol_24_round_trips_compressed_chunks() {
+        assert_eq!(PROTOCOL_VERSION, 24);
         let rows = vec![history_event(3), history_event(-2)];
         let encoded = encode_history_chunk(&rows).unwrap();
         assert_eq!(decode_history_chunk(&encoded).unwrap(), rows);
@@ -3727,6 +3704,7 @@ mod connection_tests {
         ready_answer.await.unwrap().unwrap();
         connections.client.lock().unwrap().clients.insert("workbox-test".into(), RemoteClient {
             requests: Some(requests), profile: Some(profile("workbox-test")), target_key: None, task: None, ready });
+        connections.remember("there", "workbox-test");
         let there = MessagingEndpoint::start().unwrap();
         there.set_relay(state.relay.relay());
         let there_token = there.issue("there").token;
@@ -3739,7 +3717,7 @@ mod connection_tests {
             desktop.store().insert_or_get_project(&crate::project_folders::new_project_row(machine.into(),
                 crate::project_folders::ProjectFolderInspection { root_path: path, title: "remote-project".into(), repo_key: String::new(), is_git: false })).unwrap();
         }
-        assert!(remote.store().local_project_roots().unwrap().is_empty());
+        assert!(remote.store().project_roots("local").unwrap().is_empty());
         for project in ["remote-project", directory.to_str().unwrap()] {
             let checked = there.handle(&there_token, json!({"name":"check_workflow","arguments":{"project":project,"path":".assembly/workflows/flow.yml"}})).await.unwrap();
             assert_eq!(checked["content"][0]["text"], "ok\ncheck run");
@@ -3754,8 +3732,12 @@ mod connection_tests {
         assert!(id.starts_with("mac:"), "{sent}");
         let (sender, body) = stored_message(&directory.join("desktop.db"), &id["mac:".len()..]);
         let there_handle = remote.store().directory_name("there").unwrap().unwrap().0;
-        assert_eq!(sender, format!("{there_handle}@workbox-test · There"));
+        assert_eq!(sender, format!("workbox-test: {there_handle} · There"));
         assert_eq!(body, "hello from there");
+        let traffic = connections.list_messages(None, json!({"session":"there","limit":10}), 90).await;
+        assert_eq!(traffic.len(), 1);
+        assert_eq!(traffic[0]["fromOwnedId"], "workbox-test:there");
+        assert_eq!(connections.count_messages("there", 0, 91).await, 1);
         let status = tool(&there, &there_token, json!({"name":"message_status","arguments":{"id":id}})).await;
         assert!(["queued", "delivered", "failed"].contains(&status["status"].as_str().unwrap()), "{status}");
         let here = MessagingEndpoint::start().unwrap();
@@ -3769,6 +3751,7 @@ mod connection_tests {
         let here_handle = desktop.store().directory_name("here").unwrap().unwrap().0;
         assert_eq!(sender, format!("{here_handle}@mac · Here"));
         assert_eq!(body, "hello back");
+        assert_eq!(connections.count_messages("here", 0, 92).await, 2);
         let status = tool(&here, &here_token, json!({"name":"message_status","arguments":{"id":reply_id}})).await;
         assert!(["queued", "delivered", "failed"].contains(&status["status"].as_str().unwrap()), "{status}");
         // Reconnecting restores the latest orchestrator choice.
@@ -4914,7 +4897,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn readiness_requires_protocol_and_session_response() {
-        assert_eq!(PROTOCOL_VERSION, 22);
+        assert_eq!(PROTOCOL_VERSION, 24);
         for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();

@@ -166,13 +166,20 @@ function launch(name: string, file: string, args: string[], cwd: string, log: st
   return { name, pid: child.pid, startedAt: startTime(child.pid), log };
 }
 
+export function optionValue(argv: string[], flag: string): string | undefined {
+  const index = argv.indexOf(flag);
+  if (index === -1) return undefined;
+  const value = argv[index + 1];
+  if (!value || value.startsWith('--')) throw new Error(`${flag} requires a path`);
+  return value;
+}
+
 function worktreeFrom(argv: string[]): string {
-  const index = argv.indexOf('--worktree');
-  return canonical(index < 0 ? run('git', ['rev-parse', '--show-toplevel']).trim() : argv[index + 1]);
+  return canonical(optionValue(argv, '--worktree') ?? run('git', ['rev-parse', '--show-toplevel']).trim());
 }
 
 async function start(argv: string[]) {
-  const option = (flag: string) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
+  const option = (flag: string) => optionValue(argv, flag);
   const worktree = worktreeFrom(argv);
   const currentLink = currentRunLink(proofRoot, worktree);
   const preview = path.join(worktree, 'tauri-svelte-preview');

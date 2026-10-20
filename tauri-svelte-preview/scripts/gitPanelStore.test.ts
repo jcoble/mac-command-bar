@@ -1010,7 +1010,7 @@ function makeBackend(overrides = {}) {
     { path: '/work/tsk-1', branch: 'tsk-1-thing' },
     { path: '/work/tsk-2', branch: '' }
   ];
-  const options = panelActions.sourceControlScopeOptions('/repo', worktrees);
+  const options = panelActions.sourceControlScopeOptions('/repo', worktrees, false);
   assert.deepEqual(
     options.map((option) => option.path),
     ['/repo', '/work/tsk-1', '/work/tsk-2'],
@@ -1021,7 +1021,7 @@ function makeBackend(overrides = {}) {
   assert.equal(options[2].label, 'tsk-2', 'a checkout with no branch name shows just the folder');
 
   assert.deepEqual(
-    panelActions.sourceControlScopeOptions('', worktrees).map((option) => option.path),
+    panelActions.sourceControlScopeOptions('', worktrees, false).map((option) => option.path),
     ['/repo', '/work/tsk-1', '/work/tsk-2'],
     'with no session folder there is nothing to lead with, only the checkouts'
   );

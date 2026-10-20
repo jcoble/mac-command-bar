@@ -2,14 +2,14 @@ use super::{Result, SessionStore, StoreError};
 use rusqlite::OptionalExtension;
 
 impl SessionStore {
-    /// The root folders of this Mac's projects.
-    pub fn local_project_roots(&self) -> Result<Vec<String>> {
+    /// The registered project roots on one machine.
+    pub fn project_roots(&self, machine: &str) -> Result<Vec<String>> {
         let connection = self.lock()?;
         let mut statement = connection
-            .prepare("SELECT root_path FROM projects WHERE machine = 'local' ORDER BY created_at, id")
+            .prepare("SELECT root_path FROM projects WHERE machine = ?1 ORDER BY created_at, id")
             .map_err(|error| StoreError::sqlite("could not prepare the project roots", error))?;
         let rows = statement
-            .query_map([], |row| row.get(0))
+            .query_map([machine], |row| row.get(0))
             .map_err(|error| StoreError::sqlite("could not list the project roots", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not list the project roots", error))
