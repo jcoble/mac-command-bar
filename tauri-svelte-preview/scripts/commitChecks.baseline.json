@@ -2,7 +2,7 @@
   "fileSize": {
     "core/src/broker.rs": 962,
     "core/src/scanners/sessions.rs": 3269,
-    "core/src/session_store.rs": 8330,
+    "core/src/session_store.rs": 8320,
     "core/src/source.rs": 923,
     "core/tests/protocol_tests.rs": 747,
     "tauri-svelte-preview/scripts/agentConversationStore.test.ts": 2142,
