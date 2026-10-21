@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 
 pub const USAGE_SCHEMA: &str = include_str!("../../migrations/0001_usage_history.sql");
-pub(crate) const REBUILD_ROLLUPS_SQL: &str = "DELETE FROM usage_daily_rollups;\nINSERT INTO usage_daily_rollups (day, provider, model, project_id, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros) SELECT date(occurred_at_micros / 1000000, 'unixepoch'), provider, model, project_id, COUNT(*), COUNT(DISTINCT owned_id), COUNT(DISTINCT turn_id), COUNT(DISTINCT workflow_id), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(reasoning_tokens), SUM(estimated_cost_micros) FROM usage_events GROUP BY date(occurred_at_micros / 1000000, 'unixepoch'), provider, model, project_id";
+const REBUILD_ROLLUPS_SQL: &str = "DELETE FROM usage_daily_rollups;\nINSERT INTO usage_daily_rollups (day, provider, model, project_id, event_count, session_count, turn_count, workflow_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, estimated_cost_micros) SELECT date(occurred_at_micros / 1000000, 'unixepoch'), provider, model, project_id, COUNT(*), COUNT(DISTINCT owned_id), COUNT(DISTINCT turn_id), COUNT(DISTINCT workflow_id), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens), SUM(reasoning_tokens), SUM(estimated_cost_micros) FROM usage_events GROUP BY date(occurred_at_micros / 1000000, 'unixepoch'), provider, model, project_id";
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

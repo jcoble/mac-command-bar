@@ -1,9 +1,8 @@
-use crate::usage_db::{cursor_lookup_key, UsageDb, REBUILD_ROLLUPS_SQL};
+use crate::usage_db::{cursor_lookup_key, UsageDb, UsageSourceCursor};
 use crate::usage_sources::{
     discover_local_usage_sources, opaque_source_key, parse_usage_events_for_source_with_context,
     read_incremental_jsonl, read_source_context,
 };
-use rusqlite::TransactionBehavior;
 #[cfg(test)]
 use std::path::Path;
 
@@ -23,33 +22,29 @@ impl UsageIndexer {
     pub fn ingest_jsonl(
         &self,
         path: &Path,
-        cursor: Option<&crate::usage_db::UsageSourceCursor>,
+        cursor: Option<&UsageSourceCursor>,
         provider: &str,
         provider_instance_id: &str,
         source_kind: &str,
         source_key: &str,
     ) -> Result<usize, String> {
-        let source = read_incremental_jsonl(
+        let db = UsageDb::open(&self.database_path)?;
+        let rebuild = db.start_claude_history_rebuild()? && source_kind == "claude-jsonl";
+        let count = ingest_source(
+            &db,
             path,
             cursor,
             provider,
             provider_instance_id,
             source_kind,
             source_key,
+            rebuild,
         )?;
-        let context = read_source_context(path, provider);
-        let events = parse_usage_events_for_source_with_context(
-            &source.lines,
-            provider,
-            provider_instance_id,
-            source_kind,
-            source_key,
-            &context,
-        );
-        let count = events.len();
-        let db = UsageDb::open(&self.database_path)?;
-        db.insert_events_with_cursor(&events, Some(&source.next_cursor))?;
-        Ok(count)
+        if rebuild {
+            db.finish_claude_history_rebuild()?;
+        }
+        db.rebuild_daily_rollups()?;
+        Ok(count.unwrap_or_default())
     }
 
     /// Ingest all locally available provider transcripts. Discovery and
@@ -57,55 +52,39 @@ impl UsageIndexer {
     /// a very large transcript cannot turn into an oversized SQLite command.
     pub fn ingest_local_sources(&self) -> Result<usize, String> {
         let db = UsageDb::open(&self.database_path)?;
-        let sources = discover_local_usage_sources();
-        db.rebuild_claude_history_once(
-            &sources
-                .iter()
-                .map(|source| opaque_source_key(&source.path.to_string_lossy()))
-                .collect::<Vec<_>>(),
-        )?;
+        let rebuild_claude = db.start_claude_history_rebuild()?;
         let cursors = db.read_source_cursors()?;
         let mut count = 0_usize;
-        let mut rollups_dirty = false;
+        let mut rollups_dirty = rebuild_claude;
         let ingest_result = (|| -> Result<(), String> {
-            for source in sources {
+            for source in discover_local_usage_sources() {
                 let source_key = source.path.to_string_lossy().to_string();
-                let opaque_key = opaque_source_key(&source_key);
                 let lookup = cursor_lookup_key(
                     &source.provider,
                     &source.provider_instance_id,
                     &source.source_kind,
-                    &opaque_key,
+                    &opaque_source_key(&source_key),
                 );
-                let cursor = cursors.get(&lookup);
-                let incremental = read_incremental_jsonl(
+                let Some(events) = ingest_source(
+                    &db,
                     &source.path,
-                    cursor,
+                    cursors.get(&lookup),
                     &source.provider,
                     &source.provider_instance_id,
                     &source.source_kind,
                     &source_key,
-                )?;
-                let context = read_source_context(&source.path, &source.provider);
-                let events = parse_usage_events_for_source_with_context(
-                    &incremental.lines,
-                    &source.provider,
-                    &source.provider_instance_id,
-                    &source.source_kind,
-                    &source_key,
-                    &context,
-                );
-                if events.is_empty() && cursor == Some(&incremental.next_cursor) {
+                    rebuild_claude && source.source_kind == "claude-jsonl",
+                )?
+                else {
                     continue;
-                }
-                db.insert_events_with_cursor_deferred_rollup(
-                    &events,
-                    Some(&incremental.next_cursor),
-                )?;
-                if !events.is_empty() {
-                    count = count.saturating_add(events.len());
+                };
+                if events > 0 {
+                    count = count.saturating_add(events);
                     rollups_dirty = true;
                 }
+            }
+            if rebuild_claude {
+                db.finish_claude_history_rebuild()?;
             }
             Ok(())
         })();
@@ -125,46 +104,87 @@ impl UsageIndexer {
     }
 }
 
+/// Reads one source's new lines and stores their events with its cursor;
+/// `None` means nothing changed. During the Claude history rebuild the
+/// transcript is read from the start, and its old rows are deleted only once
+/// the replacement events are in hand, so an unreadable file keeps its history.
+#[allow(clippy::too_many_arguments)]
+fn ingest_source(
+    db: &UsageDb,
+    path: &std::path::Path,
+    cursor: Option<&UsageSourceCursor>,
+    provider: &str,
+    provider_instance_id: &str,
+    source_kind: &str,
+    source_key: &str,
+    rebuild: bool,
+) -> Result<Option<usize>, String> {
+    let cursor = cursor.filter(|_| !rebuild);
+    let source = read_incremental_jsonl(
+        path,
+        cursor,
+        provider,
+        provider_instance_id,
+        source_kind,
+        source_key,
+    )?;
+    let context = read_source_context(path, provider);
+    let events = parse_usage_events_for_source_with_context(
+        &source.lines,
+        provider,
+        provider_instance_id,
+        source_kind,
+        source_key,
+        &context,
+    );
+    if rebuild {
+        db.delete_claude_source_events(&source.next_cursor.source_key)?;
+    } else if events.is_empty() && cursor == Some(&source.next_cursor) {
+        return Ok(None);
+    }
+    db.insert_events_with_cursor_deferred_rollup(&events, Some(&source.next_cursor))?;
+    Ok(Some(events.len()))
+}
+
+/// Claude rows used to be keyed by transcript line, so a message written over
+/// several lines was counted once per line. Until one indexing pass has
+/// re-read every Claude transcript still on disk under the message key
+/// (`user_version` 1), each one replaces its old rows. Rows whose transcript
+/// is gone cannot be re-read and are kept.
 impl UsageDb {
-    /// Claude rows used to be keyed by transcript line, so a message written
-    /// over several lines was counted once per line. Once per database, drop
-    /// the rows and cursors of the transcripts still on disk so the indexer
-    /// re-reads them under the message key. Rows whose transcript is gone
-    /// cannot be re-read and are kept. The delete is scoped to Claude rows in
-    /// SQL, so the caller passes every discovered source key.
-    pub fn rebuild_claude_history_once(&self, source_keys: &[String]) -> Result<(), String> {
-        let mut connection = self.connection()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| {
-                self.database_error("could not start Claude history rebuild", error)
-            })?;
-        let version: i64 = transaction
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
+    /// Reports whether the rebuild is still pending. While it is, a
+    /// temporary index on `source_key` keeps each transcript's delete from
+    /// scanning the whole table.
+    fn start_claude_history_rebuild(&self) -> Result<bool, String> {
+        let connection = self.connection()?;
+        let version = connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .map_err(|error| self.database_error("could not read usage schema version", error))?;
         if version >= 1 {
-            return Ok(());
+            return Ok(false);
         }
-        // One statement per table: source_key has no index, so a delete per
-        // transcript would scan the table once per file.
-        let source_keys = serde_json::to_string(source_keys)
-            .map_err(|error| format!("Could not encode Claude source keys: {error}"))?;
-        for sql in [
-            "DELETE FROM usage_events WHERE provider = 'claude' AND source_kind = 'claude-jsonl' AND source_key IN (SELECT value FROM json_each(?))",
-            "DELETE FROM usage_source_cursors WHERE provider = 'claude' AND source_kind = 'claude-jsonl' AND source_key IN (SELECT value FROM json_each(?))",
-        ] {
-            transaction.execute(sql, [&source_keys]).map_err(|error| {
-                self.database_error("could not clear Claude usage history", error)
-            })?;
-        }
-        transaction
-            .execute_batch(&format!("{REBUILD_ROLLUPS_SQL};\nPRAGMA user_version = 1;"))
-            .map_err(|error| {
-                self.database_error("could not finish Claude history rebuild", error)
-            })?;
-        transaction
-            .commit()
-            .map_err(|error| self.database_error("could not commit Claude history rebuild", error))
+        connection
+            .execute_batch("CREATE INDEX IF NOT EXISTS usage_events_rebuild_source_idx ON usage_events (source_key);")
+            .map_err(|error| self.database_error("could not start Claude history rebuild", error))?;
+        Ok(true)
+    }
+
+    fn delete_claude_source_events(&self, source_key: &str) -> Result<(), String> {
+        self.connection()?
+            .execute(
+                "DELETE FROM usage_events WHERE provider = 'claude' AND source_kind = 'claude-jsonl' AND source_key = ?",
+                [source_key],
+            )
+            .map(|_| ())
+            .map_err(|error| self.database_error("could not clear Claude usage history", error))
+    }
+
+    fn finish_claude_history_rebuild(&self) -> Result<(), String> {
+        self.connection()?
+            .execute_batch(
+                "DROP INDEX IF EXISTS usage_events_rebuild_source_idx;\nPRAGMA user_version = 1;",
+            )
+            .map_err(|error| self.database_error("could not finish Claude history rebuild", error))
     }
 }
 
@@ -380,21 +400,17 @@ mod tests {
     fn claude_history_rebuild_replaces_old_line_keyed_rows_once() {
         let root = claude_test_root("claude-rebuild");
         let source_path = root.join("session.jsonl");
+        let gone_path = root.join("gone.jsonl");
         let source_key = opaque_source_key(&source_path.to_string_lossy());
         let indexer = UsageIndexer::new(root.join("usage.sqlite3"));
-        fs::write(
-            &source_path,
-            format!(
-                "{}\n{}\n",
-                claude_line("line-1", "msg-1", 16),
-                claude_line("line-2", "msg-1", 214)
-            ),
-        )
-        .unwrap();
+        let mut source = fs::File::create(&source_path).unwrap();
+        writeln!(source, "{}", claude_line("line-1", "msg-1", 16)).unwrap();
+        writeln!(source, "{}", claude_line("line-2", "msg-1", 214)).unwrap();
+        source.flush().unwrap();
         let db = UsageDb::open(&indexer.database_path).unwrap();
         // Seed what the old indexer stored: one row per transcript line, plus
-        // a row whose transcript is gone and cannot be re-read.
-        let old_row = |id: &str, key: &str, output_tokens| crate::usage_db::UsageEvent {
+        // a row whose transcript cannot be read.
+        let old_row = |id: &str, key: String, output_tokens| crate::usage_db::UsageEvent {
             provider: "claude".into(),
             provider_instance_id: "local".into(),
             owned_id: Some("session-1".into()),
@@ -413,18 +429,9 @@ mod tests {
             estimate_rate_version: None,
             source_kind: "claude-jsonl".into(),
             source_event_id: id.into(),
-            source_key: key.into(),
+            source_key: key,
         };
-        db.insert_events_with_cursor(
-            &[
-                old_row("line-1", &source_key, 16),
-                old_row("line-2", &source_key, 214),
-                old_row("gone-line", "source-0000000000000000", 5),
-            ],
-            None,
-        )
-        .unwrap();
-        let mut cursor = crate::usage_sources::read_incremental_jsonl(
+        let cursor = crate::usage_sources::read_incremental_jsonl(
             &source_path,
             None,
             "claude",
@@ -434,36 +441,59 @@ mod tests {
         )
         .unwrap()
         .next_cursor;
-        db.insert_events_with_cursor(&[], Some(&cursor)).unwrap();
+        db.insert_events_with_cursor(
+            &[
+                old_row("line-1", source_key.clone(), 16),
+                old_row("line-2", source_key, 214),
+                old_row(
+                    "gone-line",
+                    opaque_source_key(&gone_path.to_string_lossy()),
+                    5,
+                ),
+            ],
+            Some(&cursor),
+        )
+        .unwrap();
 
-        db.rebuild_claude_history_once(&[source_key.clone()])
-            .unwrap();
-        assert!(db.read_source_cursors().unwrap().is_empty());
-        assert_eq!(ingest_claude(&indexer, &source_path, None), 1);
+        // A transcript that cannot be read keeps its history.
+        assert!(indexer
+            .ingest_jsonl(
+                &gone_path,
+                None,
+                "claude",
+                "local",
+                "claude-jsonl",
+                &gone_path.to_string_lossy(),
+            )
+            .is_err());
+        assert_eq!(
+            db.read_usage_summary(&Default::default())
+                .unwrap()
+                .event_count,
+            3
+        );
 
+        // The stored cursor is ignored: the transcript is re-read from the
+        // start and replaces its line-keyed rows.
+        assert_eq!(ingest_claude(&indexer, &source_path, Some(&cursor)), 1);
         let summary = db.read_usage_summary(&Default::default()).unwrap();
         assert_eq!(summary.event_count, 2);
         assert_eq!(summary.output_tokens, 219);
         assert_eq!(db.read_daily(&Default::default()).unwrap().len(), 1);
 
-        // A second run is a no-op: the re-read rows and cursor stay.
-        cursor = db
+        // Once rebuilt, the next pass reads only the new line.
+        let cursor = db
             .read_source_cursors()
             .unwrap()
             .into_values()
             .next()
             .unwrap();
-        db.rebuild_claude_history_once(&[source_key]).unwrap();
-        assert_eq!(
-            db.read_source_cursors().unwrap().into_values().next(),
-            Some(cursor)
-        );
-        assert_eq!(
-            db.read_usage_summary(&Default::default())
-                .unwrap()
-                .event_count,
-            2
-        );
+        writeln!(source, "{}", claude_line("line-3", "msg-2", 9)).unwrap();
+        source.flush().unwrap();
+        assert_eq!(ingest_claude(&indexer, &source_path, Some(&cursor)), 1);
+        let summary = db.read_usage_summary(&Default::default()).unwrap();
+        assert_eq!(summary.event_count, 3);
+        assert_eq!(summary.output_tokens, 228);
         let _ = fs::remove_dir_all(root);
     }
 
