@@ -244,7 +244,7 @@
 
   setContext<ConversationDisclosureContext>(conversationDisclosureContext, {
     get ownedId() { return historyOwnedId; }, get(key) { return disclosures[key]; },
-    set(key, open) { follow = false; disclosures = { ...disclosures, [key]: open }; saveView(); }
+    set(key, open) { if (disclosures[key] === open) return; follow = false; disclosures = { ...disclosures, [key]: open }; saveView(); }
   });
 
   function countDiffLines(item: ConversationDisplayItem, diffText: string): { added: number; removed: number } {

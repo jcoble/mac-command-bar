@@ -40,7 +40,11 @@
   async function readDetails(itemId: string, signal: AbortSignal): Promise<void> {
     try {
       const call = await readAgentConversationToolCallFromTauri(disclosure?.ownedId ?? '', itemId, signal);
-      if (call) details = call;
+      if (!call) return;
+      details = call;
+      // Opening moved the row to the top of its tool list before it had anything to show; say it is
+      // open again so the list moves it there now that it is taller. Setting the same state changes nothing else.
+      disclosure?.set(`${itemId}:details`, true);
     } catch { if (!signal.aborted) details = { output: null, diff: null }; }
   }
   $effect(() => {
