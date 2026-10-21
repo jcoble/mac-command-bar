@@ -21,7 +21,7 @@ import {
   conversationMessagesAfterCustom,
   conversationMessagesFromEvents,
   conversationSnapshotChunks,
-  displayEventFrom
+  displayEventFrom, takeStreamItem
 } from './conversationMessages.ts';
 import {
   applySelectedConversationEventState,
@@ -233,7 +233,7 @@ function enqueueFactory(signal: AbortSignal, selection: ActiveConversation): {
       signal.addEventListener('abort', abort, { once: true });
       try {
         while (!signal.aborted) {
-          const item = items.shift();
+          const item = await takeStreamItem(items, signal);
           if (item) {
             if ('error' in item) {
               selection.pendingSend = null;
@@ -260,7 +260,7 @@ function enqueueFactory(signal: AbortSignal, selection: ActiveConversation): {
             }
             continue;
           }
-          await new Promise<void>((resolve) => { wake = resolve; });
+          if (!items.length && !signal.aborted) await new Promise<void>((resolve) => { wake = resolve; });
         }
       } finally {
         signal.removeEventListener('abort', abort);

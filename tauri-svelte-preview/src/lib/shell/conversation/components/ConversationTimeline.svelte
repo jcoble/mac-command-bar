@@ -115,6 +115,8 @@
     return disclosures[`${run.itemId}:open`]
       ?? (run.turnId === activeTurnId && run.items.at(-1)?.itemId === renderedItems.at(-1)?.itemId);
   }
+  // A finished edit's diff is counted once, not on every chunk. Declared before `rows`, which reads it during setup.
+  const diffCounts = new WeakMap<ConversationDisplayItem, { added: number; removed: number }>();
   const rows = $derived.by((): Row[] => {
     if (previousRunWindow !== renderWindowId) {
       previousRunWindow = renderWindowId;
@@ -167,6 +169,11 @@
     if (activityLabel || hasBackgroundWork) result.push({ key: `activity:${result.at(-1)?.key ?? 'empty'}`, activity: true });
     return result;
   });
+  // A new key function makes the virtualizer rebuild every row position, so these are replaced only when row keys
+  // change. Each pair reads its own rows: the virtualizer reads its old layout through the old pair while switching.
+  const rowFunctions = (rows: Row[]) => ({ key: (index: number) => rows[index].key, size: (index: number) => rows[index].run || rows[index].item?.kind === 'tool' ? 36 : 90 });
+  let keyedRows: Row[] = [];
+  let rowFns = rowFunctions(keyedRows);
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: 0, getScrollElement: () => host, estimateSize: () => 90, overscan: 3,
     anchorTo: 'end', followOnAppend: false, scrollEndThreshold: -1
@@ -198,10 +205,9 @@
       const kept = anchor && !keys.has(String(anchor.key))
         ? $virtualizer.getVirtualItems().find((row) => row.end > top && keys.has(String(row.key)))
         : undefined;
+      if (currentRows.some((row, index) => row.key !== keyedRows[index]?.key)) rowFns = rowFunctions(keyedRows = currentRows);
       $virtualizer.setOptions({
-        count: currentRows.length, getScrollElement: () => element,
-        getItemKey: (index) => currentRows[index].key,
-        estimateSize: (index) => currentRows[index].run || currentRows[index].item?.kind === 'tool' ? 36 : 90,
+        count: currentRows.length, getScrollElement: () => element, getItemKey: rowFns.key, estimateSize: rowFns.size,
         paddingStart: topInset, paddingEnd,
         followOnAppend: following ? 'smooth' : false,
         scrollEndThreshold: following ? 80 : -1
@@ -241,23 +247,16 @@
     set(key, open) { follow = false; disclosures = { ...disclosures, [key]: open }; saveView(); }
   });
 
-  function countDiffLines(diffText: string): { added: number; removed: number } {
-    let added = 0;
-    let removed = 0;
-    let lineStart = 0;
-    const len = diffText.length;
-    for (let i = 0; i <= len; i++) {
-      if (i === len || diffText.charCodeAt(i) === 10) {
-        if (i > lineStart) {
-          const first = diffText.charCodeAt(lineStart);
-          const second = i > lineStart + 1 ? diffText.charCodeAt(lineStart + 1) : 0;
-          if (first === 43 && second !== 43) added++;
-          else if (first === 45 && second !== 45) removed++;
-        }
-        lineStart = i + 1;
-      }
+  function countDiffLines(item: ConversationDisplayItem, diffText: string): { added: number; removed: number } {
+    const known = diffCounts.get(item);
+    if (known) return known;
+    const counts = { added: 0, removed: 0 };
+    for (const line of diffText.split('\n')) {
+      if (line.startsWith('+') && !line.startsWith('++')) counts.added++;
+      else if (line.startsWith('-') && !line.startsWith('--')) counts.removed++;
     }
-    return { added, removed };
+    diffCounts.set(item, counts);
+    return counts;
   }
 
   function getTurnFileEdits(group: ConversationTurnGroup): { path: string; added: number; removed: number }[] {
@@ -276,15 +275,13 @@
         const path = toolFilePath(item);
         if (path && !seenPaths.has(path)) {
           seenPaths.add(path);
-          edits.push({ path, ...countDiffLines(item.diff ?? '') });
+          edits.push({ path, ...countDiffLines(item, item.diff ?? '') });
         }
       } else if (item.kind === 'file' && item.completed) {
         const p = typeof item.metadata?.path === 'string' ? item.metadata.path : '';
         if (p && !seenPaths.has(p)) {
           seenPaths.add(p);
-          const d = typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text;
-          const { added, removed } = countDiffLines(d);
-          edits.push({ path: p, added, removed });
+          edits.push({ path: p, ...countDiffLines(item, typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text) });
         }
       } else if (item.kind === 'toolRun') {
         for (const sub of item.items) {
@@ -299,9 +296,7 @@
             const p = typeof sub.metadata?.path === 'string' ? sub.metadata.path : '';
             if (p && !seenPaths.has(p)) {
               seenPaths.add(p);
-              const d = typeof sub.metadata?.diff === 'string' ? sub.metadata.diff : sub.text;
-              const { added, removed } = countDiffLines(d);
-              edits.push({ path: p, added, removed });
+              edits.push({ path: p, ...countDiffLines(sub, typeof sub.metadata?.diff === 'string' ? sub.metadata.diff : sub.text) });
             }
           }
         }
