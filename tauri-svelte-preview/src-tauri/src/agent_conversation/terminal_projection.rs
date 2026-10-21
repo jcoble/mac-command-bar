@@ -578,4 +578,9 @@ mod tests {
         drop(registry);
         assert!(stopped.load(Ordering::SeqCst));
     }
+
+    #[test]
+    fn deliberately_broken_to_prove_the_rust_check_fails() {
+        assert_eq!(1 + 1, 3, "this test is broken on purpose");
+    }
 }
