@@ -11,12 +11,12 @@ const answerBoardQuestion = fake('answerBoardQuestion');
 const ensureConversationSession = mock.fn();
 
 const here = (path: string): string => new URL(path, import.meta.url).href;
-mock.module(here('../conversation/conversationService.ts'), { exports: { adoptSession, sendStructuredMessage } });
-mock.module(here('../conversation/conversationStore.svelte.ts'), { exports: { ensureConversationSession } });
-mock.module(here('../stores/sessionRailStore.svelte.ts'), { exports: { rail: { owned: [{ ownedId: 'lead', agent: 'claude' }] } } });
-mock.module(here('../board/boardSource.ts'), { exports: { answerBoardQuestion } });
-mock.module(here('../components/sessionRowJump.ts'), { exports: { sessionRowJump: mock.fn() } });
-mock.module(here('./workflowService.ts'), { exports: { answerWorkflowPause: mock.fn(), approveWorkflowGate: mock.fn() } });
+mock.module(here('../conversation/conversationService.ts'), { namedExports: { adoptSession, sendStructuredMessage } });
+mock.module(here('../conversation/conversationStore.svelte.ts'), { namedExports: { ensureConversationSession } });
+mock.module(here('../stores/sessionRailStore.svelte.ts'), { namedExports: { rail: { owned: [{ ownedId: 'lead', agent: 'claude' }] } } });
+mock.module(here('../board/boardSource.ts'), { namedExports: { answerBoardQuestion } });
+mock.module(here('../components/sessionRowJump.ts'), { namedExports: { sessionRowJump: mock.fn() } });
+mock.module(here('./workflowService.ts'), { namedExports: { answerWorkflowPause: mock.fn(), approveWorkflowGate: mock.fn() } });
 
 const { answerQuestion, questionState } = await import('./ownerInboxActions.ts');
 
