@@ -57,7 +57,10 @@ export function questionState(key: string): { busy: boolean; unrecorded: string 
   return { busy: answering.has(key), unrecorded: sentNotRecorded.get(key) };
 }
 
-/** Sends `text` to the session as a normal owner message; false when cancelled before the send. */
+/**
+ * Sends `text` to the session as a normal owner message, leaving the composer's screenshots
+ * where they are; false when cancelled before the send.
+ */
 async function sendOwnerAnswer(ownedId: string, text: string, signal: AbortSignal): Promise<boolean> {
   const adopted = await adoptSession(ownedId, signal);
   // The lookup answers false when cancelled, so the signal is checked first.
@@ -66,17 +69,17 @@ async function sendOwnerAnswer(ownedId: string, text: string, signal: AbortSigna
   if (!adopted || !owned) throw new Error('That session is not available yet.');
   // Only agent sessions can ask, through the board tool, so this is a conversation provider.
   ensureConversationSession(ownedId, normalizeProvider(owned.agent).agent as AgentConversationProvider);
-  if (!await sendStructuredMessage(ownedId, text)) throw new Error('The message was not sent.');
+  if (!await sendStructuredMessage(ownedId, text, undefined, false)) throw new Error('The message was not sent.');
   return true;
 }
 
 /**
- * Answers a board question: sends `text` to its session, then records it on the question's machine.
+ * Answers a board question: sends "Q<n>: `answer`" to its session, then records `answer` on the question's machine.
  * Only the send can be cancelled; once sent, the answer is always recorded. `record` false sends only.
  */
 export async function answerQuestion(
   q: { machine: string; id: number; ownedId: string },
-  text: string,
+  answer: string,
   signal: AbortSignal,
   record = true
 ): Promise<void> {
@@ -86,9 +89,9 @@ export async function answerQuestion(
   try {
     let sent = sentNotRecorded.get(key);
     if (sent === undefined) {
-      if (!await sendOwnerAnswer(q.ownedId, text, signal) || !record) return;
-      sent = text;
-      sentNotRecorded.set(key, text);
+      if (!await sendOwnerAnswer(q.ownedId, `Q${q.id}: ${answer}`, signal) || !record) return;
+      sent = answer;
+      sentNotRecorded.set(key, answer);
     }
     try {
       // False means the agent already marked it answered, which is fine.

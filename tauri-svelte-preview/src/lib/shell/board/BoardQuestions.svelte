@@ -51,7 +51,7 @@
   async function send(row: Row, text: string, record = true): Promise<void> {
     onError('');
     try {
-      await answerQuestion({ machine: row.machine, id: row.q.id, ownedId: row.q.session_owned_id }, `Q${row.q.id}: ${text}`, signal, record);
+      await answerQuestion({ machine: row.machine, id: row.q.id, ownedId: row.q.session_owned_id }, text, signal, record);
       if (record) drafts[row.id] = '';
     } catch (cause) {
       if (!signal.aborted) onError(`Q${row.q.id}: ${cause instanceof Error ? cause.message : String(cause)}`);

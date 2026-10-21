@@ -110,3 +110,10 @@ test('Explain more only sends', async () => {
   assert.equal(answerBoardQuestion.mock.callCount(), 0);
   assert.equal(questionState(key(q)).unrecorded, undefined);
 });
+
+test('the answer is sent as Q<n> without the composer screenshots and recorded as typed', async () => {
+  const q = question();
+  await answerQuestion(q, 'x'.repeat(600), live());
+  assert.deepEqual(sendStructuredMessage.mock.calls[0].arguments, ['lead', `Q${q.id}: ${'x'.repeat(600)}`, undefined, false]);
+  assert.deepEqual(answerBoardQuestion.mock.calls[0].arguments.slice(0, 3), ['mac', q.id, 'x'.repeat(600)]);
+});

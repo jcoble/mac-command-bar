@@ -23,7 +23,10 @@ pub(super) fn add_board_schema(c: &Connection) -> Result<()> {
         body TEXT NOT NULL DEFAULT '', recommended TEXT, session_owned_id TEXT NOT NULL,
         created_by TEXT NOT NULL, answer TEXT, asked_at_ms INTEGER NOT NULL, answered_at_ms INTEGER
     );
-    CREATE INDEX IF NOT EXISTS board_questions_open_idx ON board_questions(asked_at_ms) WHERE answered_at_ms IS NULL;")
+    CREATE INDEX IF NOT EXISTS board_questions_open_idx ON board_questions(asked_at_ms) WHERE answered_at_ms IS NULL;
+    -- A deleted session's questions go with it; nobody is left to answer them.
+    CREATE TRIGGER IF NOT EXISTS board_questions_session_deleted AFTER DELETE ON sessions
+    BEGIN DELETE FROM board_questions WHERE session_owned_id=OLD.owned_id; END;")
         .map_err(|e| StoreError::sqlite("could not create the board tables", e))
 }
 
@@ -493,6 +496,15 @@ mod tests {
         assert_eq!(q[..40].iter().filter(|q|q["answered_at_ms"].is_null()).count(),40);
         assert_eq!(q[0]["session_state"],"ready"); assert_eq!(q[1]["session_state"],"closed");
         assert_eq!(s.board_count(100).unwrap()["count"],1);
+    }
+    #[test]
+    fn deleting_a_session_removes_its_questions() {
+        let s=store(); session(&s,"lead","ready"); session(&s,"other","ready");
+        ask(&s,"q","lead",1); ask(&s,"k","other",2);
+        s.delete_session("lead").unwrap();
+        let b=s.board(0,3).unwrap(); let q=b["questions"].as_array().unwrap();
+        assert_eq!((q.len(),q[0]["key"].as_str()),(1,Some("k")));
+        assert_eq!(s.board_count(3).unwrap()["count"],1);
     }
     #[test]
     fn board_count_uses_the_open_questions_index() {
