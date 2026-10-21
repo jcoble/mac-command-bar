@@ -9,9 +9,9 @@ import { DESIGNS, SPINNER_IDS, type Part } from '../src/lib/shell/components/fee
 const OUT = new URL('../src/lib/shell/components/feedback/spinners/', import.meta.url).pathname;
 const FPS = 12;
 const CYCLE = 4; // seconds, 48 frames. No design's loops fit 2 s, so each loop is rounded to a whole number of repeats in 4 s.
-const SIZE = 24; // CSS px of the spinner, the largest common size
-const PAD = 2; // CSS px of glow kept around it
-const PIXELS = 48; // the image's side, so every use (12-24 px) downscales
+const SIZE = 14; // CSS px of the spinner, the size most uses show, so its fixed-px glow and strokes match
+const PAD = 3; // CSS px of glow kept around it
+const PIXELS = 48; // the image's side; uses up to 16 px downscale on a 2x screen
 
 // A turn looks the same half a cycle on (every shape is mirror-symmetric), and these designs look the same
 // turned 180 degrees (every part centred and point-symmetric), so they need only that much spin per repeat.

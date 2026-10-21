@@ -13,9 +13,9 @@
   const src = $derived(images[`./spinners/${id}${prefersReducedMotion.current ? '-still' : ''}.webp`]);
 </script>
 
-<!-- Each frame holds a 24 px drawing plus 2 px of glow per side, so the image is 7/6 of size and pulled back by
+<!-- Each frame holds a 14 px drawing plus 3 px of glow per side, so the image is 20/14 of size and pulled back by
      that glow: the drawing fills size and the glow spills past the box, as the CSS spinner's did. -->
-<img class="spinner" {src} alt="" draggable="false" style:width={`${(size * 7) / 6}px`} style:height={`${(size * 7) / 6}px`} style:margin={`${-size / 12}px`} data-testid="working-spinner" data-spinner={id} aria-hidden="true" />
+<img class="spinner" {src} alt="" draggable="false" style:width={`${(size * 20) / 14}px`} style:height={`${(size * 20) / 14}px`} style:margin={`${(-size * 3) / 14}px`} data-testid="working-spinner" data-spinner={id} aria-hidden="true" />
 
 <style>
   .spinner{display:inline-block;flex-shrink:0;vertical-align:middle}
