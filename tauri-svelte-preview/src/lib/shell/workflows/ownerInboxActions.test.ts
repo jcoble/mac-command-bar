@@ -21,8 +21,8 @@ mock.module(here('./workflowService.ts'), { exports: { answerWorkflowPause: mock
 const { answerQuestion, questionState } = await import('./ownerInboxActions.ts');
 
 let next = 0;
-const question = () => ({ machine: 'mac', id: ++next, ownedId: 'lead' });
-const key = (q: { machine: string; id: number }): string => `${q.machine}:${q.id}`;
+const question = () => ({ machine: 'mac', id: ++next, askedAtMs: 7, ownedId: 'lead' });
+const key = (q: { machine: string; id: number; askedAtMs: number }): string => `${q.machine}:${q.id}:${q.askedAtMs}`;
 const live = (): AbortSignal => new AbortController().signal;
 
 beforeEach(() => {
@@ -50,7 +50,7 @@ test('closing the board after the send still records the sent answer', async () 
   impl.sendStructuredMessage = async () => { controller.abort(); return { accepted: true }; };
   await answerQuestion(q, 'Q: yes', controller.signal);
   assert.equal(answerBoardQuestion.mock.callCount(), 1);
-  assert.deepEqual(answerBoardQuestion.mock.calls[0].arguments.slice(0, 3), ['mac', q.id, 'Q: yes']);
+  assert.deepEqual(answerBoardQuestion.mock.calls[0].arguments.slice(0, 4), ['mac', q.id, 7, 'Q: yes']);
   assert.deepEqual(questionState(key(q)), { busy: false, unrecorded: undefined });
 });
 
@@ -78,7 +78,7 @@ test('a sent answer that was not recorded is kept, and Retry only records it', a
   impl.answerBoardQuestion = async () => true;
   await answerQuestion(q, 'Q: something else', live());
   assert.equal(sendStructuredMessage.mock.callCount(), 1);
-  assert.deepEqual(answerBoardQuestion.mock.calls[1].arguments.slice(0, 3), ['mac', q.id, 'Q: yes']);
+  assert.deepEqual(answerBoardQuestion.mock.calls[1].arguments.slice(0, 4), ['mac', q.id, 7, 'Q: yes']);
   assert.equal(questionState(key(q)).unrecorded, undefined);
 });
 
@@ -115,5 +115,12 @@ test('the answer is sent as Q<n> without the composer screenshots and recorded a
   const q = question();
   await answerQuestion(q, 'x'.repeat(600), live());
   assert.deepEqual(sendStructuredMessage.mock.calls[0].arguments, ['lead', `Q${q.id}: ${'x'.repeat(600)}`, undefined, false]);
-  assert.deepEqual(answerBoardQuestion.mock.calls[0].arguments.slice(0, 3), ['mac', q.id, 'x'.repeat(600)]);
+  assert.deepEqual(answerBoardQuestion.mock.calls[0].arguments.slice(0, 4), ['mac', q.id, 7, 'x'.repeat(600)]);
+});
+
+test('a question asked again starts without the earlier unrecorded answer', async () => {
+  const q = question();
+  impl.answerBoardQuestion = async () => { throw new Error('machine is not reachable'); };
+  await assert.rejects(answerQuestion(q, 'yes', live()));
+  assert.equal(questionState(key({ ...q, askedAtMs: 9 })).unrecorded, undefined);
 });

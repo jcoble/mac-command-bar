@@ -70,8 +70,8 @@ export async function addBoardNote(
   return board('board_note', { machine, target, body, now_ms: nowMs }, signal);
 }
 
-/** Records the owner's answer; false when the question was already answered. */
-export async function answerBoardQuestion(machine: string, id: number, answer: string, nowMs: number): Promise<boolean | null> {
+/** Records the owner's answer to the question as asked at `askedAtMs`; false when already answered or asked again. */
+export async function answerBoardQuestion(machine: string, id: number, askedAtMs: number, answer: string, nowMs: number): Promise<boolean | null> {
   // A recorded answer must not be cancelled halfway, so this takes no signal.
-  return invokeCancellable('board', { op: 'board_question', args: { machine, id, answer, now_ms: nowMs } }, new AbortController().signal);
+  return invokeCancellable('board', { op: 'board_question', args: { machine, id, asked_at_ms: askedAtMs, answer, now_ms: nowMs } }, new AbortController().signal);
 }

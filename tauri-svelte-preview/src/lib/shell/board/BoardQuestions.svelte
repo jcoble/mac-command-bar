@@ -51,7 +51,7 @@
   async function send(row: Row, text: string, record = true): Promise<void> {
     onError('');
     try {
-      await answerQuestion({ machine: row.machine, id: row.q.id, ownedId: row.q.session_owned_id }, text, signal, record);
+      await answerQuestion({ machine: row.machine, id: row.q.id, askedAtMs: row.q.asked_at_ms, ownedId: row.q.session_owned_id }, text, signal, record);
       if (record) drafts[row.id] = '';
     } catch (cause) {
       if (!signal.aborted) onError(`Q${row.q.id}: ${cause instanceof Error ? cause.message : String(cause)}`);
@@ -67,7 +67,7 @@
 {#snippet questionRow(row: Row)}
   {@const q = row.q}
   {@const expanded = isOpen(row)}
-  {@const status = questionState(row.id)}
+  {@const status = questionState(`${row.id}:${q.asked_at_ms}`)}
   {@const locked = status.busy || ended(row)}
   <li class="card">
     <button type="button" class="chead" aria-expanded={expanded} onclick={() => (toggled[row.id] = !expanded)}>

@@ -251,10 +251,11 @@ impl SessionStore {
             .map(|n|n>0).map_err(|e|StoreError::sqlite("could not add the note",e))
     }
 
-    /// The owner's answer from the board; false when it was already answered.
-    pub fn board_question_answer(&self, id: i64, answer: &str, now: i64) -> Result<bool> {
+    /// The owner's answer from the board to the question as asked at `asked_at_ms`;
+    /// false when it was already answered or has been asked again since.
+    pub fn board_question_answer(&self, id: i64, asked_at_ms: i64, answer: &str, now: i64) -> Result<bool> {
         if answer.chars().count()>600 { return Err(StoreError::message("answers must be at most 600 characters")); }
-        self.lock_write()?.execute("UPDATE board_questions SET answer=?2, answered_at_ms=?3 WHERE id=?1 AND answered_at_ms IS NULL",params![id,answer,now])
+        self.lock_write()?.execute("UPDATE board_questions SET answer=?2, answered_at_ms=?3 WHERE id=?1 AND answered_at_ms IS NULL AND asked_at_ms=?4",params![id,answer,now,asked_at_ms])
             .map(|n|n>0).map_err(|e|StoreError::sqlite("could not answer the question",e))
     }
 
@@ -440,12 +441,12 @@ mod tests {
             (Some("q"),Some("Merge it?"),Some("Why and options"),Some("yes"),Some("lead"),Some(1)));
         assert!(q["answer"].is_null() && q["answered_at_ms"].is_null());
         assert_eq!(s.board_count(1).unwrap()["count"],1);
-        assert!(s.board_question_answer(id,"yes",2).unwrap());
-        assert!(!s.board_question_answer(id,"no",3).unwrap());
+        assert!(s.board_question_answer(id,1,"yes",2).unwrap());
+        assert!(!s.board_question_answer(id,1,"no",3).unwrap());
         assert_eq!(s.board_count(3).unwrap()["count"],0);
         let q=&s.board(0,3).unwrap()["questions"][0];
         assert_eq!((q["answer"].as_str(),q["answered_at_ms"].as_i64()),(Some("yes"),Some(2)));
-        assert!(s.board_question_answer(id,&"x".repeat(601),4).is_err());
+        assert!(s.board_question_answer(id,1,&"x".repeat(601),4).is_err());
     }
     #[test]
     fn an_answer_only_call_on_an_existing_question_marks_it_and_keeps_its_text() {
@@ -459,7 +460,7 @@ mod tests {
     }
     #[test]
     fn asking_again_with_new_question_text_reopens_it_with_the_same_number() {
-        let s=store(); let id=ask(&s,"q","lead",1); s.board_question_answer(id,"yes",2).unwrap();
+        let s=store(); let id=ask(&s,"q","lead",1); s.board_question_answer(id,1,"yes",2).unwrap();
         assert_eq!(s.board_question_update("q","lead",false,&json!({"question":"New text"}),5).unwrap(),id);
         let q=&s.board(0,5).unwrap()["questions"][0];
         assert_eq!((q["body"].as_str(),q["asked_at_ms"].as_i64()),(Some("New text"),Some(5)));
@@ -487,7 +488,7 @@ mod tests {
         let s=store(); session(&s,"gone","closed"); session(&s,"live","ready");
         for n in 1..=41 { ask(&s,&format!("c{n}"),"gone",n); }
         let a=ask(&s,"a","live",50); ask(&s,"b","live",60); let c=ask(&s,"c","live",70);
-        s.board_question_answer(a,"yes",80).unwrap(); s.board_question_answer(c,"no",90).unwrap();
+        s.board_question_answer(a,50,"yes",80).unwrap(); s.board_question_answer(c,70,"no",90).unwrap();
         let b=s.board(0,100).unwrap(); let q=b["questions"].as_array().unwrap();
         assert_eq!(q.len(),42);
         assert_eq!(q[0]["asked_at_ms"].as_i64(),Some(60));
@@ -496,6 +497,15 @@ mod tests {
         assert_eq!(q[..40].iter().filter(|q|q["answered_at_ms"].is_null()).count(),40);
         assert_eq!(q[0]["session_state"],"ready"); assert_eq!(q[1]["session_state"],"closed");
         assert_eq!(s.board_count(100).unwrap()["count"],1);
+    }
+    #[test]
+    fn an_answer_to_the_question_as_first_asked_does_not_close_it_once_asked_again() {
+        let s=store(); let id=ask(&s,"q","lead",1);
+        s.board_question_update("q","lead",false,&json!({"answer":"yes"}),2).unwrap();
+        s.board_question_update("q","lead",false,&json!({"question":"New text"}),5).unwrap();
+        assert!(!s.board_question_answer(id,1,"yes",6).unwrap());
+        assert_eq!(s.board_count(6).unwrap()["count"],1);
+        assert!(s.board_question_answer(id,5,"no",7).unwrap());
     }
     #[test]
     fn deleting_a_session_removes_its_questions() {

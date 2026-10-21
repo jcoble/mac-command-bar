@@ -74,7 +74,7 @@ pub(super) fn answer(store: &SessionStore, op: &str, args: &Value) -> Result<Val
         "board_count" => store.board_count(number("now_ms")?),
         "board_card" => store.board_card(text("key")?, text("action")?, number("at")?).map(Value::Bool),
         "board_note" => store.board_note(&uuid::Uuid::new_v4().to_string(), text("target")?, text("body")?, number("now_ms")?).map(Value::Bool),
-        "board_question" => store.board_question_answer(number("id")?, text("answer")?, number("now_ms")?).map(Value::Bool),
+        "board_question" => store.board_question_answer(number("id")?, number("asked_at_ms")?, text("answer")?, number("now_ms")?).map(Value::Bool),
         _ => return Err(format!("Unknown messaging operation {op}")),
     };
     let value = result.map_err(|error| error.to_string())?;
@@ -162,9 +162,10 @@ mod tests {
         assert_eq!(fired.load(Ordering::SeqCst), 3);
         let id = update(&store, "lead", "top", json!({"key": "q", "title": "Merge?", "question": "Why"})).unwrap()["question"].as_i64().unwrap();
         assert_eq!(fired.load(Ordering::SeqCst), 4);
-        assert_eq!(answer(&store, "board_question", &json!({"id": id, "answer": "Q1: yes", "now_ms": 5})).unwrap(), json!(true));
+        let asked = store.board(0, 5).unwrap()["questions"][0]["asked_at_ms"].as_i64().unwrap();
+        assert_eq!(answer(&store, "board_question", &json!({"id": id, "asked_at_ms": asked, "answer": "Q1: yes", "now_ms": 5})).unwrap(), json!(true));
         assert_eq!(fired.load(Ordering::SeqCst), 5);
-        assert_eq!(answer(&store, "board_question", &json!({"id": id, "answer": "Q1: no", "now_ms": 6})).unwrap(), json!(false));
+        assert_eq!(answer(&store, "board_question", &json!({"id": id, "asked_at_ms": asked, "answer": "Q1: no", "now_ms": 6})).unwrap(), json!(false));
         assert_eq!(fired.load(Ordering::SeqCst), 5);
     }
 

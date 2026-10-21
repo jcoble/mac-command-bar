@@ -48,7 +48,7 @@ export function waitingOn(session: OwnedSession): string {
   return 'Waiting for your answer';
 }
 
-/** Board answers sent to their session but not yet recorded, by `machine:id`; Retry records them. */
+/** Board answers sent to their session but not yet recorded, by `machine:id:askedAtMs`; Retry records them. */
 const sentNotRecorded = new SvelteMap<string, string>();
 /** Questions with an answer on its way; one at a time each. */
 const answering = new SvelteSet<string>();
@@ -78,12 +78,13 @@ async function sendOwnerAnswer(ownedId: string, text: string, signal: AbortSigna
  * Only the send can be cancelled; once sent, the answer is always recorded. `record` false sends only.
  */
 export async function answerQuestion(
-  q: { machine: string; id: number; ownedId: string },
+  q: { machine: string; id: number; askedAtMs: number; ownedId: string },
   answer: string,
   signal: AbortSignal,
   record = true
 ): Promise<void> {
-  const key = `${q.machine}:${q.id}`;
+  // Asking again moves askedAtMs, so an answer kept for Retry never lands on the new question.
+  const key = `${q.machine}:${q.id}:${q.askedAtMs}`;
   if (answering.has(key)) return;
   answering.add(key);
   try {
@@ -94,8 +95,8 @@ export async function answerQuestion(
       sentNotRecorded.set(key, answer);
     }
     try {
-      // False means the agent already marked it answered, which is fine.
-      await answerBoardQuestion(q.machine, q.id, sent, Date.now());
+      // False means the agent already marked it answered or asked it again, which is fine.
+      await answerBoardQuestion(q.machine, q.id, q.askedAtMs, sent, Date.now());
       sentNotRecorded.delete(key);
     } catch {
       throw new Error('Sent, but not recorded. Retry records it only.');
