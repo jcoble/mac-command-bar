@@ -80,21 +80,32 @@ systemctl --user daemon-reload
 systemctl --user enable assembly-remote.service
 systemctl --user restart assembly-remote.service
 
-attempt=0
-while [ "$attempt" -lt 15 ]; do
+# The first start after an update can migrate stored data, so wait while the service is still
+# starting (systemd reports a restart in progress as activating), and stop at once if it exits.
+waited=0
+while :; do
+  state=$(systemctl --user is-active assembly-remote.service || true)
+  case "$state" in
+    active|activating) ;;
+    *)
+      systemctl --user status assembly-remote.service --no-pager --lines=20 >&2 || true
+      echo "Assembly remote backend stopped after $waited seconds while starting" >&2
+      exit 1 ;;
+  esac
   listeners=$(ss -ltnH 'sport = :7777')
-  if systemctl --user is-active --quiet assembly-remote.service \
+  if [ "$state" = active ] \
     && [ -n "$listeners" ] \
     && printf '%s\n' "$listeners" | awk '$4 != "127.0.0.1:7777" { exit 1 } END { if (NR == 0) exit 1 }'; then
     install -m 644 manifest.json "$HOME/.local/share/assembly/.backend-manifest.new"
     mv "$HOME/.local/share/assembly/.backend-manifest.new" "$HOME/.local/share/assembly/backend-manifest.json"
     exit 0
   fi
-  attempt=$((attempt + 1))
+  [ "$waited" -lt 120 ] || break
+  waited=$((waited + 1))
   sleep 1
 done
 systemctl --user status assembly-remote.service --no-pager --lines=20 >&2 || true
-echo "Assembly remote backend did not become active within 15 seconds" >&2
+echo "Assembly remote backend did not start listening on 127.0.0.1:7777 within $waited seconds" >&2
 exit 1
 `;
 
