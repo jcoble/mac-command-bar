@@ -240,7 +240,7 @@ async function start(argv: string[]) {
     app: { windows: [{ label: 'main', title: 'Assembly', width: 1600, height: 990, minWidth: 900, minHeight: 600, url: '/', dragDropEnabled: false }] }
   });
   const appEnv = { ...process.env, PATH: `${home}/.cargo/bin:${process.env.PATH}`, CARGO_BUILD_JOBS: '4', MSBUILDDISABLENODEREUSE: '1', XDG_DATA_HOME: dataDir, DISPLAY: x, GDK_BACKEND: 'x11', WEBKIT_DISABLE_DMABUF_RENDERER: '1' };
-  processes.push(launch('app', 'pnpm', ['tauri', 'dev', '--config', 'src-tauri/tauri.dev.attach.conf.json', '--config', windowConfig], preview, log('app'), appEnv));
+  processes.push(launch('app', 'pnpm', ['tauri:dev', '--config', 'src-tauri/tauri.dev.attach.conf.json', '--config', windowConfig], preview, log('app'), appEnv));
   writeState();
 
   console.log(`Started in ${runDir} (display ${x}, vite port ${port}). Waiting for the Assembly window (first build can take 10+ minutes).`);
