@@ -1,6 +1,6 @@
 <!-- The owner's notes on a card or a live row: one quiet line each, and a field to add one. -->
 <script lang="ts">
-  import StickyNote from '@lucide/svelte/icons/sticky-note';
+  import Pencil from '@lucide/svelte/icons/pencil';
 
   import { Input } from '$lib/components/ui/input/index.js';
   import { addBoardNote, type BoardNote } from './boardSource.ts';
@@ -55,9 +55,9 @@
 </script>
 
 {#each notes as note (note.id)}
-  <p class="flex min-w-0 gap-1.5 text-[13px] text-muted-foreground">
-    <StickyNote class="mt-0.5 size-3.5 flex-none" aria-hidden="true" />
-    <span class="min-w-0">You · {time(note.created_at_ms)} <span class="text-foreground">{note.body}</span></span>
+  <p class="flex min-w-0 gap-1.5 px-0.5 text-xs leading-[1.45] text-(--color-text-2)">
+    <Pencil class="mt-0.5 size-3 flex-none text-(--color-text-3)" aria-hidden="true" />
+    <span class="min-w-0"><span class="text-(--color-text-3)">You · {time(note.created_at_ms)}</span> <span class="text-(--color-text)">{note.body}</span></span>
   </p>
 {/each}
 {#if adding}
@@ -70,5 +70,6 @@
     disabled={saving}
     autofocus={Boolean(onDone)}
     onkeydown={keydown}
+    class="h-[30px] rounded-(--radius-sm) border-0 bg-[color-mix(in_srgb,var(--color-bg)_44%,transparent)] text-[13px] dark:bg-[color-mix(in_srgb,var(--color-bg)_44%,transparent)]"
   />
 {/if}
