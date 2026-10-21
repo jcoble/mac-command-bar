@@ -638,7 +638,7 @@ pub(crate) trait AgentRuntimePort: Send + Sync {
     }
 }
 
-fn worker_permission(provider: AgentConversationProvider, chosen: Option<String>) -> Option<String> {
+pub(crate) fn worker_permission(provider: AgentConversationProvider, chosen: Option<String>) -> Option<String> {
     chosen.or_else(|| match provider {
         AgentConversationProvider::Claude => Some("auto".into()), // Unattended auto review; Claude 0.88/0.93 mode kind=auto_review.
         AgentConversationProvider::Codex => Some("agent".into()), // Same auto_review kind in Codex 1.13.1/2.2.2.

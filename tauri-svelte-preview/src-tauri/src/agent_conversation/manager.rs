@@ -1249,12 +1249,8 @@ impl AgentRuntimeManager {
         }
         self.show_helper_to_parent(parent, &owned_id, name, "running")?;
         let prompt = AgentPrompt { text: format!("[message from {sender}]\n{prompt}"), images: Vec::new(), attachment_ids: Vec::new() };
-        // A helper works at its parent's permission level, on either provider.
-        let approval_policy = {
-            let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            sessions.get(parent).and_then(|session|
-                helper_mode(session.config.approval_policy.as_deref(), session.provider, provider))
-        };
+        // A helper works unattended, so it starts in Auto whatever mode its parent is in.
+        let approval_policy = crate::workflow::worker_permission(provider, None);
         if let Err(error) = self.send_message(&owned_id, connection.generation, prompt, model, approval_policy).await {
             if let Err(show_error) = self.show_helper_to_parent(parent, &owned_id, name, "failed") {
                 crate::debug_log::stderr_log!("Could not mark the helper failed: {show_error}");
@@ -7828,24 +7824,6 @@ fn projected_background_work(session: &ManagedAgentSession) -> Vec<BackgroundWor
     work
 }
 
-/// Helpers keep same-provider modes. Claude auto = Codex agent (auto_review);
-/// bypassPermissions = agent-full-access (full_access): matching mode kinds in
-/// Claude ACP 0.88.0/0.93.0 and Codex 1.13.1/2.2.2 session/new; other modes ask.
-fn helper_mode(mode: Option<&str>, from: AgentConversationProvider, to: AgentConversationProvider) -> Option<String> {
-    let mode = mode?;
-    if from == to { return Some(mode.to_string()); }
-    let matched = match (to, mode) {
-        (AgentConversationProvider::Codex, "auto") => "agent",
-        (AgentConversationProvider::Codex, "bypassPermissions") => "agent-full-access",
-        (AgentConversationProvider::Codex, _) => "read-only",
-        (AgentConversationProvider::Claude, "agent") => "auto",
-        (AgentConversationProvider::Claude, "agent-full-access") => "bypassPermissions",
-        (AgentConversationProvider::Claude, _) => "default",
-        _ => return None,
-    };
-    Some(matched.to_string())
-}
-
 /// Claude Code wakes the agent that owned finished background work — a shell,
 /// or a sub-agent — to report it, even after it reported idle. Until its next
 /// idle the session still has work in hand.
@@ -11964,26 +11942,48 @@ mod tests {
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
-    #[test]
-    fn a_helper_on_another_provider_gets_its_parents_level() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_helper_starts_in_auto_even_when_its_parent_is_in_default() {
         use AgentConversationProvider::{Claude, Codex};
-        let mode = |parent, from, to| helper_mode(Some(parent), from, to);
-        assert_eq!(mode("auto", Claude, Codex).as_deref(), Some("agent"));
-        assert_eq!(mode("bypassPermissions", Claude, Codex).as_deref(), Some("agent-full-access"));
-        assert_eq!(mode("plan", Claude, Codex).as_deref(), Some("read-only"));
-        assert_eq!(mode("agent", Codex, Claude).as_deref(), Some("auto"));
-        assert_eq!(mode("agent-full-access", Codex, Claude).as_deref(), Some("bypassPermissions"));
-        assert_eq!(mode("read-only", Codex, Claude).as_deref(), Some("default"));
-        // The same provider keeps the parent's own mode; a parent with none sets none.
-        assert_eq!(mode("acceptEdits", Claude, Claude).as_deref(), Some("acceptEdits"));
-        assert_eq!(helper_mode(None, Claude, Codex), None);
+        for (parent_provider, parent_mode, helper_provider, log, asked) in [
+            (Claude, Some("default"), "claude", "config_options", r#""modeId":"auto""#),
+            (Claude, None, "codex", "multiplex", r#""approvalPolicy":"agent""#),
+            (Codex, Some("read-only"), "claude", "config_options", r#""modeId":"auto""#),
+        ] {
+            let root = temp_root();
+            let manifest = |fixture: &str| super::super::providers::acp_client::tests::fixture_manifest_named(
+                &root.join(format!("{fixture}.jsonl")), fixture);
+            let manager = AgentRuntimeManager::new(ProviderRegistry::new([
+                (Codex, manifest("multiplex")), (Claude, manifest("config_options"))]).unwrap());
+            let parent = "owned-parent".to_string();
+            let generation = manager.ensure_inner(request(root.to_str().unwrap(), &parent, parent_provider))
+                .unwrap().0.generation;
+            manager.activate(&parent, generation).await.unwrap();
+            manager.sessions.lock().unwrap().get_mut(&parent).unwrap()
+                .config.approval_policy = parent_mode.map(str::to_string);
+            let store = Arc::clone(&manager.store);
+            let endpoint = super::super::messaging::MessagingEndpoint::start().unwrap();
+            let caller = endpoint.issue(&parent);
+            endpoint.bind_store(&caller.token, &store, Some(manager.clone()));
+            let result = endpoint.handle(&caller.token, json!({"name":"start_session","arguments":{
+                "provider":helper_provider,"name":"Helper","prompt":"Go"}})).await.expect("start helper");
+            let started: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+            let helper = started["owned_id"].as_str().unwrap().to_string();
+            let frames = fs::read_to_string(root.join(format!("{log}.jsonl"))).unwrap();
+            assert!(frames.contains(asked), "{parent_provider:?} in {parent_mode:?} starting a {helper_provider} helper: {frames}");
+            let helper_generation = manager.sessions.lock().unwrap().get(&helper).map(|session| session.generation);
+            if let Some(helper_generation) = helper_generation { manager.close(&helper, helper_generation).await.unwrap(); }
+            endpoint.revoke(&parent);
+            manager.close(&parent, generation).await.unwrap();
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn helper_first_prompt_is_labelled_with_parent_and_takes_its_mode() {
+    async fn helper_first_prompt_is_labelled_with_parent_and_starts_in_auto() {
         let fixture = fixture_manager_with_acp_session("multiplex").await;
         let store = Arc::clone(&fixture.manager.store);
-        // A mode the parent is on that no request has asked the adapter for yet.
+        // The parent's own mode does not carry over: the helper asks for Auto.
         fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
             .config.approval_policy = Some("untrusted".into());
         let endpoint = super::super::messaging::MessagingEndpoint::start().unwrap();
@@ -12002,7 +12002,7 @@ mod tests {
         assert!(helper_events.iter().any(|event| matches!(&event.payload,
             AgentConversationPayload::UserMessage { text, .. } if *text == expected)), "{expected}");
         let log = fs::read_to_string(fixture.root.join("multiplex.jsonl")).unwrap();
-        assert!(log.contains(r#""approvalPolicy":"untrusted""#), "{log}");
+        assert!(log.contains(r#""approvalPolicy":"agent""#), "{log}");
         let helper_generation = fixture.manager.sessions.lock().unwrap()
             .get(&helper).map(|session| session.generation);
         if let Some(generation) = helper_generation {
