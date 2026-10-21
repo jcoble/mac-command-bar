@@ -36,7 +36,7 @@ function harness(ownedId: string) {
   const api = Function(...Object.keys(dependencies), `
     let conversationEventsDisposed = false;
     let conversationEventsGeneration = 1;
-    let remoteActivityRead = 0;
+    let remoteActivityController = null;
     const railActivityEvents = new Map();
     let sequence = 0;
     ${code}
