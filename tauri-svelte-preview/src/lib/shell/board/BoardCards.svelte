@@ -2,8 +2,12 @@
 <script lang="ts">
   import AlarmClock from '@lucide/svelte/icons/alarm-clock';
   import Check from '@lucide/svelte/icons/check';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import ExternalLink from '@lucide/svelte/icons/external-link';
+  import GitPullRequest from '@lucide/svelte/icons/git-pull-request';
   import Trash2 from '@lucide/svelte/icons/trash-2';
+  import Workflow from '@lucide/svelte/icons/workflow';
 
   import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
@@ -16,6 +20,8 @@
 
   interface Props {
     boards: MachineBoard[];
+    /** The header's filter: every section, or one state's. */
+    filter: 'all' | BoardCard['state'];
     /** Notion Tasks is connected, so task keys and links show. */
     notion: boolean;
     /** Aborted when the board closes. */
@@ -24,17 +30,15 @@
     onClose(): void;
     onOpenSession(ownedId: string): void;
   }
-  let { boards, notion, signal, onError, onClose, onOpenSession }: Props = $props();
+  let { boards, filter, notion, signal, onError, onClose, onOpenSession }: Props = $props();
 
   type Entry = { id: string; machine: string; card: BoardCard };
   const SECTIONS = [
-    { state: 'needs_you', label: 'Needs you', dot: 'bg-(--color-attention)' },
-    { state: 'running', label: 'Running', dot: 'bg-(--color-live)' },
-    { state: 'in_review', label: 'In review', dot: 'bg-(--color-merged)' }
+    { state: 'needs_you', label: 'Needs you', hint: 'Only you can move these', dot: 'bg-(--color-attention)' },
+    { state: 'running', label: 'Running', hint: 'Agents are working on these', dot: 'bg-(--color-live)' },
+    { state: 'in_review', label: 'In review', hint: 'Checks or a reviewer have it', dot: 'bg-(--color-merged)' }
   ] as const;
-  const HEADING = 'flex items-center gap-2 px-1 pt-1 text-[13px] font-semibold';
-  const LABEL = 'mb-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase';
-  const LINK = 'min-w-0 truncate text-left underline underline-offset-2 hover:text-foreground';
+  const LINK = 'min-w-0 truncate p-0 text-left hover:underline';
 
   /** Cards dropped while the board is open; each stays as "Dropped · Undo" until it closes. */
   let dropped = $state<Entry[]>([]);
@@ -77,6 +81,12 @@
       ? date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
       : date.toLocaleDateString([], { month: 'short', day: 'numeric' });
   }
+
+  /** "PR #344" from a GitHub pull request link, else the link without its scheme. */
+  const prLabel = (url: string): string => {
+    const number = /\/pull\/(\d+)/.exec(url)?.[1];
+    return number ? `PR #${number}` : url.replace(/^https?:\/\//, '');
+  };
 
   function tomorrowAtNine(): number {
     const date = new Date();
@@ -123,151 +133,142 @@
   }
 </script>
 
-{#snippet heading(label: string, count: number, dot: string)}
-  <span class={`size-1.5 flex-none rounded-full ${dot}`}></span>{label}
-  <span class="font-normal text-muted-foreground tabular-nums">{count}</span>
+{#snippet heading(label: string, hint: string, count: number, dot: string)}
+  <h3><i class={`dot ${dot}`}></i>{label}</h3><span class="muted">{hint}</span><strong>{count}</strong>
 {/snippet}
 
 {#snippet more(count: number)}
-  {#if count > 0}<p class="px-1 text-[13px] text-muted-foreground">{count} more not shown. Mark cards done or drop them to see the rest.</p>{/if}
+  {#if count > 0}<p class="muted px-1 pt-1.5">{count} more not shown. Mark cards done or drop them to see the rest.</p>{/if}
 {/snippet}
 
 {#snippet cardRow(entry: Entry)}
   {@const card = entry.card}
   {#if isDropped(entry)}
-    <li class="flex min-w-0 items-center gap-2 rounded-lg px-3 py-1.5 text-[13px] text-muted-foreground">
-      <span class="min-w-0 flex-1 truncate">{card.title}</span>
-      Dropped ·
+    <li class="fold-row">
+      <span class="truncate"><span class="quiet">Dropped</span> {card.title}</span>
       <Button size="xs" variant="ghost" disabled={busy} onclick={() => void act(entry, 'undo')}>Undo</Button>
     </li>
   {:else if snoozed(card)}
-    <li class="flex min-w-0 items-center gap-2 rounded-lg px-3 py-2 text-[13px] text-muted-foreground">
-      <span class="min-w-0 flex-1 truncate">{card.title}</span>
-      Snoozed until {when(card.snoozed_until_ms ?? 0)}
+    <li class="fold-row">
+      <span class="truncate"><span class="quiet">Snoozed</span> {card.title}</span>
+      <span class="flex-none text-(--color-text)">until {when(card.snoozed_until_ms ?? 0)}</span>
     </li>
   {:else}
     {@const open = isOpen(entry)}
-    <li class="flex min-w-0 flex-col gap-1 rounded-lg bg-muted/50 px-3 py-2.5">
-      <button
-        type="button"
-        class="flex w-full min-w-0 items-center gap-2 rounded-md text-left focus-visible:ring-3 focus-visible:ring-ring/50"
-        aria-expanded={open}
-        onclick={() => (toggled[entry.id] = !open)}
-      >
-        <ChevronRight class={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} aria-hidden="true" />
-        <span class="min-w-0 flex-1 truncate text-(length:--text-body) font-semibold">{card.title}</span>
-        {#if notion && card.task_key}<span class="flex-none text-[13px] text-muted-foreground">{card.task_key}</span>{/if}
-        <span class="flex-none text-[13px] text-muted-foreground">{when(card.updated_at_ms)}</span>
+    <li class="card">
+      <button type="button" class="chead" aria-expanded={open} onclick={() => (toggled[entry.id] = !open)}>
+        <ChevronRight class={cn('size-3.5 shrink-0 text-(--color-text-3) transition-transform', open && 'rotate-90')} aria-hidden="true" />
+        {#if notion && card.task_key}<span class="key">{card.task_key}</span>{/if}
+        <span class="ctitle">{card.title}</span>
+        <span class="ctime">{when(card.updated_at_ms)}</span>
       </button>
-      {#if card.summary}<p class={cn('pl-6 text-[13px] text-muted-foreground', !open && 'truncate')}>{card.summary}</p>{/if}
-      {#if card.stale}<p class="pl-6 text-[13px] text-muted-foreground">No update since {when(card.updated_at_ms)}</p>{/if}
-      {#if open}
-        <div class="flex min-w-0 flex-col gap-3 pt-2 pl-6">
+      {#if card.summary}<p class={cn('sum', !open && 'one')}>{card.summary}</p>{/if}
+      {#if card.stale}<p class="stale">No update since {when(card.updated_at_ms)}</p>{/if}
+      {#if !open}
+        {#if card.steps.length}
+          <p class="first-step">
+            <span class="circ">1</span><span class="truncate">{card.steps[0]}</span>
+            {#if card.steps.length > 1}<span class="more">· {card.steps.length} steps</span>{/if}
+          </p>
+        {/if}
+        {#if card.pr_url || card.run_id}
+          <p class="cmeta">
+            {#if card.pr_url}<span class="linkchip"><GitPullRequest class="size-3" aria-hidden="true" />{prLabel(card.pr_url)}</span>{/if}
+            {#if card.run_id}<span class="linkchip"><Workflow class="size-3" aria-hidden="true" />{[card.run_step, card.run_state ?? 'Not found'].filter(Boolean).join(' · ')}</span>{/if}
+          </p>
+        {/if}
+      {:else}
+        <div class="detail">
           {#if card.steps.length}
-            <section>
-              <h4 class={LABEL}>What to do</h4>
-              <ol class="m-0 flex list-none flex-col gap-1.5 p-0">
-                {#each card.steps as step, index (index)}
-                  <li class="flex gap-2 text-[13px]">
-                    <span class="mt-px inline-flex size-5 flex-none items-center justify-center rounded-full bg-secondary text-xs tabular-nums">{index + 1}</span>
-                    <span class="min-w-0">{step}</span>
-                  </li>
-                {/each}
-              </ol>
-            </section>
+            <p class="sh">What to do<span class="quiet-label">{card.steps.length} {card.steps.length === 1 ? 'step' : 'steps'}</span></p>
+            <ol class="steps">
+              {#each card.steps as step, index (index)}
+                <li><span class="circ">{index + 1}</span><span class="min-w-0">{step}</span></li>
+              {/each}
+            </ol>
           {/if}
-          {#if card.note}
-            <section>
-              <h4 class={LABEL}>Note for you</h4>
-              <p class="text-[13px] whitespace-pre-wrap">{card.note}</p>
-            </section>
-          {/if}
-          <section class="flex flex-col gap-1.5">
-            <h4 class={LABEL}>Your notes</h4>
-            <BoardNotes notes={card.notes} machine={entry.machine} target={`card:${card.key}`} {signal} adding {onError} />
-          </section>
-          {#if card.pr_url || (notion && card.task_url) || card.run_id || card.session_owned_id}
-            <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-[13px]">
-              {#if card.pr_url}
-                {@const url = card.pr_url}
-                <dt class="text-muted-foreground">Pull request</dt>
-                <dd class="flex min-w-0"><button type="button" class={LINK} onclick={() => follow(url)}>{url.replace(/^https?:\/\//, '')}</button></dd>
-              {/if}
-              {#if notion && card.task_url}
-                {@const url = card.task_url}
-                <dt class="text-muted-foreground">Task</dt>
-                <dd class="flex min-w-0"><button type="button" class={LINK} onclick={() => follow(url)}>{card.task_key ?? url}</button></dd>
-              {/if}
-              {#if card.run_id}
-                <dt class="text-muted-foreground">Workflow run</dt>
-                <dd class="truncate">{card.run_state ?? 'Not found'}{card.run_step ? ` · ${card.run_step}` : ''}</dd>
-              {/if}
-              {#if card.session_owned_id}
-                {@const ownedId = card.session_owned_id}
-                <dt class="text-muted-foreground">Session</dt>
-                <dd class="flex min-w-0 gap-1">
-                  <button type="button" class={LINK} onclick={() => onOpenSession(ownedId)}>{sessionTitle(ownedId)}</button>
-                  <span class="flex-none text-muted-foreground">· {card.session_state ?? 'Closed'}</span>
-                </dd>
-              {/if}
-            </dl>
-          {/if}
-          <p class="truncate text-[13px] text-muted-foreground">Written by {card.writer_name ?? card.written_by} · {machineLabel(entry.machine)}</p>
-          <div class="flex flex-wrap gap-2">
+          <div class="actions">
+            {#if card.pr_url}
+              {@const url = card.pr_url}
+              <Button size="sm" onclick={() => follow(url)}><ExternalLink />Open {prLabel(url)}</Button>
+            {/if}
             {#if card.state !== 'done'}
-              <Button size="sm" variant="outline" disabled={busy} onclick={() => void act(entry, 'done')}><Check />Mark done</Button>
+              <Button size="sm" variant="secondary" disabled={busy} onclick={() => void act(entry, 'done')}><Check />Mark done</Button>
             {/if}
             {#if card.state === 'needs_you'}
               <DropdownMenu.Root>
-                <DropdownMenu.Trigger class={buttonVariants({ variant: 'ghost', size: 'sm' })} disabled={busy}><AlarmClock />Snooze</DropdownMenu.Trigger>
+                <DropdownMenu.Trigger class={buttonVariants({ variant: 'secondary', size: 'sm' })} disabled={busy}><AlarmClock />Snooze<ChevronDown /></DropdownMenu.Trigger>
                 <DropdownMenu.Content align="start" class="w-48">
                   <DropdownMenu.Item onSelect={() => void act(entry, 'snooze', Date.now() + 3_600_000)}>For 1 hour</DropdownMenu.Item>
                   <DropdownMenu.Item onSelect={() => void act(entry, 'snooze', tomorrowAtNine())}>Until tomorrow 9 AM</DropdownMenu.Item>
                 </DropdownMenu.Content>
               </DropdownMenu.Root>
             {/if}
-            <Button size="sm" variant="ghost" disabled={busy} onclick={() => void act(entry, 'drop')}><Trash2 />Drop</Button>
+            <Button size="sm" variant="secondary" disabled={busy} onclick={() => void act(entry, 'drop')}><Trash2 />Drop</Button>
           </div>
+          {#if card.note}<div class="well"><span>Note for you</span><p>{card.note}</p></div>{/if}
+          {#if card.pr_url || (notion && card.task_url) || card.run_id || card.session_owned_id}
+            <div class="metrics">
+              {#if card.pr_url}
+                {@const url = card.pr_url}
+                <span><small>Pull request</small><strong><button type="button" class={LINK} onclick={() => follow(url)}>{prLabel(url)}</button></strong><em>{url.replace(/^https?:\/\//, '')}</em></span>
+              {/if}
+              {#if notion && card.task_url}
+                {@const url = card.task_url}
+                <span><small>Task</small><strong><button type="button" class={LINK} onclick={() => follow(url)}>{card.task_key ?? url}</button></strong></span>
+              {/if}
+              {#if card.run_id}
+                <span><small>Workflow</small><strong>{card.run_state ?? 'Not found'}</strong>{#if card.run_step}<em>Step {card.run_step}</em>{/if}</span>
+              {/if}
+              {#if card.session_owned_id}
+                {@const ownedId = card.session_owned_id}
+                <span><small>Session</small><strong><button type="button" class={LINK} onclick={() => onOpenSession(ownedId)}>{sessionTitle(ownedId)}</button></strong><em>{card.session_state ?? 'Closed'}</em></span>
+              {/if}
+            </div>
+          {/if}
+          <section class="notes">
+            <h4 class="sh">Your notes<span class="quiet-label">{card.notes.length ? `${card.notes.length} ${card.notes.length === 1 ? 'note' : 'notes'} · ${when(card.notes[card.notes.length - 1].created_at_ms)}` : 'None yet'}</span></h4>
+            <BoardNotes notes={card.notes} machine={entry.machine} target={`card:${card.key}`} {signal} adding {onError} />
+          </section>
+          <p class="foot"><span class="truncate">Written by {card.writer_name ?? card.written_by} · {machineLabel(entry.machine)}</span><span class="flex-none">Updated {when(card.updated_at_ms)}</span></p>
         </div>
       {/if}
     </li>
   {/if}
 {/snippet}
 
-<div class="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto p-3" data-testid="board-cards">
+<div class="col" data-testid="board-cards">
   {#if entries.length === 0 && dropped.length === 0}
-    <p class="px-1 py-6 text-center text-[13px] text-muted-foreground">No cards yet. Agents post them with the <code>board_update</code> tool.</p>
+    <p class="muted px-1 py-6 text-center">No cards yet. Agents post them with the <code>board_update</code> tool.</p>
+  {:else if filter !== 'all' && !total(filter) && !inState(filter).length}
+    <p class="muted px-1 py-6 text-center">No cards here.</p>
   {/if}
   {#each SECTIONS as section (section.state)}
     {@const list = inState(section.state)}
-    {#if list.length || total(section.state)}
-      <section class="flex min-w-0 flex-col gap-2">
-        <h3 class={HEADING}>{@render heading(section.label, total(section.state), section.dot)}</h3>
-        <ul class="m-0 flex list-none flex-col p-0 gap-2">
+    {#if (filter === 'all' || filter === section.state) && (list.length || total(section.state))}
+      <section class="panel">
+        <div class="ph">{@render heading(section.label, section.hint, total(section.state), section.dot)}</div>
+        <ul class="list">
           {#each list as entry (entry.id)}{@render cardRow(entry)}{/each}
         </ul>
         {@render more(notShown(section.state, list))}
       </section>
     {/if}
   {/each}
-  {#if done.length || total('done')}
-    <section class="flex min-w-0 flex-col gap-2">
+  {#if (filter === 'all' || filter === 'done') && (done.length || total('done'))}
+    <section class="panel">
       <div class="flex items-center gap-2">
         <h3 class="min-w-0 flex-1">
-          <button
-            type="button"
-            class={cn(HEADING, 'rounded-md text-left focus-visible:ring-3 focus-visible:ring-ring/50')}
-            aria-expanded={doneOpen}
-            onclick={() => (doneOpen = !doneOpen)}
-          >
-            {@render heading('Done today', total('done'), 'bg-(--color-good)')}
-            <ChevronRight class={cn('size-4 text-muted-foreground transition-transform', doneOpen && 'rotate-90')} aria-hidden="true" />
+          <button type="button" class="done-toggle" aria-expanded={doneOpen} onclick={() => (doneOpen = !doneOpen)}>
+            <i class="dot bg-(--color-good)"></i>Done today
+            <span class="ml-auto font-normal text-(--color-text-2) tabular-nums">{total('done')} {total('done') === 1 ? 'card' : 'cards'}</span>
+            <ChevronDown class={cn('size-3.5 text-(--color-text-2) transition-transform', doneOpen && 'rotate-180')} aria-hidden="true" />
           </button>
         </h3>
-        <Button size="xs" variant="ghost" disabled={busy} onclick={() => void clearDone()}>Clear</Button>
+        <Button size="xs" variant="secondary" disabled={busy} onclick={() => void clearDone()}>Clear</Button>
       </div>
       {#if doneOpen}
-        <ul class="m-0 flex list-none flex-col p-0 gap-2">
+        <ul class="list pt-1">
           {#each done as entry (entry.id)}{@render cardRow(entry)}{/each}
         </ul>
         {@render more(notShown('done', done))}
@@ -275,3 +276,51 @@
     </section>
   {/if}
 </div>
+
+<style>
+  /* Surfaces from the Usage screen (UsageWorkspace.svelte): .panel, .provider-card, .provider-metrics, .quota-empty. */
+  .col { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; overflow-y: auto; }
+  .panel { flex: none; padding: 8px; border: 1px solid color-mix(in srgb, var(--color-border) 36%, transparent); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--color-elevated) 38%, var(--color-surface)); }
+  .ph { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 1px 4px 7px; }
+  h3 { margin: 0; display: inline-flex; align-items: center; gap: 7px; font-size: 0.88rem; line-height: 1.35; font-weight: 600; white-space: nowrap; }
+  .ph strong { margin-left: auto; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+  .muted { margin: 0; min-width: 0; overflow: hidden; color: var(--color-text-2); font-size: 0.76rem; line-height: 1.45; text-overflow: ellipsis; }
+  .ph .muted { white-space: nowrap; }
+  .dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 2px; }
+  .list, .steps { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+  .list { gap: 6px; }
+  .card { min-width: 0; padding: 9px 12px; border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-elevated) 52%, var(--color-surface)); }
+  .chead, .done-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; border-radius: var(--radius-sm); text-align: left; }
+  .done-toggle { padding: 2px 4px; font: inherit; font-weight: 600; }
+  .chead:focus-visible, .done-toggle:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+  .key { flex: none; padding: 1px 6px; border-radius: var(--radius-xs); background: color-mix(in srgb, var(--color-bg) 44%, transparent); color: var(--color-text-2); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .ctitle { min-width: 0; overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+  .ctime { flex: none; margin-left: auto; color: var(--color-text-3); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+  .sum { margin: 3px 0 0; color: var(--color-text-2); font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
+  .sum.one { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stale { margin: 3px 0 0; color: var(--color-text-3); font-size: 0.75rem; }
+  .first-step { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 6px 0 0; font-size: 13px; }
+  .more { flex: none; color: var(--color-text-3); font-size: 0.75rem; }
+  .circ { display: grid; flex: none; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: color-mix(in srgb, var(--color-text) 10%, transparent); color: var(--color-text-2); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .cmeta { display: flex; align-items: center; gap: 6px; min-width: 0; margin: 6px 0 0; }
+  .linkchip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; height: 22px; padding: 0 8px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-bg) 44%, transparent); color: var(--color-text-2); font-size: 12px; white-space: nowrap; }
+  .detail { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .sh { display: flex; align-items: baseline; margin: 0 2px; font-size: 0.75rem; font-weight: 600; }
+  .quiet-label { margin-left: auto; color: var(--color-text-3); font-weight: 400; white-space: nowrap; }
+  .steps li { display: flex; align-items: center; gap: 10px; padding: 5px 2px; font-size: 13px; line-height: 1.4; border-top: 1px solid color-mix(in srgb, var(--color-border) 28%, transparent); }
+  .steps li:first-child { border-top: 0; }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .well { display: grid; gap: 2px; padding: 7px 10px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-bg) 48%, transparent); }
+  .well > span { font-size: 0.75rem; font-weight: 600; }
+  .well p { margin: 0; color: var(--color-text-2); font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
+  .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .metrics > span { display: grid; gap: 1px; min-width: 0; padding: 7px 10px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-bg) 44%, transparent); }
+  .metrics small { color: var(--color-text-2); font-size: 0.75rem; }
+  .metrics strong { display: flex; min-width: 0; overflow: hidden; font-size: 0.82rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+  .metrics em { overflow: hidden; color: var(--color-text-3); font-size: 0.75rem; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+  .notes { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; border-top: 1px solid color-mix(in srgb, var(--color-border) 28%, transparent); }
+  .foot { display: flex; gap: 8px; margin: 0; color: var(--color-text-3); font-size: 0.75rem; }
+  .foot > span:last-child { margin-left: auto; }
+  .fold-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 4px 4px 4px 12px; color: var(--color-text-2); font-size: 0.75rem; }
+  .quiet { color: var(--color-text-3); }
+</style>

@@ -93,12 +93,12 @@
   /** Counted in SQL on each machine, so cards past the 40-card limit are included. */
   const count = (state: 'running' | 'in_review' | 'done'): number =>
     boards.reduce((sum, board) => sum + (board.value.counts[state] ?? 0), 0);
-  const tally = $derived([
-    { label: 'need you', count: badge, dot: 'bg-(--color-attention)' },
-    { label: 'running', count: count('running'), dot: 'bg-(--color-live)' },
-    { label: 'in review', count: count('in_review'), dot: 'bg-(--color-merged)' },
-    { label: 'done today', count: count('done'), dot: 'bg-(--color-good)' }
-  ]);
+  /** Which sections the left column shows; the right column always shows everything. */
+  let filter = $state<'all' | 'needs_you' | 'running' | 'in_review' | 'done'>('all');
+  const FILTERS = [
+    { value: 'all', label: 'All' }, { value: 'needs_you', label: 'Needs you' }, { value: 'running', label: 'Running' },
+    { value: 'in_review', label: 'In review' }, { value: 'done', label: 'Done' }
+  ] as const;
   const time = (ms: number): string => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 </script>
 
@@ -109,23 +109,41 @@
   align="end"
   collisionPadding={{ bottom: 36, right: 8, left: 8 }}
   trapFocus={false}
-  class="max-h-(--bits-popover-content-available-height) w-[min(900px,calc(100vw-16px))] gap-0 overflow-hidden p-0"
+  class="max-h-(--bits-popover-content-available-height) w-[min(900px,calc(100vw-16px))] gap-0 overflow-hidden rounded-(--radius-lg) border border-(--color-border) bg-(--color-surface) p-0 shadow-(--shadow-lg) ring-0"
   data-testid="board"
 >
-  <header class="flex flex-none items-baseline gap-3 border-b border-border px-4 py-3">
-    <h2 class="text-(length:--text-heading) font-semibold">Board</h2>
-    <span class="truncate text-(length:--text-quiet) text-muted-foreground">
-      {new Date().toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}{loadedAt ? ` · updated ${time(loadedAt)}` : ''}
-    </span>
-    <span class="ml-auto flex flex-none gap-3 text-(length:--text-quiet) text-muted-foreground">
-      {#each tally as item (item.label)}
-        <span class="inline-flex items-center gap-1.5"><span class={`size-1.5 rounded-full ${item.dot}`}></span>{item.count} {item.label}</span>
+  <header class="header">
+    <div class="title-block">
+      <p class="eyebrow">Build board</p>
+      <h2>{badge === 0 ? 'Nothing needs you' : `${badge} ${badge === 1 ? 'thing needs' : 'things need'} you`}</h2>
+      <p class="muted truncate">
+        {[new Date().toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }), loadedAt ? `updated ${time(loadedAt)}` : null,
+          `${count('running')} running`, `${count('in_review')} in review`, `${count('done')} done today`].filter(Boolean).join(' · ')}
+      </p>
+    </div>
+    <div class="range-selector" role="group" aria-label="Show">
+      {#each FILTERS as item (item.value)}
+        <button type="button" class:active={filter === item.value} aria-pressed={filter === item.value} onclick={() => (filter = item.value)}>{item.label}</button>
       {/each}
-    </span>
+    </div>
   </header>
-  {#if actionError || loadError}<p role="alert" class="flex-none px-4 py-2 text-[13px] text-destructive">{actionError || loadError}</p>{/if}
-  <div class="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(0,320px)]">
-    <BoardCards {boards} {notion} signal={shown.signal} onError={(text) => (actionError = text)} {onClose} onOpenSession={openSession} />
+  {#if actionError || loadError}<p role="alert" class="flex-none px-3.5 pb-2 text-[13px] text-destructive">{actionError || loadError}</p>{/if}
+  <div class="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(0,318px)] gap-2 px-2.5 pb-2.5">
+    <BoardCards {boards} {notion} {filter} signal={shown.signal} onError={(text) => (actionError = text)} {onClose} onOpenSession={openSession} />
     <BoardLive {boards} {sessions} {notion} signal={shown.signal} onError={(text) => (actionError = text)} onOpenSession={openSession} />
   </div>
 </Popover.Content>
+
+<style>
+  /* The Usage screen's header and segmented control (UsageWorkspace.svelte), at the board's density. */
+  .header { display: flex; flex: none; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 14px 10px; }
+  .title-block { display: grid; gap: 2px; min-width: 0; }
+  .eyebrow { margin: 0; color: var(--color-text-3); font-size: 0.75rem; font-weight: 680; letter-spacing: 0.085em; text-transform: uppercase; line-height: 1.2; }
+  h2 { margin: 0; font-size: 1.15rem; line-height: 1.2; letter-spacing: -0.028em; font-weight: 600; }
+  .muted { margin: 0; color: var(--color-text-2); font-size: 0.76rem; line-height: 1.45; }
+  .range-selector { display: flex; flex: none; gap: 2px; padding: 3px; border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-bg) 68%, var(--color-surface)); }
+  .range-selector button { min-height: 28px; border-radius: var(--radius-sm); padding: 4px 10px; color: var(--color-text-2); font-size: 13px; }
+  .range-selector button:hover { color: var(--color-text); background: var(--color-hover); }
+  .range-selector button.active { color: var(--color-text); background: var(--color-elevated); }
+  .range-selector button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+</style>
