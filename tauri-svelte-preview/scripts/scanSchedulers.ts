@@ -42,8 +42,9 @@ const allowedHits = new Set([
   "src/lib/shell/panels/tasks/TasksPanel.svelte:tick:import { onDestroy, onMount, tick } from 'svelte';",
   'src/lib/shell/panels/tasks/TasksPanel.svelte:tick:await tick();',
   // These one-shot timers are both stopped by the AbortSignal-owning surface.
-  'src/lib/shell/notionOAuth.ts:new Promise:await new Promise<void>((resolve, reject) => {',
-  'src/lib/shell/notionOAuth.ts:setTimeout:const timeout = window.setTimeout(finish, CLAIM_INTERVAL_MS);',
+  // TSK-1553: this callback wait owns one five-minute timer; claim, abort and browser-open failure clear it and remove its listener.
+  'src/lib/shell/notionOAuth.ts:new Promise:const code = new Promise<string>((resolve, reject) => {',
+  'src/lib/shell/notionOAuth.ts:setTimeout:const timeout = setTimeout(',
   'src/lib/shell/workflows/components/WorkflowRuns.svelte:setTimeout:const timer = window.setTimeout(() => {',
   // The Board badge's one timer: when the earliest snoozed card wakes it recounts and reloads an open board; each recount and unmounting clear it.
   'src/lib/shell/board/BoardButton.svelte:setTimeout:if (result.snoozed_until_ms) timer = window.setTimeout(() => { version += 1; void recount(); }, Math.max(0, result.snoozed_until_ms - Date.now()));',
