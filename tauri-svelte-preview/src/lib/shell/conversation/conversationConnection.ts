@@ -17,7 +17,7 @@ import {
   subscribeSelectedConversation
 } from './conversationService.ts';
 import {
-  conversationChunksFromEvent,
+  conversationChunksFromEvent, conversationHasRunningTool,
   conversationMessagesAfterCustom,
   conversationMessagesFromEvents,
   conversationSnapshotChunks,
@@ -54,7 +54,7 @@ const PAGE_BYTES = 512 * 1024;
 const encoder = new TextEncoder();
 
 type Direction = 'older' | 'newer';
-type QueueItem = StreamChunk | { nativeEvent: AgentConversationEvent } | { error: unknown };
+type QueueItem = StreamChunk | { nativeEvent: AgentConversationEvent } | { error: unknown } | { trimTo: number };
 
 interface PendingSend {
   runId: string;
@@ -78,6 +78,8 @@ interface ActiveConversation {
   chat: CreateChatReturn;
   beforeCursor?: number;
   afterCursor?: number;
+  latestWindowSize?: number; // Messages the latest page delivered; returning to the latest trims back to them.
+  replaceHistory?: boolean; // Jump to latest replaces the loaded history, unless a tool still runs above the latest page.
   pendingSend: PendingSend | null;
   pendingAdmission: PendingAdmission | null;
   messageBytes: Map<string, number>;
@@ -255,6 +257,8 @@ function enqueueFactory(signal: AbortSignal, selection: ActiveConversation): {
                 yield chunk;
               }
               recordLiveMessages(selection, changedIds, replaced);
+            } else if ('trimTo' in item) {
+              yield* conversationSnapshotChunks(trimmedMessages(selection, item.trimTo));
             } else {
               yield item;
             }
@@ -313,28 +317,18 @@ async function restorePageAttachments(
     );
     if (!wanted.size) return;
     const byItem: Record<string, ConversationAttachment[]> = {};
-    if (wanted.size) {
-      const ids = [...new Set([...wanted.values()].flat())];
-      const saved = await readSelectedConversationAttachments(
-        selection.historyOwnedId,
-        ids,
-        selection.controller.signal
-      );
-      if (!isCurrent(selection) || selection.controller.signal.aborted) return;
-      const restored = await restoreAttachmentList(
-        selection.historyOwnedId,
-        saved,
-        selection.controller.signal
-      );
-      if (!isCurrent(selection) || selection.controller.signal.aborted) {
-        discardRestoredAttachments(restored);
-        return;
-      }
-      const byId = new Map(restored.map((attachment) => [attachment.id, attachment]));
-      for (const [itemId, attachmentIds] of wanted) {
-        // Some stored messages name one screenshot twice; show it once.
-        byItem[itemId] = [...new Set(attachmentIds)].flatMap((id) => byId.get(id) ?? []);
-      }
+    const ids = [...new Set([...wanted.values()].flat())];
+    const saved = await readSelectedConversationAttachments(selection.historyOwnedId, ids, selection.controller.signal);
+    if (!isCurrent(selection) || selection.controller.signal.aborted) return;
+    const restored = await restoreAttachmentList(selection.historyOwnedId, saved, selection.controller.signal);
+    if (!isCurrent(selection) || selection.controller.signal.aborted) {
+      discardRestoredAttachments(restored);
+      return;
+    }
+    const byId = new Map(restored.map((attachment) => [attachment.id, attachment]));
+    for (const [itemId, attachmentIds] of wanted) {
+      // Some stored messages name one screenshot twice; show it once.
+      byItem[itemId] = [...new Set(attachmentIds)].flatMap((id) => byId.get(id) ?? []);
     }
     if (isCurrent(selection)) {
       restoreSelectedConversationAttachments(
@@ -377,7 +371,9 @@ function snapshotChunks(
   selection.afterCursor = snapshot.page.afterCursor;
   const pageMessages = messagesFromPage(snapshot.page);
   const current = getConversationSession(selection.historyOwnedId);
-  const prefixEnd = selection.chat.messages.findIndex((message) => message.id === pageMessages[0]?.id);
+  selection.latestWindowSize = pageMessages.length;
+  const prefixEnd = selection.replaceHistory && !snapshot.activeTurnId && !conversationHasRunningTool(selection.chat.messages) ? -1 : selection.chat.messages.findIndex((message) => message.id === pageMessages[0]?.id);
+  selection.replaceHistory = false;
   const prefix = prefixEnd > 0 ? selection.chat.messages.slice(0, prefixEnd) : [];
   let messages = [...prefix, ...pageMessages];
   // A latest snapshot that overlaps loaded history refreshes its tail and keeps the earlier pages.
@@ -427,11 +423,7 @@ function snapshotChunks(
   )) || snapshot.page.turns.some((turn) =>
     turn.turnId === pending.receipt?.turnId && turn.terminalState
   ))) {
-    push({
-      type: EventType.RUN_FINISHED,
-      threadId: selection.historyOwnedId,
-      runId: pending.runId
-    } as StreamChunk);
+    push({ type: EventType.RUN_FINISHED, threadId: selection.historyOwnedId, runId: pending.runId } as StreamChunk);
     selection.pendingSend = null;
   }
 }
@@ -536,16 +528,8 @@ function emitEvent(
     }
   }
   const showingLatest = !getConversationSession(selection.historyOwnedId)?.selectedHasAfter;
-  const displayEvents = event.payload.kind === 'usage'
-    && usageDropIsCompaction(previousUsedTokens, event.payload.usedTokens)
-    ? [{
-        ...event,
-        payload: {
-          kind: 'contextCompaction' as const,
-          preTokens: previousUsedTokens,
-          postTokens: event.payload.usedTokens
-        }
-      }, event]
+  const displayEvents = event.payload.kind === 'usage' && usageDropIsCompaction(previousUsedTokens, event.payload.usedTokens)
+    ? [{ ...event, payload: { kind: 'contextCompaction' as const, preTokens: previousUsedTokens, postTokens: event.payload.usedTokens } }, event]
     : [event];
   const pending = selection.pendingSend;
   if (pending && !pending.receipt) {
@@ -561,11 +545,7 @@ function emitEvent(
     return;
   }
   if (pending?.receipt && isTerminal(event, pending.receipt.turnId)) {
-    push({
-      type: EventType.RUN_FINISHED,
-      threadId: selection.historyOwnedId,
-      runId: pending.runId
-    } as StreamChunk);
+    push({ type: EventType.RUN_FINISHED, threadId: selection.historyOwnedId, runId: pending.runId } as StreamChunk);
     selection.pendingSend = null;
   }
   if (!selection.contentAdmitted || !showingLatest) return;
@@ -722,17 +702,8 @@ export function selectConversationChat(
     disposeSelectedConversationChat();
   }
   const selection = {
-    workspaceOwnedId,
-    historyOwnedId,
-    controller: new AbortController(),
-    pendingSend: null,
-    pendingAdmission: null,
-    messageBytes: new Map(),
-    graphBytes: 0,
-    contentAdmitted: false,
-    anchorRevision: 0,
-    anchorAdmission: null,
-    anchorSnapshot: null
+    workspaceOwnedId, historyOwnedId, controller: new AbortController(), pendingSend: null, pendingAdmission: null,
+    messageBytes: new Map(), graphBytes: 0, contentAdmitted: false, anchorRevision: 0, anchorAdmission: null, anchorSnapshot: null
   } as ActiveConversation;
   resetReady(selection);
   const connection = createConnection(selection);
@@ -893,6 +864,7 @@ export async function jumpSelectedConversationToLatest(workspaceOwnedId: string,
     selection.anchorAdmission = null;
     selection.anchorSnapshot = null;
     selection.contentAdmitted = true;
+    selection.replaceHistory = true;
   }
   await refreshSelectedConversationChat(workspaceOwnedId, historyOwnedId);
 }
@@ -906,13 +878,8 @@ export async function pageSelectedConversation(direction: Direction, historyOwne
       ? selection.beforeCursor
       : selection.afterCursor;
     if (cursor === undefined) return;
-    let page = direction === 'older'
-      ? await readOlderSelectedConversationItems(
-          selection.historyOwnedId, cursor, PAGE_BYTES, selection.controller.signal
-        )
-      : await readNewerSelectedConversationItems(
-          selection.historyOwnedId, cursor, PAGE_BYTES, selection.controller.signal
-        );
+    let page = await (direction === 'older' ? readOlderSelectedConversationItems : readNewerSelectedConversationItems)(
+      selection.historyOwnedId, cursor, PAGE_BYTES, selection.controller.signal);
     if (!page || !isCurrent(selection)) return;
     if (direction === 'older' && page.items.length === 0 && !page.hasBefore && page.hasEarlierTranscript) {
       const extended = await extendAgentConversationImportFromTauri(
@@ -985,4 +952,37 @@ export async function pageSelectedConversation(direction: Direction, historyOwne
 
 export function selectedConversationHistoryOwnedId(): string | null {
   return active?.historyOwnedId ?? null;
+}
+
+/** Back at the latest, drops the older pages the reader loaded; scrolling up reads them again. */
+export async function trimSelectedConversationToLatest(historyOwnedId?: string): Promise<void> {
+  const selection = historyOwnedId && historyOwnedId !== active?.historyOwnedId ? childActive : active;
+  const current = selection && getConversationSession(selection.historyOwnedId);
+  const keep = selection?.latestWindowSize ?? 0;
+  // Nothing moves while a page, a send, a turn, a running tool, a restore, a jump or a pending decision is in flight.
+  if (!selection || !current || (historyOwnedId && selection.historyOwnedId !== historyOwnedId) || !selection.push
+    || !keep || selection.chat.messages.length <= keep || selection.resolveReady || selection.pendingSend || current.activeTurnId
+    || selection.pendingAdmission || selection.anchorAdmission || current.selectedLoadingOlder || current.selectedLoadingNewer
+    || Object.keys(current.pendingApprovals).length || Object.keys(current.pendingInputs).length
+    || conversationHasRunningTool(selection.chat.messages)) return;
+  // The older-page lock holds until the chat takes the trimmed snapshot, so no page merges into the old list.
+  current.selectedHasBefore = true;
+  setSelectedConversationPageLoading(selection.historyOwnedId, 'older', true);
+  resetReady(selection); selection.push({ trimTo: keep });
+  selection.push({ type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: selection.historyOwnedId } as StreamChunk);
+  await ignoreLeftSelection(selection.ready);
+  if (isCurrent(selection)) setSelectedConversationPageLoading(selection.historyOwnedId, 'older', false);
+}
+
+/** Runs in delivery order, so live output queued before the trim is already in the chat it cuts. */
+function trimmedMessages(selection: ActiveConversation, keep: number): UIMessage[] {
+  const kept = selection.chat.messages.slice(-keep);
+  const current = getConversationSession(selection.historyOwnedId);
+  selection.beforeCursor = historyPosition(kept.find((message) => historyPosition(message) !== undefined)) ?? selection.beforeCursor;
+  if (current) current.selectedBeforeCursor = selection.beforeCursor;
+  resetMessageBytes(selection, kept);
+  applySelectedConversationLiveWindow(selection.historyOwnedId, kept.flatMap((message) =>
+    typeof message.metadata?.turnId === 'string' ? [message.metadata.turnId] : []), selection.graphBytes);
+  restoreSelectedConversationAttachments(selection.historyOwnedId, {}, current?.generation ?? 0, kept.map((message) => message.id));
+  return kept;
 }
