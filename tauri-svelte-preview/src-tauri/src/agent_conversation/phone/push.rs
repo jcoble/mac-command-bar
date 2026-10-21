@@ -82,12 +82,6 @@ impl PushSender {
         self.send_to_each(store, |token| message(token, machine, item)).await;
     }
 
-    /// Tells every phone with a push token that the reply in `owned_id` is ready. Same sending rules as
-    /// `send_inbox_push`.
-    pub(super) async fn send_turn_push(&self, store: &SessionStore, machine: &(String, String), owned_id: &str) {
-        self.send_to_each(store, |token| turn_message(token, machine, owned_id)).await;
-    }
-
     async fn send_to_each(&self, store: &SessionStore, build: impl Fn(&str) -> Value) {
         let tokens = match store.phone_push_tokens() {
             Ok(tokens) if !tokens.is_empty() => tokens,
@@ -143,16 +137,6 @@ fn message(token: &str, (machine_id, machine_name): &(String, String), item: &Va
     } })
 }
 
-/// The FCM message for a finished reply: no agent text and no session title, only the session id for the tap.
-fn turn_message(token: &str, (machine_id, machine_name): &(String, String), owned_id: &str) -> Value {
-    json!({ "message": {
-        "token": token,
-        "notification": { "title": format!("Assembly — {machine_name}"), "body": "Reply ready" },
-        "data": { "machineId": machine_id, "sessionId": owned_id, "kind": "turn" },
-        "android": { "notification": { "channel_id": "assembly_inbox" } },
-    } })
-}
-
 #[cfg(test)]
 pub(super) mod tests {
     use std::sync::{atomic::{AtomicUsize, Ordering}, Arc, Mutex};
@@ -163,7 +147,7 @@ pub(super) mod tests {
 
     use std::future::IntoFuture;
 
-    use super::{message, turn_message, PushSender};
+    use super::{message, PushSender};
 
     /// A throwaway RSA key made for these tests with `openssl genrsa 2048`. It signs nothing real.
     const TEST_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCtIAbeDE64Fcmt\n+z2fsDCBAmjfbLTBfdxdDnZAbaKFXojbY4XVqQsnc7sOyYzytV/ezrI3OsWVreC4\nbcr1neWAACtVhKnirCvoYKuAiMqrZIGicq+S4b56MT2oS52a1HNx+XIOq5YbeHh3\nJla5bF2PNv3W9bAI0F/rmhEZFc1K6PmioX6be0TlEEa/1QvtQetFTWwskB9jJ7mO\nYTRqJF9UQiSSWsjMU95w+DTbS7pULtyP/zdIuZ3qjrSkL68K8aY22MTTc4AsSDLL\nz+LG0ljexL0ub+t78QBn3defZ8zneE73UzNK4tyFURjtFjgG39lovU4BmTx9dD9V\nLRpZvKbxAgMBAAECggEAAmYR2ueGNk9H5TJ9iW/Xx+TlTo1W/h0E+M7LS/SKJzIQ\nnvxTXs/pSicSJ564IZLDEwX1v6Mm8XR5BljXZgW7xWyYtvTjzAF8Tmj7P/THtXp0\nrJeSR0UjX3OCDbE9mF1SNFHflc5fqUDHGPpMgsam3khjMl92jIMtDzWqJ13wdwvf\nt9Y51TITbqSCBolACP0QW3fRgq5UTyKvqTEfzvyvdCEI8rwZMKzs1nBOAmEZt4D5\nkPDni+Q223AIO8FRghPTPl5IoUcgr7YAidmNp4ESOYZwIbdxYnQuPTut8hwAA7fR\nBrhfCdOPq6z76NKb2/bgtjewKvJJ+/oTYRJn9SjLUwKBgQDWtbHQuSGVOjnhn+y/\n0AMCpH2rhvqoU2DnqJamYDwx3PZKgbqxldD958XA/JyHvLjgLySFgIp1KwPnPCY/\nc483qtqZ1YZI8UybPUadmSsHcVSAir8XM+P+WMOADGBwao8ir/EHah654afN1+kP\nVe8tW4aeZqpC36Li7NC2GaJ1GwKBgQDOaxendFwXBLwTAa9s+mZg5K9AE+UO0CCu\nhIhxZxMRnlMbHShvIRiAGe0XeetA3VXesPveImy7vad02AilYcSU8VZxo/Z8bHvP\nHch8UnUSFg94YASpt84uf2A7KMeLwe7OxDrYfcgrfFfbjG/b8XTFHb7QFh1vwWOB\nJYdroIlw4wKBgFQ/74orWtYnhtbV3hxWDxhWW0mXKXwrW3cLXDHkyTn3rl0GEq/k\nTaGT9LEJbpKEpzawyO/pxGq9ekad/5QeUDBTxnteoda1eI3huXfVxmChQ7s8tkbw\ngaIoSm5QbPcvmQLPbxCtv2jI9wN6mWT/H1747xXwyxZ6knvg2PTbkjfJAoGAEe5R\nnrVH7qP1pn0F/SR/UjlrU9imlDPWMvLGW3uFt4kWVQuiYIzycOZPpzNrETZo6DBd\noL1Czsg5zLebgKpOhlW0maiRl9tgoexHZy1OiCSscVt97DRQT8+2z0zKkMRm90Uq\ni3XZtpVVmHfJm8SMzTa5RaA2LGgTObvF2L6YUdsCgYAW3pwUGG/h1Im9FL4sMaWh\niHPjGObf6hnydhwCgYJdze0bhaxsBTfMyt4XV8bB4Ro5NFsrl4dDvovUgyaprXye\nAYzInDUZvnosd3IP3Gs+jcQ0ZhwoebYWN0tZo1Brk6o/2tz807pvX/KtLXH6j56g\nJtBMgn/gPbwyNAK0DZns+g==\n-----END PRIVATE KEY-----";
@@ -226,14 +210,6 @@ pub(super) mod tests {
         for text in [gate.to_string(), permission.to_string()] {
             assert!(!text.contains("MARKER") && !text.contains("rm -rf"), "no agent text in {text}");
         }
-    }
-
-    #[test]
-    fn turn_push_body_names_the_session_but_carries_no_agent_text() {
-        let turn = turn_message("tok", &machine(), "session-1");
-        assert_eq!(turn["message"]["notification"], json!({ "title": "Assembly — Workbox Test", "body": "Reply ready" }));
-        assert_eq!(turn["message"]["data"], json!({ "machineId": "machine-1", "sessionId": "session-1", "kind": "turn" }));
-        assert_eq!(turn["message"]["android"]["notification"]["channel_id"], "assembly_inbox");
     }
 
     #[tokio::test]
