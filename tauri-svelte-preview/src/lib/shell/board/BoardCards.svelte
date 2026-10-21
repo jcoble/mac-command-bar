@@ -227,7 +227,7 @@
             </div>
           {/if}
           <section class="notes">
-            <h4 class="sh">Your notes<span class="quiet-label">{card.notes.length ? `${card.notes.length} ${card.notes.length === 1 ? 'note' : 'notes'} · ${when(card.notes[card.notes.length - 1].created_at_ms)}` : 'None yet'}</span></h4>
+            <h4 class="notes-head">Your notes<span>{card.notes.length ? `${card.notes.length} ${card.notes.length === 1 ? 'note' : 'notes'} · ${when(card.notes[0].created_at_ms)}` : 'None yet'}</span></h4>
             <BoardNotes notes={card.notes} machine={entry.machine} target={`card:${card.key}`} {signal} adding {onError} />
           </section>
           <p class="foot"><span class="truncate">Written by {card.writer_name ?? card.written_by} · {machineLabel(entry.machine)}</span><span class="flex-none">Updated {when(card.updated_at_ms)}</span></p>
@@ -319,6 +319,8 @@
   .metrics strong { display: flex; min-width: 0; overflow: hidden; font-size: 0.82rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
   .metrics em { overflow: hidden; color: var(--color-text-3); font-size: 0.75rem; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
   .notes { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; border-top: 1px solid color-mix(in srgb, var(--color-border) 28%, transparent); }
+  .notes-head { display: flex; justify-content: space-between; gap: 12px; margin: 0 2px 2px; color: var(--color-text-2); font-size: 0.75rem; font-weight: 400; }
+  .notes-head > span { color: var(--color-text); font-variant-numeric: tabular-nums; }
   .foot { display: flex; gap: 8px; margin: 0; color: var(--color-text-3); font-size: 0.75rem; }
   .foot > span:last-child { margin-left: auto; }
   .fold-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 4px 4px 4px 12px; color: var(--color-text-2); font-size: 0.75rem; }
