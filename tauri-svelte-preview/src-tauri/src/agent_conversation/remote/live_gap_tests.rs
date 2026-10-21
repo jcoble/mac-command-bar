@@ -43,8 +43,7 @@ async fn run<F: std::future::Future<Output = Socket> + Send + 'static>(script: i
         &mut history_snapshot((1..=3).map(history_event).collect(), 3)).unwrap();
     let (scripted, script_done) = oneshot::channel();
     let server = tokio::spawn(async move {
-        let mut socket = tokio_tungstenite::accept_async(listener.accept().await.unwrap().0).await.unwrap();
-        send(&mut socket, ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }).await;
+        let mut socket = handshake::test_backend(listener.accept().await.unwrap().0, PROTOCOL_VERSION).await;
         assert!(matches!(receive(&mut socket).await, Some(ClientFrame::Resume { cursors })
             if cursors == BTreeMap::from([("large-history".into(), 3)])));
         assert!(matches!(receive(&mut socket).await, Some(ClientFrame::Request { id: READINESS_REQUEST_ID, .. })));
@@ -207,10 +206,7 @@ async fn resume_replays_only_the_sessions_it_names() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(axum::serve(listener, Router::new().route("/assembly", get(upgrade_remote_socket)).with_state(state.clone())).into_future());
-    let mut request = format!("ws://{address}/assembly").into_client_request().unwrap();
-    request.headers_mut().insert("authorization", "Bearer test-token".parse().unwrap());
-    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-    assert!(matches!(next_server_frame(&mut socket).await, ServerFrame::Ready { .. }));
+    let mut socket = handshake::test_client(&format!("ws://{address}/assembly")).await;
     let both = BTreeMap::from([("large-history".into(), 0), ("other-history".into(), 0)]);
     send_client_frame(&mut socket, &ClientFrame::Resume { cursors: both }).await.unwrap();
     let mut completed = 0;
