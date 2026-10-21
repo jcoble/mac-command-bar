@@ -21,11 +21,12 @@ let conversationEventsController = null, remoteActivityController = null, remote
 const childHistoryReads = new Map(), railActivityEvents = new Map(), sessionsNotFound = new Map(), terminalProjections = new Map();
 let selectedConversationRead = null, childConversationRead = null, adoptController = new AbortController();
 `;
-function eventHarness(holdRegistration = false, holdListener?: string) {
+function eventHarness(holdRegistration = false, holdListener?: string, holdInventory = false) {
   const environment = deferred<any>(), requested = deferred(), unregister = deferred();
   const registrationReply = deferred(), registering = deferred();
   const listenerReply = deferred(), listening = deferred();
-  let listeners = 0, unregisters = 0, updates = 0;
+  const inventory = deferred();
+  let listeners = 0, unregisters = 0, updates = 0, reloads = 0;
   const handlers = new Map<string, Function>();
   const rail = { remoteProfiles: [], remoteConnections: {} };
   const dependencies = {
@@ -52,15 +53,30 @@ function eventHarness(holdRegistration = false, holdListener?: string) {
     },
     showNamedSession() { updates++; }, setRemoteConnection() { updates++; },
     readRemoteAssemblyEnvironmentFromTauri: () => { requested.resolve(); return environment.promise; },
-    rail, refreshRemoteSessionActivity: async () => {}, reacquireSelectedChildHistory: async () => {},
+    rail, refreshRemoteSessionActivity: async () => { if (holdInventory) await inventory.promise; },
+    reacquireSelectedChildHistory: async () => { reloads++; },
     stopChildConversationHistory() {}, stopConversationTerminalProjection() {}
   };
   const api = Function(...Object.keys(dependencies), globals +
     ['startConversationEvents', 'setupConversationEvents', 'stopConversationEvents'].map(extract).join('\n') +
     '\nreturn { startConversationEvents, stopConversationEvents };')(...Object.values(dependencies));
   return { ...api, environment, requested, unregister, registering, registrationReply, handlers, rail, listening, listenerReply,
-    listeners: () => listeners, unregisters: () => unregisters, updates: () => updates };
+    inventory, reloads: () => reloads, listeners: () => listeners, unregisters: () => unregisters, updates: () => updates };
 }
+
+await test('reconnect reloads the selected transcript while remote inventory is still pending', async () => {
+  const h = eventHarness(false, undefined, true);
+  const setup = h.startConversationEvents();
+  await h.requested.promise;
+  h.environment.resolve({ profiles: [], readyProfileIds: [] });
+  await setup;
+  const reconnect = h.handlers.get('remote-connection-changed')!({ payload: { profileId: 'healthy', state: 'connected' } });
+  assert.equal(h.reloads(), 1, 'unresponsive inventory must not delay the healthy transcript');
+  h.inventory.resolve();
+  await reconnect;
+  h.stopConversationEvents();
+  h.unregister.resolve();
+});
 
 await test('shutdown removes listeners before pending startup and unregister finish', async () => {
   const h = eventHarness();

@@ -989,8 +989,8 @@ async function setupConversationEvents(streamGeneration: number, signal: AbortSi
       remoteConnectionEventsSeen.add(payload.profileId);
       setRemoteConnection(payload.profileId, payload.state);
       if (payload.state === 'connected') {
-        await refreshRemoteSessionActivity(streamGeneration);
-        if (!signal.aborted) await reacquireSelectedChildHistory(payload.profileId, streamGeneration);
+        await Promise.all([refreshRemoteSessionActivity(streamGeneration),
+          reacquireSelectedChildHistory(payload.profileId, streamGeneration)]);
       }
     }));
     if (signal.aborted) { dispose(); return; }
