@@ -410,7 +410,7 @@ pub fn tool_record(
             summary,
             output: None,
             path,
-            diff, has_detail: false,
+            diff, has_detail: false, added: None, removed: None,
         }),
     }
 }
@@ -468,7 +468,7 @@ pub fn tool_output_record(item_id: &str, output: String, timestamp_ms: u128) -> 
             summary: None,
             output: Some(output),
             path: None,
-            diff: None, has_detail: false,
+            diff: None, has_detail: false, added: None, removed: None,
         }),
     }
 }

@@ -48,12 +48,18 @@ pub struct AgentConversationToolCall {
     pub path: Option<String>,
 }
 
-/// A page's tool event without its output. The row keeps what it shows closed: whether there is
-/// anything to open, and the output's first line as the summary when the call has none.
+/// A page's tool event without its output and diff. The row keeps what it shows closed: whether
+/// there is anything to open, a diff's line counts, and the output's first line as the summary
+/// when the call has none.
 pub(crate) fn without_details(mut event: AgentConversationEvent) -> AgentConversationEvent {
-    if let AgentConversationPayload::Tool { summary, output, diff, has_detail, .. } = &mut event.payload {
+    if let AgentConversationPayload::Tool { summary, output, diff, has_detail, added, removed, .. } = &mut event.payload {
         let output = output.take().filter(|text| !text.is_empty());
-        *has_detail = output.is_some() || diff.as_deref().is_some_and(|text| !text.is_empty());
+        let diff = diff.take().filter(|text| !text.is_empty());
+        *has_detail = output.is_some() || diff.is_some();
+        if let Some(diff) = &diff {
+            let (lines_added, lines_removed) = diff_line_counts(diff);
+            (*added, *removed) = (Some(lines_added), Some(lines_removed));
+        }
         if summary.as_deref().is_none_or(str::is_empty) {
             if let Some(line) = output.as_deref().and_then(|text| text.lines().next()) {
                 *summary = Some(line.chars().take(200).collect());
@@ -61,6 +67,24 @@ pub(crate) fn without_details(mut event: AgentConversationEvent) -> AgentConvers
         }
     }
     event
+}
+
+/// How many lines a unified diff adds and removes, by the frontend's `diffLineCounts` rules: the
+/// `+++` and `---` lines name the file only before the first hunk; after it they are changed lines.
+pub(crate) fn diff_line_counts(diff: &str) -> (u32, u32) {
+    let (mut added, mut removed, mut seen_hunk) = (0, 0, false);
+    for line in diff.split('\n') {
+        if line.starts_with("@@") {
+            seen_hunk = true;
+        } else if !seen_hunk && (line.starts_with("+++") || line.starts_with("---")) {
+            continue;
+        } else if line.starts_with('+') {
+            added += 1;
+        } else if line.starts_with('-') {
+            removed += 1;
+        }
+    }
+    (added, removed)
 }
 
 /// The whole of tool call `item_id`: every saved event of it under `owned_id`, folded. One indexed read.

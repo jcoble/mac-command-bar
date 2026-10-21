@@ -275,7 +275,7 @@
         const path = toolFilePath(item);
         if (path && !seenPaths.has(path)) {
           seenPaths.add(path);
-          edits.push({ path, ...countDiffLines(item, item.diff ?? '') });
+          edits.push({ path, ...(item.diff || item.added == null ? countDiffLines(item, item.diff ?? '') : { added: item.added, removed: item.removed ?? 0 }) });
         }
       } else if (item.kind === 'file' && item.completed) {
         const p = typeof item.metadata?.path === 'string' ? item.metadata.path : '';

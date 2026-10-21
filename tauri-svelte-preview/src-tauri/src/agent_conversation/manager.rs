@@ -6363,7 +6363,7 @@ async fn settle_closed_transport(
                             ),
                             output: None,
                             path: None,
-                            diff: None, has_detail: false,
+                            diff: None, has_detail: false, added: None, removed: None,
                         },
                     );
                 }
@@ -6903,7 +6903,7 @@ fn stopped_background_task_payload(
         summary: Some("Stopped".into()),
         output: None,
         path: None,
-        diff: None, has_detail: false,
+        diff: None, has_detail: false, added: None, removed: None,
     })
 }
 
@@ -6953,7 +6953,7 @@ fn background_task_payload(params: &Value) -> Option<AgentConversationPayload> {
         summary,
         output: None,
         path: None,
-        diff: None, has_detail: false,
+        diff: None, has_detail: false, added: None, removed: None,
     })
 }
 
@@ -15215,7 +15215,7 @@ mod tests {
         ] {
             record_payload_for_session_and_dispatch(session, &manager.emitter, AgentConversationPayload::Tool {
                 item_id: "edit-1".into(), name: "Edit".into(), state,
-                summary: None, output: None, path, diff, has_detail: false,
+                summary: None, output: None, path, diff, has_detail: false, added: None, removed: None,
             }).unwrap();
         }
         let emitted = seen.lock().unwrap();

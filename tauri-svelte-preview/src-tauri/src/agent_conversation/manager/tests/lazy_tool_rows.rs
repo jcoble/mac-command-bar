@@ -1,12 +1,14 @@
 use super::*;
-use super::super::tool_call::read_tool_call;
+use super::super::tool_call::{diff_line_counts, read_tool_call};
 
+/// The same diff `conversationTurnStream.test.ts` counts: a `---` line after the hunk is an added
+/// or removed line, not a file name.
 const EDIT_DIFF: &str = "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,2 +1,3 @@\n-old line\n+new line\n+--- a removed-looking added line\n keep\n";
 
 fn tool(item_id: &str, state: ToolState, summary: Option<&str>, output: Option<&str>, path: Option<&str>, diff: Option<&str>) -> AgentConversationPayload {
     let text = |value: Option<&str>| value.map(str::to_owned);
     AgentConversationPayload::Tool { item_id: item_id.into(), name: "Bash".into(), state, summary: text(summary), output: text(output),
-        path: text(path), diff: text(diff), has_detail: false }
+        path: text(path), diff: text(diff), has_detail: false, added: None, removed: None }
 }
 
 fn calls() -> Vec<AgentConversationPayload> {
@@ -35,26 +37,26 @@ fn save(store: &SessionStore, owned_id: &str, kind: &str, payloads: Vec<AgentCon
     }
 }
 
-/// Each tool row a page carries, as (item, summary, has detail), after checking it has no output.
-fn closed_rows(page: &AgentConversationItemPage) -> Vec<(String, Option<String>, bool)> {
-    let mut rows: Vec<(String, Option<String>, bool)> = Vec::new();
+/// Each tool row a page carries, as (item, summary, has detail, added, removed), after checking it has no output or diff.
+fn closed_rows(page: &AgentConversationItemPage) -> Vec<(String, Option<String>, bool, Option<u32>, Option<u32>)> {
+    let mut rows: Vec<(String, Option<String>, bool, Option<u32>, Option<u32>)> = Vec::new();
     for event in &page.events {
-        if let AgentConversationPayload::Tool { item_id, summary, output, has_detail, .. } = &event.payload {
-            assert_eq!(output, &None, "{item_id} must carry no output");
+        if let AgentConversationPayload::Tool { item_id, summary, output, diff, has_detail, added, removed, .. } = &event.payload {
+            assert_eq!((output, diff), (&None, &None), "{item_id} must carry no output or diff");
             rows.retain(|row| &row.0 != item_id);
-            rows.push((item_id.clone(), summary.clone(), *has_detail));
+            rows.push((item_id.clone(), summary.clone(), *has_detail, *added, *removed));
         }
     }
     rows
 }
 
-fn expected_rows() -> Vec<(String, Option<String>, bool)> {
+fn expected_rows() -> Vec<(String, Option<String>, bool, Option<u32>, Option<u32>)> {
     vec![
-        ("run".into(), Some("seq 3".into()), true),
+        ("run".into(), Some("seq 3".into()), true, None, None),
         // A call with no summary keeps its output's first line as the one line its closed row shows.
-        ("grep".into(), Some("a.ts:1 found".into()), true),
-        ("edit".into(), None, true),
-        ("empty".into(), Some("nothing".into()), false),
+        ("grep".into(), Some("a.ts:1 found".into()), true, None, None),
+        ("edit".into(), None, true, Some(2), Some(1)),
+        ("empty".into(), Some("nothing".into()), false, None, None),
     ]
 }
 
@@ -78,7 +80,13 @@ fn sessions() -> (AgentRuntimeManager, std::path::PathBuf, String, String, Strin
 }
 
 #[test]
-fn history_pages_carry_tool_rows_without_output() {
+fn diff_line_counts_match_the_frontend_rules() {
+    assert_eq!(diff_line_counts(EDIT_DIFF), (2, 1));
+    assert_eq!(diff_line_counts(""), (0, 0));
+}
+
+#[test]
+fn history_pages_carry_tool_rows_without_output_or_diff() {
     let (manager, root, parent, child, _) = sessions();
     let page = manager.list_items_before(&parent, i64::MAX, 1 << 20).unwrap();
     assert_eq!(closed_rows(&page), expected_rows());

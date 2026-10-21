@@ -1,6 +1,6 @@
 import { EventType, StreamProcessor, type StreamChunk, type UIMessage } from '@tanstack/ai/client';
 import type { AgentConfigValue, AgentEvent, AgentConversationEvent, AgentItem, ConversationAttachment } from './conversationTypes.ts';
-import { agentItemFromEvent, conversationEventAppendsItemContent, displayItemFromAgentItem, displayItemFromApproval, permissionRequestFromEvent, reuseConversationDisplayItems, withoutRepeatedPlans, type ConversationDisplayItem } from './conversationTimeline.ts';
+import { agentItemFromEvent, conversationEventAppendsItemContent, diffLineCounts, displayItemFromAgentItem, displayItemFromApproval, permissionRequestFromEvent, reuseConversationDisplayItems, withoutRepeatedPlans, type ConversationDisplayItem } from './conversationTimeline.ts';
 import { usageDropIsCompaction } from './conversationReducer.ts';
 
 /** Unwrap stored provider projections before the one live/replay mapper. */
@@ -156,6 +156,8 @@ export function conversationChunksFromEvent(
   const text = item.content.map((part) => part.text).join('');
   const append = conversationEventAppendsItemContent(event);
   const display = displayItemFromAgentItem(item, event.timestampMs);
+  // Like its output, a call's diff is owned by its tool parts.
+  if (display.kind === 'tool') delete metadata.diff;
   // A streamed chunk usually moves only the sequence, which nothing reads from a
   // message; sending it anyway updated the whole message list a second time.
   const chunks: StreamChunk[] = !existing
@@ -185,12 +187,12 @@ export function conversationChunksFromEvent(
       chunks.push({ type: EventType.TOOL_CALL_END, toolCallId: item.id });
     }
     if (display.state === 'completed' || display.state === 'failed') {
-      // A finished call keeps what its closed row shows; opening the row reads the output by id
-      // (TSK-1574). Native-CLI projections have no such read, so they keep theirs.
-      const { output: shown, ...closed }: Record<string, AgentConfigValue> = output;
+      // A finished call keeps what its closed row shows; opening the row reads the output and diff
+      // by id (TSK-1574). Native-CLI projections have no such read, so they keep theirs.
+      const { output: shown, diff, ...closed }: Record<string, AgentConfigValue> = output;
       const result = 'type' in source || source.payload.kind !== 'tool' ? output : {
-        ...closed,
-        hasDetail: closed.hasDetail === true || /\S/.test(String(shown ?? '')) || !!closed.diff,
+        ...closed, ...(typeof diff === 'string' && diff ? diffLineCounts(diff) : {}),
+        hasDetail: closed.hasDetail === true || /\S/.test(String(shown ?? '')) || !!diff,
         summary: closed.summary || String(shown ?? '').split('\n', 1)[0] || undefined
       };
       chunks.push({ type: EventType.TOOL_CALL_RESULT, toolCallId: item.id, messageId: item.id,
