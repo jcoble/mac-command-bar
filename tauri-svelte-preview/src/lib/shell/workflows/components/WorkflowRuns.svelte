@@ -55,12 +55,8 @@
   import WorkflowStepDetails, { type StepStatus } from './WorkflowStepDetails.svelte';
   import WorkflowTimeline from './WorkflowTimeline.svelte';
   import { buildWorkflowTimeline, type WorkflowTimelineItem } from '$lib/shell/workflows/workflowTimeline.ts';
-  import { listAgentMessagesFromTauri } from '$lib/tauriSource.ts';
-  import {
-    type WorkflowNodeRunRecord,
-    type WorkflowNodeState,
-    type WorkflowRunRecord
-  } from '$lib/shell/workflows/workflowTypes.ts';
+  import { listAgentMessagesFromTauri, listenAgentMessagesChanged } from '$lib/tauriSource.ts';
+  import { workflowErrorText, type WorkflowNodeRunRecord, type WorkflowNodeState, type WorkflowRunRecord } from '$lib/shell/workflows/workflowTypes.ts';
 
   interface Props {
     visible: boolean;
@@ -134,12 +130,20 @@
     const generation = ++loadGeneration;
     const owner = machine;
     const stop = untrack(() => subscribeWorkflowSnapshots((snapshot) => {
-      // These are this Mac's runs; a remote machine's runs are read from it.
       if (controller.signal.aborted || generation !== loadGeneration || owner) return;
       if (Array.isArray(snapshot)) applyWorkflowSnapshots(snapshot);
       else upsertWorkflowSnapshot(snapshot);
     }));
-    void refresh(controller.signal, generation);
+    // Pushed snapshots are this Mac's. A run change on any machine re-reads the list, one read at a time.
+    let reading = false, again = false;
+    async function reread(): Promise<void> {
+      if (reading) { again = true; return; }
+      reading = true;
+      do { again = false; await refresh(controller.signal, generation); } while (again && !controller.signal.aborted);
+      reading = false;
+    }
+    void reread();
+    void listenAgentMessagesChanged(() => void reread(), controller.signal);
     void loadWorkflowFiles(root, owner, controller.signal);
     return () => {
       controller.abort();
@@ -161,7 +165,7 @@
       workflowFiles = files;
       if (!files.includes(workflowPath)) workflowPath = files[0] ?? '';
     } catch (error) {
-      if (!signal.aborted) workflowState.error = `Could not list workflows: ${message(error)}`;
+      if (!signal.aborted) workflowState.error = `Could not list workflows: ${workflowErrorText(error)}`;
     }
   }
 
@@ -280,10 +284,6 @@
     return `agents:${action}:${crypto.randomUUID()}`;
   }
 
-  function message(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-  }
-
   async function refresh(signal: AbortSignal, generation = loadGeneration): Promise<void> {
     beginWorkflowLoad();
     try {
@@ -295,7 +295,7 @@
       }
     } catch (error) {
       if (!signal.aborted && generation === loadGeneration) {
-        failWorkflowLoad(`Could not load workflows: ${message(error)}`);
+        failWorkflowLoad(`Could not load workflows: ${workflowErrorText(error)}`);
       }
     }
   }
@@ -317,7 +317,7 @@
       selectWorkflowRun(run.id);
     } catch (error) {
       if (!controller.signal.aborted && generation === loadGeneration) {
-        workflowState.error = `${label}: ${message(error)}`;
+        workflowState.error = `${label}: ${workflowErrorText(error)}`;
       }
     } finally {
       controller.abort();
@@ -373,7 +373,7 @@
       if (signal.aborted) return;
       timeline = { runId: run.id, items: buildWorkflowTimeline(history ?? [], messages ?? [], run), error: '', loading: false };
     } catch (error) {
-      if (!signal.aborted) timeline = { runId: run.id, items: kept, error: `Could not load the timeline: ${message(error)}`, loading: false };
+      if (!signal.aborted) timeline = { runId: run.id, items: kept, error: `Could not load the timeline: ${workflowErrorText(error)}`, loading: false };
     }
   }
 
@@ -405,7 +405,7 @@
       if (!adopted) throw new Error('Agent conversation is not available yet.');
       await sessionRowJump(ownedId, 'session');
     } catch (error) {
-      if (current()) workflowState.error = `Could not open agent: ${message(error)}`;
+      if (current()) workflowState.error = `Could not open agent: ${workflowErrorText(error)}`;
     }
   }
 </script>

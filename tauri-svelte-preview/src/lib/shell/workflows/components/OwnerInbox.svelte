@@ -12,7 +12,8 @@
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
   import { answerInboxStep, openInboxSession, waitingOn, type InboxDecision } from '$lib/shell/workflows/ownerInboxActions.ts';
-  import { listOwnerInboxFromTauri, type OwnerInboxStep } from '$lib/tauriSource.ts';
+  import { listenAgentMessagesChanged, listOwnerInboxFromTauri, type OwnerInboxStep } from '$lib/tauriSource.ts';
+  import { workflowErrorText } from '$lib/shell/workflows/workflowTypes.ts';
 
   interface Props {
     visible: boolean;
@@ -38,6 +39,16 @@
     shown = new AbortController();
     busy = false;
     untrack(() => start());
+    // A run change on any machine reloads the list, one load at a time.
+    const signal = shown.signal;
+    let reading = false;
+    let again = false;
+    void listenAgentMessagesChanged(async () => {
+      if (reading) { again = true; return; }
+      reading = true;
+      do { again = false; await start(); } while (again && !signal.aborted);
+      reading = false;
+    }, signal);
     return () => {
       shown?.abort();
       shown = null;
@@ -47,15 +58,15 @@
     };
   });
 
-  function start(): void {
+  async function start(): Promise<void> {
     loader?.abort();
     const controller = new AbortController();
     loader = controller;
-    void load(controller.signal);
+    await load(controller.signal);
   }
 
   function message(cause: unknown): string {
-    return cause instanceof Error ? cause.message : String(cause);
+    return workflowErrorText(cause);
   }
 
   async function load(signal: AbortSignal): Promise<void> {
