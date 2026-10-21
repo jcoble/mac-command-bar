@@ -21,9 +21,12 @@ import type { HighlightedLine } from './syntaxTokens.ts';
 /** Anything longer than this stays plain: colouring it costs more than it helps. */
 const MAX_HIGHLIGHT_CHARS = 40_000;
 
-/** The latest coloured blocks, by language and code; the oldest is dropped when it is full. */
+/** The latest coloured blocks, by language and code. The oldest go first when there are 300, or when
+ *  their code passes 100,000 characters: a block streaming in is coloured once per version. */
 const HIGHLIGHT_CACHE_SIZE = 300;
+const HIGHLIGHT_CACHE_CHARS = 100_000;
 const highlighted = new Map<string, HighlightedLine[]>();
+let highlightedChars = 0;
 
 /**
  * Fence spellings people actually type, mapped to the language ids the scanner
@@ -107,8 +110,13 @@ export function highlightCode(value: string, language: string): HighlightedLine[
   const cached = highlighted.get(key);
   if (cached) return cached;
   const lines = highlightSource(value, language);
-  if (highlighted.size >= HIGHLIGHT_CACHE_SIZE) highlighted.delete(highlighted.keys().next().value!);
   highlighted.set(key, lines);
+  highlightedChars += value.length;
+  for (const [oldest] of highlighted) {
+    if (highlighted.size <= HIGHLIGHT_CACHE_SIZE && highlightedChars <= HIGHLIGHT_CACHE_CHARS) break;
+    highlighted.delete(oldest);
+    highlightedChars -= oldest.length - oldest.indexOf('\n') - 1;
+  }
   return lines;
 }
 

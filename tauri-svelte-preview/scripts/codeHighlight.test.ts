@@ -160,6 +160,13 @@ for (const [source, language] of [
   assert.equal(cachedHighlight(source, 'typescript'), undefined);
   assert.ok(cachedHighlight('let filler = 0;', 'typescript'));
   assert.ok(cachedHighlight('let filler = 299;', 'typescript'));
+  // A block that streams in is coloured once per version; together the kept versions stay within
+  // 100,000 characters, so a long streamed block cannot pin hundreds of large colourings.
+  const streamed = 'let streamed = 1;\n'.repeat(2000);
+  for (let length = 4_000; length <= streamed.length; length += 4_000) highlightCode(streamed.slice(0, length), 'typescript');
+  assert.ok(cachedHighlight(streamed, 'typescript'));
+  assert.equal(cachedHighlight(streamed.slice(0, 4_000), 'typescript'), undefined);
+  assert.equal(cachedHighlight('let filler = 299;', 'typescript'), undefined);
   // Plain blocks are not kept: they cost nothing to draw again.
   highlightCode('plain words', 'plaintext');
   assert.equal(cachedHighlight('plain words', 'plaintext'), undefined);
