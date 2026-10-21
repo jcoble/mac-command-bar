@@ -51,7 +51,6 @@
     loadingOlder?: boolean;
     pageError?: string;
     onLoadOlder?(): void;
-    onReturnToLatest?(): void;
     hasNewer?: boolean;
     loadingNewer?: boolean;
     onLoadNewer?(): void;
@@ -70,7 +69,7 @@
     turnFacts = [], localTurnActive = false, activityLabel = null, backgroundWork, onOpenChild, composerHeight = 0,
     assistantLabel = 'Assistant', emptyText = 'Start the conversation below.', pendingFirstMessage = null,
     hasOlder = false, loadingOlder = false, pageError = '', onLoadOlder, hasNewer = false, loadingNewer = false,
-    onLoadNewer, oldestSequence = 0, newestSequence = 0, onJumpToLatest, onReturnToLatest, onApprovalDecision,
+    onLoadNewer, oldestSequence = 0, newestSequence = 0, onJumpToLatest, onApprovalDecision,
     onFileLink, onPlanOpen, historyDownload = null
   }: Props = $props();
 
@@ -546,7 +545,7 @@
     const direction = dragging ? (host.scrollTop < lastScrollTop ? 'older' : 'newer') : userDirection;
     lastScrollTop = host.scrollTop;
     if (direction === 'older') follow = false;
-    else if (direction === 'newer' && !hasNewer && atEnd()) { follow = true; onReturnToLatest?.(); }
+    else if (direction === 'newer' && !hasNewer && atEnd()) follow = true;
     userDirection = null;
     // Wheel events fire before the scroll they cause, so a gesture that coasts
     // onto the end of the loaded rows asks for nothing; ask once it lands there.
@@ -564,7 +563,7 @@
     anchoredSendItemId = null;
     userDirection = event.deltaY < 0 ? 'older' : 'newer';
     if (event.deltaY < 0) follow = false;
-    else if (event.deltaY > 0 && !hasNewer && atEnd()) { follow = true; onReturnToLatest?.(); }
+    else if (event.deltaY > 0 && !hasNewer && atEnd()) follow = true;
     if (event.deltaY) scheduleViewWork(event.deltaY < 0);
   }
 
@@ -625,7 +624,7 @@
     try {
       if (hasNewer) await onJumpToLatest?.();
       if (windowId !== renderWindowId) return;
-      follow = true; onReturnToLatest?.();
+      follow = true;
       savedAnchor = undefined;
       flushSync();
       if (windowId !== renderWindowId) return;
