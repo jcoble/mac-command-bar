@@ -12,12 +12,17 @@ fn tool(item_id: &str, state: ToolState, summary: Option<&str>, output: Option<&
 }
 
 fn calls() -> Vec<AgentConversationPayload> {
+    // Imported history keeps a call's output in a later event with no name or summary.
+    let mut output_only = tool("read", ToolState::Completed, None, Some("# Notes\nbody"), None, None);
+    if let AgentConversationPayload::Tool { name, .. } = &mut output_only { name.clear(); }
     vec![
         tool("run", ToolState::Started, Some("seq 3"), Some("1\n"), None, None),
         tool("run", ToolState::Completed, Some("seq 3"), Some("1\n2\n3\n"), None, None),
         tool("grep", ToolState::Completed, None, Some("a.ts:1 found\nb.ts:2 found"), None, None),
         tool("edit", ToolState::Completed, None, None, Some("notes.txt"), Some(EDIT_DIFF)),
         tool("empty", ToolState::Completed, Some("nothing"), None, None, None),
+        tool("read", ToolState::Completed, Some("notes.md"), None, None, None),
+        output_only,
     ]
 }
 
@@ -57,6 +62,8 @@ fn expected_rows() -> Vec<(String, Option<String>, bool, Option<u32>, Option<u32
         ("grep".into(), Some("a.ts:1 found".into()), true, None, None),
         ("edit".into(), None, true, Some(2), Some(1)),
         ("empty".into(), Some("nothing".into()), false, None, None),
+        // The output-only event adds no summary, so the row keeps showing its call's "notes.md".
+        ("read".into(), None, true, None, None),
     ]
 }
 
@@ -107,6 +114,8 @@ fn an_opened_row_reads_the_whole_call_for_local_sub_agent_and_remote_sessions() 
         assert_eq!((run.summary.as_deref(), run.output.as_deref(), run.diff), (Some("seq 3"), Some("1\n2\n3\n"), None), "{owned_id}");
         let edit = read_tool_call(&manager.store, owned_id, "edit").unwrap();
         assert_eq!((edit.path.as_deref(), edit.diff.as_deref()), (Some("notes.txt"), Some(EDIT_DIFF)), "{owned_id}");
+        let read = read_tool_call(&manager.store, owned_id, "read").unwrap();
+        assert_eq!((read.summary.as_deref(), read.output.as_deref()), (Some("notes.md"), Some("# Notes\nbody")), "{owned_id}");
     }
     assert_eq!(read_tool_call(&manager.store, &remote_key("workbox-test", "never-saved"), "run").unwrap_err(),
         "This part of the conversation is not saved on this Mac yet");

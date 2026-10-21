@@ -50,9 +50,10 @@ pub struct AgentConversationToolCall {
 
 /// A page's tool event without its output and diff. The row keeps what it shows closed: whether
 /// there is anything to open, a diff's line counts, and the output's first line as the summary
-/// when the call has none.
+/// when the call has none. An event with no name only adds output to its call (imported history),
+/// so it gets no summary: one would replace the command its call's earlier event shows.
 pub(crate) fn without_details(mut event: AgentConversationEvent) -> AgentConversationEvent {
-    if let AgentConversationPayload::Tool { summary, output, diff, has_detail, added, removed, .. } = &mut event.payload {
+    if let AgentConversationPayload::Tool { name, summary, output, diff, has_detail, added, removed, .. } = &mut event.payload {
         let output = output.take().filter(|text| !text.is_empty());
         let diff = diff.take().filter(|text| !text.is_empty());
         *has_detail = output.is_some() || diff.is_some();
@@ -60,7 +61,7 @@ pub(crate) fn without_details(mut event: AgentConversationEvent) -> AgentConvers
             let (lines_added, lines_removed) = diff_line_counts(diff);
             (*added, *removed) = (Some(lines_added), Some(lines_removed));
         }
-        if summary.as_deref().is_none_or(str::is_empty) {
+        if !name.is_empty() && summary.as_deref().is_none_or(str::is_empty) {
             if let Some(line) = output.as_deref().and_then(|text| text.lines().next()) {
                 *summary = Some(line.chars().take(200).collect());
             }
