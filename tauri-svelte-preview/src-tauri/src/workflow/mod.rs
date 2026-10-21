@@ -2510,8 +2510,8 @@ impl WorkflowEngine {
         Ok(run)
     }
 
-    /// Gives `target` and every step after it that already ran a new attempt, and returns the
-    /// sessions of parallel steps still working on the old round, which the caller cancels.
+    /// Gives `target` and every later step not blocked or skipped (a ready one waiting for a slot too) a new
+    /// attempt, and returns the sessions of parallel steps still working on the old round, which the caller cancels.
     fn reset_for_redo(&self, run: &mut WorkflowRunRecord, node_id: &str, target: &str) -> Result<Vec<String>, WorkflowError> {
         let reviews: BTreeSet<_> = run.definition.nodes.iter().filter(|node| node.step.get("review").is_some()).map(|node| node.id.clone()).collect();
         let redo_ids = step_and_dependents(&run.definition, target);
@@ -2519,7 +2519,7 @@ impl WorkflowEngine {
         let agents: BTreeSet<_> = run.definition.nodes.iter().filter(|node| node.step.get("run").is_none()).map(|node| node.id.clone()).collect();
         let mut live_turns = Vec::new();
         for node in run.nodes.iter_mut().filter(|node| redo_ids.contains(&node.node_id) && !matches!(node.state,
-            WorkflowNodeState::Blocked | WorkflowNodeState::Ready | WorkflowNodeState::Queued | WorkflowNodeState::Skipped)) {
+            WorkflowNodeState::Blocked | WorkflowNodeState::Skipped)) {
             if let Some(handle) = self.deadlines.lock().unwrap().remove(&node.id) { handle.abort(); }
             // A parallel step still working on the old round is stopped; the reporting step is already done.
             if node.node_id != node_id && agents.contains(&node.node_id)
@@ -3581,7 +3581,7 @@ fn pr_body(task_key: &str, outputs: &[(String, String)], artifacts: &[String]) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    mod permissions; mod agent_tools;
+    mod permissions; mod agent_tools; mod review_rounds;
     #[test]
     fn pr_body_stays_under_the_github_limit_and_names_every_step() {
         let outputs: Vec<(String, String)> = (0..14).map(|n| (format!("step-{n}"), "x".repeat(20_000))).collect();
