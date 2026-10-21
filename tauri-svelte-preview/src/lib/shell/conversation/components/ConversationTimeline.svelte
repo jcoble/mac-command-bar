@@ -243,7 +243,7 @@
   }
 
   setContext<ConversationDisclosureContext>(conversationDisclosureContext, {
-    get(key) { return disclosures[key]; },
+    get ownedId() { return historyOwnedId; }, get(key) { return disclosures[key]; },
     set(key, open) { follow = false; disclosures = { ...disclosures, [key]: open }; saveView(); }
   });
 

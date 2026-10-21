@@ -185,8 +185,16 @@ export function conversationChunksFromEvent(
       chunks.push({ type: EventType.TOOL_CALL_END, toolCallId: item.id });
     }
     if (display.state === 'completed' || display.state === 'failed') {
+      // A finished call keeps what its closed row shows; opening the row reads the output by id
+      // (TSK-1574). Native-CLI projections have no such read, so they keep theirs.
+      const { output: shown, ...closed }: Record<string, AgentConfigValue> = output;
+      const result = 'type' in source || source.payload.kind !== 'tool' ? output : {
+        ...closed,
+        hasDetail: closed.hasDetail === true || /\S/.test(String(shown ?? '')) || !!closed.diff,
+        summary: closed.summary || String(shown ?? '').split('\n', 1)[0] || undefined
+      };
       chunks.push({ type: EventType.TOOL_CALL_RESULT, toolCallId: item.id, messageId: item.id,
-        content: JSON.stringify(output), role: 'tool',
+        content: JSON.stringify(result), role: 'tool',
         metadata: display.state === 'failed' ? { tanstack: { state: 'output-error' } } : undefined });
     } else {
       chunks.push(nativeCustomChunk('assembly:running-tool', { itemId: item.id, output }));

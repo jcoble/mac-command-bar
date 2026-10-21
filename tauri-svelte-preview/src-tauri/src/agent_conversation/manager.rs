@@ -1,4 +1,4 @@
-#[path = "session_project.rs"] pub mod session_project; mod helper_close;
+#[path = "session_project.rs"] pub mod session_project; mod helper_close; pub mod tool_call;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -5462,7 +5462,7 @@ pub(super) fn selected_item_page(page: ItemPage) -> Result<AgentConversationItem
         events: page
             .events
             .into_iter()
-            .map(stored_event)
+            .map(|row| stored_event(row).map(tool_call::without_details))
             .collect::<Result<Vec<_>, _>>()?,
         turns: page
             .turns
@@ -6363,7 +6363,7 @@ async fn settle_closed_transport(
                             ),
                             output: None,
                             path: None,
-                            diff: None,
+                            diff: None, has_detail: false,
                         },
                     );
                 }
@@ -6903,7 +6903,7 @@ fn stopped_background_task_payload(
         summary: Some("Stopped".into()),
         output: None,
         path: None,
-        diff: None,
+        diff: None, has_detail: false,
     })
 }
 
@@ -6953,7 +6953,7 @@ fn background_task_payload(params: &Value) -> Option<AgentConversationPayload> {
         summary,
         output: None,
         path: None,
-        diff: None,
+        diff: None, has_detail: false,
     })
 }
 
@@ -7966,7 +7966,7 @@ mod tests {
     mod helper_messages;
     mod checkout;
     mod model_effort;
-    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close;
+    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close; mod lazy_tool_rows;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
@@ -15215,7 +15215,7 @@ mod tests {
         ] {
             record_payload_for_session_and_dispatch(session, &manager.emitter, AgentConversationPayload::Tool {
                 item_id: "edit-1".into(), name: "Edit".into(), state,
-                summary: None, output: None, path, diff,
+                summary: None, output: None, path, diff, has_detail: false,
             }).unwrap();
         }
         let emitted = seen.lock().unwrap();

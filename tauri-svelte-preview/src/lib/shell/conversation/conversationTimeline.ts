@@ -65,7 +65,7 @@ export type ConversationDisplayItem = (
       toolKind: ConversationToolKind;
       state: ConversationToolState;
       output?: string;
-      diff?: string;
+      diff?: string; hasDetail?: boolean;
       path?: string;
       summary?: string;
       timestampMs: number;
@@ -908,7 +908,7 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
       toolKind,
       state: toolStateOf(metadata?.state ?? metadata?.status),
       output: output || undefined,
-      diff: diff || undefined,
+      diff: diff || undefined, hasDetail: metadata?.hasDetail === true || undefined,
       path: stringOf(metadata?.path) || undefined,
       summary,
       metadata,
@@ -1212,7 +1212,7 @@ function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, pa
       status,
       summary: stringOf(payload.summary) || undefined,
       output: output || undefined,
-      diff: diff || undefined,
+      diff: diff || undefined, hasDetail: payload.hasDetail === true || undefined,
       path: path || undefined,
       completed: toolStateOf(status) === 'completed'
     })

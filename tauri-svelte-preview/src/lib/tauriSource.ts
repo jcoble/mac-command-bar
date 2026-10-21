@@ -2536,11 +2536,7 @@ export async function listAgentConversationItemsBeforeFromTauri(
     const page = await invoke<AgentConversationItemPage>('list_agent_conversation_items_before', {
       ownedId, beforeSequence, maxBytes, requestId
     });
-    return signal?.aborted ? null : {
-      ...page,
-      beforeCursor: page.beforeCursor ?? undefined,
-      afterCursor: page.afterCursor ?? undefined
-    };
+    return signal?.aborted ? null : { ...page, beforeCursor: page.beforeCursor ?? undefined, afterCursor: page.afterCursor ?? undefined };
   } catch (error) {
     if (signal?.aborted) return null;
     throw error;
@@ -2564,17 +2560,21 @@ export async function listAgentConversationItemsAfterFromTauri(
     const page = await invoke<AgentConversationItemPage>('list_agent_conversation_items_after', {
       ownedId, afterSequence, maxBytes, requestId
     });
-    return signal?.aborted ? null : {
-      ...page,
-      beforeCursor: page.beforeCursor ?? undefined,
-      afterCursor: page.afterCursor ?? undefined
-    };
+    return signal?.aborted ? null : { ...page, beforeCursor: page.beforeCursor ?? undefined, afterCursor: page.afterCursor ?? undefined };
   } catch (error) {
     if (signal?.aborted) return null;
     throw error;
   } finally {
     signal?.removeEventListener('abort', cancel);
   }
+}
+
+/** A tool call's whole output and diff, read when its row is opened; null outside the app or once `signal` aborts. */
+export async function readAgentConversationToolCallFromTauri(ownedId: string, itemId: string, signal: AbortSignal): Promise<{ output: string | null; diff: string | null } | null> {
+  if (!isTauriRuntime() || signal.aborted) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  const call = await invoke<{ output: string | null; diff: string | null }>('read_agent_conversation_tool_call', { ownedId, itemId });
+  return signal.aborted ? null : call;
 }
 
 /** For an abort listener: cancels the request and reports, rather than throws, a failure. */

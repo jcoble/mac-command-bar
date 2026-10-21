@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use self::push::PushSender;
+use super::manager::tool_call::ToolCall;
 use super::protocol::{
     AgentConversationEvent, AgentConversationPayload as Payload, AgentNativeSessionMode, EnsureAgentConversationRequest,
     ExecutionEnvironment, RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest,
@@ -719,41 +720,6 @@ async fn git_prs(State(state): State<ServerState>, Path(owned_id): Path<String>)
 fn pull_request_rows(list: Vec<crate::git::workspace::PullRequestSummary>) -> Value {
     list.into_iter().map(|pr| json!({ "number": pr.number, "title": pr.title, "state": pr.state, "url": pr.url,
         "branch": pr.head_branch })).collect()
-}
-
-/// One tool call as its events say it. Imported history stores a call's output in a later event with
-/// no name, summary, path or diff, so the events of one item fold in order: each later non-empty
-/// field replaces the earlier one, and the state is the latest event's.
-#[derive(Clone, Copy)]
-struct ToolCall<'a> {
-    name: &'a str,
-    state: ToolState,
-    summary: Option<&'a str>,
-    output: Option<&'a str>,
-    path: Option<&'a str>,
-    diff: Option<&'a str>,
-}
-
-impl<'a> ToolCall<'a> {
-    /// The call `payload` describes, when it is a tool event of item `item_id`.
-    fn of(payload: &'a Payload, item_id: &str) -> Option<Self> {
-        match payload {
-            Payload::Tool { item_id: id, name, state, summary, output, path, diff } if id == item_id =>
-                Some(Self { name, state: *state, summary: summary.as_deref(), output: output.as_deref(), path: path.as_deref(), diff: diff.as_deref() }),
-            _ => None,
-        }
-    }
-
-    fn fold(self, later: Self) -> Self {
-        let newer = |old: Option<&'a str>, new: Option<&'a str>| new.filter(|text| !text.is_empty()).or(old);
-        Self { name: if later.name.is_empty() { self.name } else { later.name }, state: later.state,
-            summary: newer(self.summary, later.summary), output: newer(self.output, later.output),
-            path: newer(self.path, later.path), diff: newer(self.diff, later.diff) }
-    }
-
-    fn has_detail(&self) -> bool {
-        [self.output, self.path, self.diff].iter().any(|field| field.is_some_and(|text| !text.is_empty()))
-    }
 }
 
 /// The `b/` path in a `diff --git` header's text. Git quotes a path with a quote, backslash,
@@ -1624,7 +1590,7 @@ mod tests {
 
     fn tool(state: ToolState, summary: Option<&str>) -> Payload {
         Payload::Tool { item_id: "t1".into(), name: "start_run".into(), state, summary: summary.map(str::to_string),
-            output: None, path: None, diff: None }
+            output: None, path: None, diff: None, has_detail: false, }
     }
 
     #[test]
@@ -2190,7 +2156,7 @@ mod tests {
 
     fn edit(output: Option<String>, diff: Option<String>) -> Payload {
         Payload::Tool { item_id: "edit".into(), name: "Edit".into(), state: ToolState::Completed, summary: Some("notes.txt".into()),
-            output, path: Some("/work/notes.txt".into()), diff }
+            output, path: Some("/work/notes.txt".into()), diff, has_detail: false, }
     }
 
     #[tokio::test]
@@ -2200,7 +2166,7 @@ mod tests {
         let diff = "--- a/notes.txt\n+++ b/notes.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n";
         file_session(&state, "lane", vec![
             Payload::Tool { item_id: "edit".into(), name: "Edit".into(), state: ToolState::Started, summary: None,
-                output: None, path: None, diff: None },
+                output: None, path: None, diff: None, has_detail: false, },
             edit(Some("Wrote 2 lines".into()), Some(diff.into())),
             tool(ToolState::Completed, Some("wc -l notes.txt")),
         ]);
@@ -2222,7 +2188,7 @@ mod tests {
         let token = paired(&state, &base).await;
         // Imported history stores the call, then its output in a later event with no name or summary.
         let call = |name: &str, state, summary: Option<&str>, output: Option<&str>| Payload::Tool { item_id: "tool-a".into(),
-            name: name.into(), state, summary: summary.map(str::to_string), output: output.map(str::to_string), path: None, diff: None };
+            name: name.into(), state, summary: summary.map(str::to_string), output: output.map(str::to_string), path: None, diff: None, has_detail: false, };
         file_session(&state, "lane", vec![
             call("shell", ToolState::Started, Some("ls"), None),
             call("", ToolState::Completed, None, Some("result")),

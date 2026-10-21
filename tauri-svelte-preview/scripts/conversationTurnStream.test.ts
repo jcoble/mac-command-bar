@@ -160,7 +160,7 @@ test('streamed deltas build one reply and the finished message has the last word
   }
 });
 
-test('a tool call runs until it completes or fails, keeping the output it last reported', () => {
+test('a tool call streams its output until it completes or fails', () => {
   for (const provider of PROVIDERS) {
     for (const end of ['completed', 'failed']) {
       const event = stream(`owned-tool-${provider}`, provider);
@@ -175,9 +175,29 @@ test('a tool call runs until it completes or fails, keeping the output it last r
       const done = conversationMessagesFromEvents([...running,
         event({ kind: 'tool', itemId: 'tool-1', name: 'Run tests', state: end, output: 'one\ntwo\nend' })]);
       assert.equal(conversationHasRunningTool(done), false, `${provider} ${end}`);
-      assert.deepEqual(conversationDisplayItems(done).map((item) => [item.kind, item.state, item.output]), [['tool', end, 'one\ntwo\nend']]);
+      // Finished, the row keeps no output: opening it reads the call by id.
+      assert.deepEqual(conversationDisplayItems(done).map((item) => [item.kind, item.state, item.output, item.hasDetail]), [['tool', end, undefined, true]]);
     }
   }
+});
+
+// TSK-1574: a finished call's output stays in the backend until its row opens.
+test('a completed tool part keeps no output but says it has details', () => {
+  const event = stream('owned-lazy-tool', 'claude');
+  const messages = conversationMessagesFromEvents([
+    event({ kind: 'tool', itemId: 'run', name: 'Bash', state: 'started', summary: 'seq 3', output: '1\n' }),
+    event({ kind: 'tool', itemId: 'run', name: 'Bash', state: 'completed', summary: 'seq 3', output: '1\n2\n3\n' }),
+    event({ kind: 'tool', itemId: 'grep', name: 'Grep', state: 'completed', output: 'a.ts:1 found\nb.ts:2 found' }),
+    event({ kind: 'tool', itemId: 'empty', name: 'Read', state: 'completed', summary: 'nothing' })
+  ]);
+  assert.doesNotMatch(JSON.stringify(messages), /2\\n3|b\.ts/);
+  assert.deepEqual(conversationDisplayItems(messages).map((item) => item.kind === 'tool'
+    ? [item.itemId, item.output, item.hasDetail, item.summary] : item.kind), [
+    ['run', undefined, true, 'seq 3'],
+    // The closed row's one line was the output's first line; it stays.
+    ['grep', undefined, true, 'a.ts:1 found'],
+    ['empty', undefined, undefined, 'nothing']
+  ]);
 });
 
 // Protects dda06a519: the Thinking row closes when the reply starts or its own

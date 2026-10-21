@@ -486,14 +486,14 @@ pub enum AgentConversationPayload {
         /// What the call produced, kept whole. A row with nothing here has
         /// nothing to open, which is what a tool call used to be: its content
         /// was flattened into the summary and the rest thrown away.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        output: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] output: Option<String>,
         /// The file the call was about.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] path: Option<String>,
         /// A unified diff, when the call changed a file.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         diff: Option<String>,
+        /// On a history page's row, which has no output: whether there is anything to read by id on open.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")] has_detail: bool,
     },
     ChildUpdate {
         child_id: String,
