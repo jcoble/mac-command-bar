@@ -1,14 +1,18 @@
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 
 const home = os.homedir();
 const proofRoot = path.join(home, 'assembly-proof');
 const templateDir = path.join(proofRoot, 'template');
 const templateSource = path.join(home, 'assembly-qa-1500b', 'xdg-fresh');
-const currentLink = path.join(proofRoot, 'current');
+export function currentRunLink(root: string, worktree: string): string {
+  const key = createHash('sha256').update(worktree).digest('hex');
+  return path.join(root, `current-${path.basename(worktree)}-${key}`);
+}
 const ownerDataPaths = [path.join(home, '.local/share/assembly'), path.join(home, '.local/share/dev.blackcolours.MacCommandBarWebviewPreview')];
 
 type ProcessInfo = { name: string; pid: number; startedAt: string; log: string };
@@ -71,10 +75,10 @@ export function buildState(input: StateInput) {
 
 type RunState = { runDir: string; processes: { pgid: number; pid: number; startedAt: string }[] };
 
-// `stop` reads only the current link, so a second start would orphan the first run's processes.
+// A worktree may have only one live run; other worktrees have their own state links.
 export function refuseWhileRunning(state: RunState | undefined, isLive: (p: RunState['processes'][number]) => boolean): void {
   if (state?.processes.some(isLive)) {
-    throw new Error(`A proof run is still running in ${state.runDir}. Stop it first with: node --experimental-strip-types tauri-svelte-preview/scripts/fourScenarios.ts stop`);
+    throw new Error(`A proof run is still running in ${state.runDir}. Stop it first with: node --experimental-strip-types tauri-svelte-preview/scripts/fourScenarios.ts stop --worktree <path>`);
   }
 }
 
@@ -162,9 +166,22 @@ function launch(name: string, file: string, args: string[], cwd: string, log: st
   return { name, pid: child.pid, startedAt: startTime(child.pid), log };
 }
 
+export function optionValue(argv: string[], flag: string): string | undefined {
+  const index = argv.indexOf(flag);
+  if (index === -1) return undefined;
+  const value = argv[index + 1];
+  if (!value || value.startsWith('--')) throw new Error(`${flag} requires a path`);
+  return value;
+}
+
+function worktreeFrom(argv: string[]): string {
+  return canonical(optionValue(argv, '--worktree') ?? run('git', ['rev-parse', '--show-toplevel']).trim());
+}
+
 async function start(argv: string[]) {
-  const option = (flag: string) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
-  const worktree = path.resolve(option('--worktree') ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '../..'));
+  const option = (flag: string) => optionValue(argv, flag);
+  const worktree = worktreeFrom(argv);
+  const currentLink = currentRunLink(proofRoot, worktree);
   const preview = path.join(worktree, 'tauri-svelte-preview');
   const seed = option('--seed');
 
@@ -247,10 +264,11 @@ async function start(argv: string[]) {
   const ownerOpen = ownerFilesIn(openFilesInGroups(processes.map((p) => p.pid)), ownerDataPaths);
   console.log(`Isolation: files written under ${dataDir}: ${touched ? 'yes' : 'NO'}; owner data files open by the test app: ${ownerOpen.length ? ownerOpen.join(', ') : 'none'}`);
   if (!touched || ownerOpen.length) console.log('Isolation check FAILED. Run stop and report this.');
-  console.log(`Screenshot: ${shot}\nRun folder: ${runDir}\nDisplay: ${x}\nDrive: DISPLAY=${x} assembly-native-ui shot|click|key ...\nNext: see docs/operations/four-scenario-check.md. Stop with: node --experimental-strip-types tauri-svelte-preview/scripts/fourScenarios.ts stop`);
+  console.log(`Screenshot: ${shot}\nRun folder: ${runDir}\nDisplay: ${x}\nDrive: DISPLAY=${x} assembly-native-ui shot|click|key ...\nNext: see docs/operations/four-scenario-check.md. Stop with: node --experimental-strip-types tauri-svelte-preview/scripts/fourScenarios.ts stop --worktree ${JSON.stringify(worktree)}`);
 }
 
-async function stop() {
+async function stop(argv: string[]) {
+  const currentLink = currentRunLink(proofRoot, worktreeFrom(argv));
   const state = JSON.parse(fs.readFileSync(path.join(currentLink, 'state.json'), 'utf8')) as ReturnType<typeof buildState>;
   const mine = [...state.processes].reverse().filter(owned);
   const rows = run('ps', ['-eo', 'pid=,ppid=,pgid=']).trim().split('\n').map((l) => {
@@ -272,7 +290,8 @@ async function stop() {
   console.log(left.length ? `STILL RUNNING:\n${left.join('\n')}` : 'ps check: no processes left in the stopped groups');
 }
 
-function offlineSsh() {
+function offlineSsh(argv: string[]) {
+  const currentLink = currentRunLink(proofRoot, worktreeFrom(argv));
   const state = JSON.parse(fs.readFileSync(path.join(currentLink, 'state.json'), 'utf8')) as ReturnType<typeof buildState>;
   const dir = path.join(state.runDir, 'offline-bin');
   fs.mkdirSync(dir, { recursive: true });
@@ -282,7 +301,7 @@ function offlineSsh() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [command, ...rest] = process.argv.slice(2);
-  const commands: Record<string, () => unknown> = { start: () => start(rest), stop, 'offline-ssh': offlineSsh };
-  if (!commands[command]) { console.error('usage: fourScenarios.ts start [--worktree <path>] [--data <existing data dir> | --seed <source data folder>] | stop | offline-ssh'); process.exit(2); }
+  const commands: Record<string, () => unknown> = { start: () => start(rest), stop: () => stop(rest), 'offline-ssh': () => offlineSsh(rest) };
+  if (!commands[command]) { console.error('usage: fourScenarios.ts start [--worktree <path>] [--data <existing data dir> | --seed <source data folder>] | stop [--worktree <path>] | offline-ssh [--worktree <path>]'); process.exit(2); }
   Promise.resolve(commands[command]()).catch((error) => { console.error(error instanceof Error ? error.message : error); process.exit(1); });
 }

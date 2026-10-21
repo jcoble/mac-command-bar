@@ -9,6 +9,7 @@
  */
 import assert from 'node:assert/strict';
 import {
+  cachedHighlight,
   fenceLanguage,
   highlightCode,
   languageForPath,
@@ -142,6 +143,33 @@ for (const [source, language] of [
   ['no trailing newline', 'shell']
 ] as const) {
   assertKeepsSource(source, language);
+}
+
+// highlighted_code_is_reused_and_the_cache_stays_capped
+{
+  // A block coloured once comes back as the same lines, so a remount draws it coloured at once.
+  const source = 'const cached = 1; // first block';
+  assert.equal(cachedHighlight(source, 'typescript'), undefined);
+  const first = highlightCode(source, 'typescript');
+  assert.equal(cachedHighlight(source, 'typescript'), first);
+  assert.equal(highlightCode(source, 'typescript'), first);
+  // The same code in another language is coloured on its own.
+  assert.equal(cachedHighlight(source, 'rust'), undefined);
+  // Only the latest 300 blocks are kept; the oldest go first.
+  for (let index = 0; index < 300; index += 1) highlightCode(`let filler = ${index};`, 'typescript');
+  assert.equal(cachedHighlight(source, 'typescript'), undefined);
+  assert.ok(cachedHighlight('let filler = 0;', 'typescript'));
+  assert.ok(cachedHighlight('let filler = 299;', 'typescript'));
+  // A block that streams in is coloured once per version; together the kept versions stay within
+  // 100,000 characters, so a long streamed block cannot pin hundreds of large colourings.
+  const streamed = 'let streamed = 1;\n'.repeat(2000);
+  for (let length = 4_000; length <= streamed.length; length += 4_000) highlightCode(streamed.slice(0, length), 'typescript');
+  assert.ok(cachedHighlight(streamed, 'typescript'));
+  assert.equal(cachedHighlight(streamed.slice(0, 4_000), 'typescript'), undefined);
+  assert.equal(cachedHighlight('let filler = 299;', 'typescript'), undefined);
+  // Plain blocks are not kept: they cost nothing to draw again.
+  highlightCode('plain words', 'plaintext');
+  assert.equal(cachedHighlight('plain words', 'plaintext'), undefined);
 }
 
 console.log('codeHighlight.test.ts passed');

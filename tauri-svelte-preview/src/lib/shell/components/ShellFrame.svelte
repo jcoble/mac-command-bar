@@ -84,6 +84,8 @@
     const owner = { active: true };
     let laidOutWidth = -1;
     let laidOutHeight = -1;
+    let layoutRequest = 0;
+    let lastLayoutAt = 0;
     const reportRegionWidths = (): void => {
       const sessionsWidth = frame?.regionWidth('sessions');
       if (sessionsWidth !== null && sessionsWidth !== undefined) onSessionsWidthChange?.(sessionsWidth);
@@ -100,10 +102,25 @@
       const height =
         gridHost.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
       if (width === laidOutWidth && height === laidOutHeight) return;
+      // A one-off size change (the drawer opening or closing) gets the same one-frame WebKit
+      // release as `setToolsPresent` in frame.ts: hide the center, lay out a frame later, reveal
+      // a frame after that. The first layout, and changes that arrive every frame (a drag, a
+      // window resize), lay out at once, so the center is not blank for the whole drag.
+      const release = laidOutWidth >= 0 && performance.now() - lastLayoutAt >= 100;
+      lastLayoutAt = performance.now();
       laidOutWidth = width;
       laidOutHeight = height;
-      frame?.layout(width, height);
-      reportRegionWidths();
+      const apply = (): void => {
+        frame?.layout(width, height);
+        reportRegionWidths();
+      };
+      cancelAnimationFrame(layoutRequest);
+      centerRegionSlot.style.visibility = release ? 'hidden' : '';
+      if (!release) return apply();
+      layoutRequest = requestAnimationFrame(() => {
+        apply();
+        layoutRequest = requestAnimationFrame(() => (centerRegionSlot.style.visibility = ''));
+      });
     };
     const scheduleFrameLayout = () => {
       layoutFrame();
@@ -149,6 +166,7 @@
     return () => {
       owner.active = false;
       observer?.disconnect();
+      cancelAnimationFrame(layoutRequest);
       frameLayoutListener?.dispose();
       frameLayoutListener = null;
       frame?.dispose();

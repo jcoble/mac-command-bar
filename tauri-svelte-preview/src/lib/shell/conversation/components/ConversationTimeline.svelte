@@ -11,7 +11,7 @@
   import Sparkles from '@lucide/svelte/icons/sparkles';
   import type { AgentConversationTurnFacts } from '$lib/shell/conversation/conversationTypes.ts';
   import { anchorRowIndex, continueHistoryPaging, conversationTurnGroups, foldToolRuns, summarizeCompletedWork, toolFilePath, turnRows, type ConversationTurnGroup, type ConversationDisplayItem, type ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
-  import { USER_SEND_ANCHOR_OFFSET_PX, sendTurnRunning, type ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
+  import { USER_SEND_ANCHOR_OFFSET_PX, estimateRowHeight, sendTurnRunning, type ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import type { ConversationViewState } from '$lib/shell/sessionWorkspaces.ts';
   import { backgroundWorkLabel, backgroundWorkTarget, formatBackgroundElapsed } from '$lib/shell/ownedSessions.ts';
@@ -51,6 +51,7 @@
     loadingOlder?: boolean;
     pageError?: string;
     onLoadOlder?(): void;
+    onReturnToLatest?(): void;
     hasNewer?: boolean;
     loadingNewer?: boolean;
     onLoadNewer?(): void;
@@ -69,7 +70,7 @@
     turnFacts = [], localTurnActive = false, activityLabel = null, backgroundWork, onOpenChild, composerHeight = 0,
     assistantLabel = 'Assistant', emptyText = 'Start the conversation below.', pendingFirstMessage = null,
     hasOlder = false, loadingOlder = false, pageError = '', onLoadOlder, hasNewer = false, loadingNewer = false,
-    onLoadNewer, oldestSequence = 0, newestSequence = 0, onJumpToLatest, onApprovalDecision,
+    onLoadNewer, oldestSequence = 0, newestSequence = 0, onJumpToLatest, onReturnToLatest, onApprovalDecision,
     onFileLink, onPlanOpen, historyDownload = null
   }: Props = $props();
 
@@ -115,6 +116,8 @@
     return disclosures[`${run.itemId}:open`]
       ?? (run.turnId === activeTurnId && run.items.at(-1)?.itemId === renderedItems.at(-1)?.itemId);
   }
+  // A finished edit's diff is counted once, not on every chunk. Declared before `rows`, which reads it during setup.
+  const diffCounts = new WeakMap<ConversationDisplayItem, { added: number; removed: number }>();
   const rows = $derived.by((): Row[] => {
     if (previousRunWindow !== renderWindowId) {
       previousRunWindow = renderWindowId;
@@ -167,6 +170,11 @@
     if (activityLabel || hasBackgroundWork) result.push({ key: `activity:${result.at(-1)?.key ?? 'empty'}`, activity: true });
     return result;
   });
+  // A new key function makes the virtualizer rebuild every row position, so these are replaced only when row keys
+  // change. Each pair reads its own rows: the virtualizer reads its old layout through the old pair while switching.
+  const rowFunctions = (rows: Row[]) => ({ key: (index: number) => rows[index].key, size: (index: number) => estimateRowHeight(rows[index]) });
+  let keyedRows: Row[] = [];
+  let rowFns = rowFunctions(keyedRows);
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: 0, getScrollElement: () => host, estimateSize: () => 90, overscan: 3,
     anchorTo: 'end', followOnAppend: false, scrollEndThreshold: -1
@@ -177,7 +185,7 @@
   // Work deferred to after the next render stops when the timeline unmounts. An effect
   // re-run must not cancel it: the send anchor's effect re-runs as it clears its request.
   const stop = new AbortController();
-  onDestroy(() => stop.abort());
+  onDestroy(() => { stop.abort(); cancelAnimationFrame(viewFrame); });
 
   $effect.pre(() => {
     const currentRows = rows;
@@ -198,10 +206,9 @@
       const kept = anchor && !keys.has(String(anchor.key))
         ? $virtualizer.getVirtualItems().find((row) => row.end > top && keys.has(String(row.key)))
         : undefined;
+      if (currentRows.some((row, index) => row.key !== keyedRows[index]?.key)) rowFns = rowFunctions(keyedRows = currentRows);
       $virtualizer.setOptions({
-        count: currentRows.length, getScrollElement: () => element,
-        getItemKey: (index) => currentRows[index].key,
-        estimateSize: (index) => currentRows[index].run || currentRows[index].item?.kind === 'tool' ? 36 : 90,
+        count: currentRows.length, getScrollElement: () => element, getItemKey: rowFns.key, estimateSize: rowFns.size,
         paddingStart: topInset, paddingEnd,
         followOnAppend: following ? 'smooth' : false,
         scrollEndThreshold: following ? 80 : -1
@@ -241,23 +248,16 @@
     set(key, open) { follow = false; disclosures = { ...disclosures, [key]: open }; saveView(); }
   });
 
-  function countDiffLines(diffText: string): { added: number; removed: number } {
-    let added = 0;
-    let removed = 0;
-    let lineStart = 0;
-    const len = diffText.length;
-    for (let i = 0; i <= len; i++) {
-      if (i === len || diffText.charCodeAt(i) === 10) {
-        if (i > lineStart) {
-          const first = diffText.charCodeAt(lineStart);
-          const second = i > lineStart + 1 ? diffText.charCodeAt(lineStart + 1) : 0;
-          if (first === 43 && second !== 43) added++;
-          else if (first === 45 && second !== 45) removed++;
-        }
-        lineStart = i + 1;
-      }
+  function countDiffLines(item: ConversationDisplayItem, diffText: string): { added: number; removed: number } {
+    const known = diffCounts.get(item);
+    if (known) return known;
+    const counts = { added: 0, removed: 0 };
+    for (const line of diffText.split('\n')) {
+      if (line.startsWith('+') && !line.startsWith('++')) counts.added++;
+      else if (line.startsWith('-') && !line.startsWith('--')) counts.removed++;
     }
-    return { added, removed };
+    diffCounts.set(item, counts);
+    return counts;
   }
 
   function getTurnFileEdits(group: ConversationTurnGroup): { path: string; added: number; removed: number }[] {
@@ -276,15 +276,13 @@
         const path = toolFilePath(item);
         if (path && !seenPaths.has(path)) {
           seenPaths.add(path);
-          edits.push({ path, ...countDiffLines(item.diff ?? '') });
+          edits.push({ path, ...countDiffLines(item, item.diff ?? '') });
         }
       } else if (item.kind === 'file' && item.completed) {
         const p = typeof item.metadata?.path === 'string' ? item.metadata.path : '';
         if (p && !seenPaths.has(p)) {
           seenPaths.add(p);
-          const d = typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text;
-          const { added, removed } = countDiffLines(d);
-          edits.push({ path: p, added, removed });
+          edits.push({ path: p, ...countDiffLines(item, typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text) });
         }
       } else if (item.kind === 'toolRun') {
         for (const sub of item.items) {
@@ -299,9 +297,7 @@
             const p = typeof sub.metadata?.path === 'string' ? sub.metadata.path : '';
             if (p && !seenPaths.has(p)) {
               seenPaths.add(p);
-              const d = typeof sub.metadata?.diff === 'string' ? sub.metadata.diff : sub.text;
-              const { added, removed } = countDiffLines(d);
-              edits.push({ path: p, added, removed });
+              edits.push({ path: p, ...countDiffLines(sub, typeof sub.metadata?.diff === 'string' ? sub.metadata.diff : sub.text) });
             }
           }
         }
@@ -385,8 +381,7 @@
 
   function restoreAnchor(anchor: NonNullable<ConversationViewState['anchor']>): boolean {
     const index = anchorRowIndex(rows, anchor.itemId);
-    if (index < 0) return false;
-    return positionRow(rows[index].key, anchor.offsetPx);
+    return index >= 0 && positionRow(rows[index].key, anchor.offsetPx);
   }
 
   $effect(() => {
@@ -551,27 +546,26 @@
     const direction = dragging ? (host.scrollTop < lastScrollTop ? 'older' : 'newer') : userDirection;
     lastScrollTop = host.scrollTop;
     if (direction === 'older') follow = false;
-    else if (direction === 'newer' && !hasNewer && atEnd()) follow = true;
+    else if (direction === 'newer' && !hasNewer && atEnd()) { follow = true; onReturnToLatest?.(); }
     userDirection = null;
-    saveView();
-    if (direction) requestPage(direction === 'older');
     // Wheel events fire before the scroll they cause, so a gesture that coasts
     // onto the end of the loaded rows asks for nothing; ask once it lands there.
-    else requestPage(false);
+    scheduleViewWork(direction === 'older');
+  }
+  // Saving the place and asking for a page read the layout, so they run once a frame, after its
+  // scrolls; the frame's last event says which way to page.
+  let viewFrame = 0, frameOlder = false;
+  function scheduleViewWork(older: boolean): void {
+    frameOlder = older;
+    viewFrame ||= requestAnimationFrame(() => { viewFrame = 0; saveView(); requestPage(frameOlder); });
   }
   function handleWheel(event: WheelEvent): void {
     if (event.target instanceof Element && event.target.closest('[data-tool-scroll]')) return;
     anchoredSendItemId = null;
     userDirection = event.deltaY < 0 ? 'older' : 'newer';
-    if (event.deltaY < 0) {
-      follow = false;
-      saveView();
-      requestPage(true);
-    } else if (event.deltaY > 0) {
-      if (!hasNewer && atEnd()) follow = true;
-      saveView();
-      requestPage(false);
-    }
+    if (event.deltaY < 0) follow = false;
+    else if (event.deltaY > 0 && !hasNewer && atEnd()) { follow = true; onReturnToLatest?.(); }
+    if (event.deltaY) scheduleViewWork(event.deltaY < 0);
   }
 
   function readerInput(node: HTMLDivElement) {
@@ -604,20 +598,21 @@
       anchoredSendItemId = null;
       userDirection = older ? 'older' : 'newer';
       if (older) follow = false;
-      saveView();
-      requestPage(older);
+      scheduleViewWork(older);
     };
     node.addEventListener('pointerdown', pointerDown);
     node.addEventListener('touchstart', touchStart, { passive: true });
     window.addEventListener('pointerup', pointerUp);
     window.addEventListener('touchend', pointerUp);
     node.addEventListener('keydown', keydown);
+    node.addEventListener('wheel', handleWheel, { passive: true }); // Scrolling never waits for it.
     return { destroy() {
       node.removeEventListener('pointerdown', pointerDown);
       node.removeEventListener('touchstart', touchStart);
       window.removeEventListener('pointerup', pointerUp);
       window.removeEventListener('touchend', pointerUp);
       node.removeEventListener('keydown', keydown);
+      node.removeEventListener('wheel', handleWheel);
     } };
   }
 
@@ -626,11 +621,11 @@
     const windowId = renderWindowId;
     jumping = true;
     anchoredSendItemId = null;
-    pageRequest = null;
+    pageRequest = null; userDirection = null; // A wheel at the top left a direction no scroll consumed.
     try {
       if (hasNewer) await onJumpToLatest?.();
       if (windowId !== renderWindowId) return;
-      follow = true;
+      follow = true; onReturnToLatest?.();
       savedAnchor = undefined;
       flushSync();
       if (windowId !== renderWindowId) return;
@@ -702,14 +697,14 @@
   {#if download?.phase === 'error'}<p role="alert" class="px-2 py-2 text-sm text-muted-foreground">History download stopped: {download.error}</p>{/if}
   {#if loadingOlder}<p class="older-loading" data-testid="conversation-older-loading" role="status"><WorkingSpinner size={12} />Loading earlier messages</p>
   {:else if download?.ready && download.phase !== 'error'}<p class="older-loading" role="status"><span class="download-line">{download.phase === 'paused' ? 'History download paused · reconnecting' : `Downloading earlier messages · ${downloadPercent}%`}</span></p>{/if}
-  <div class="timeline-scroll" tabindex="0" data-testid="conversation-timeline-scroll" bind:this={host} bind:clientHeight={hostHeight} onscroll={handleScroll} onwheel={handleWheel} onmousedown={(event) => { if (event.target === event.currentTarget && event.offsetX < event.currentTarget.clientWidth) event.preventDefault(); }} use:readerInput>
+  <div class="timeline-scroll" tabindex="0" data-testid="conversation-timeline-scroll" bind:this={host} bind:clientHeight={hostHeight} onscroll={handleScroll} onmousedown={(event) => { if (event.target === event.currentTarget && event.offsetX < event.currentTarget.clientWidth) event.preventDefault(); }} use:readerInput>
     {#if renderedItems.length === 0}
       {#if pendingFirstMessage}<PendingFirstMessage text={pendingFirstMessage} seed={conversationId} />{:else}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
     {/if}
     <div class="timeline-list" data-testid="conversation-timeline-list" style:height={`${totalSize}px`}>
       {#each virtualRows as virtualRow (virtualRow.key)}
         {@const row = rows[virtualRow.index]}
-          <div class="turn-row" data-index={virtualRow.index} style:transform={`translateY(${virtualRow.start}px)`} use:measureRow class:compact-tool={row.item?.kind === 'tool' || !!row.run} data-row-key={row.key} data-anchor-item-id={row.anchorItemId} data-turn-id={row.group?.turnId} data-testid="conversation-timeline-row">
+          <div class="turn-row" data-index={virtualRow.index} style:top={`${virtualRow.start}px`} use:measureRow class:compact-tool={row.item?.kind === 'tool' || !!row.run} data-row-key={row.key} data-anchor-item-id={row.anchorItemId} data-turn-id={row.group?.turnId} data-testid="conversation-timeline-row">
             {#if row.run}
               <button class="run-header" data-run-id={row.run.itemId} type="button" aria-expanded={runOpen(row.run)} onclick={() => toggleRun(row.run!)}>
                 <span class="run-icon" aria-hidden="true">

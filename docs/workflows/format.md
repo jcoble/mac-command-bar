@@ -5,13 +5,19 @@ Read this reference through `workflow_format()` in any Assembly session.
 
 ## Files and validation
 
-Write `.assembly/workflows/<name>.yml` in the calling session's project repository
+Write `.assembly/workflows/<name>.yml` in the chosen Assembly project's repository
 on the machine that will run it. Use `.yml`, not `.yaml`. The picker lists only
 files directly in that folder. Put prompt files beside the YAML, usually under
 `.assembly/workflows/prompts/`. Prompt paths are relative to the YAML's folder.
 Files must exist. Reject absolute paths and `../`; the YAML must stay inside the
 project and prompts inside its resolved parent folder, including through symlinks.
-Pass a project-relative path to `check_workflow(path)`.
+Pass a project-relative path to `check_workflow(path, project?)` and
+`start_workflow(path, task, project?)`. The optional `project` is a project already
+added on this machine, identified by its exact root path or its unique title.
+An unknown project or a shared title is refused. Omit it to use the calling
+session's project folder. Paths stay inside the chosen project's workflows;
+a different project does not grant access to arbitrary folders. Runs still belong
+to the starting session for the three-unfinished-runs limit, messages and stop rights.
 Use one YAML document, unique mapping keys, and step IDs containing only ASCII
 letters, digits, `_` or `-`. Include at least one step. Dependencies must exist,
 must not refer to the step itself, and must not form a cycle.

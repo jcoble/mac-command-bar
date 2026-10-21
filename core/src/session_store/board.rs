@@ -76,8 +76,7 @@ SELECT json_object(
         'created_at_ms',c.created_at_ms,'updated_at_ms',c.updated_at_ms,'snoozed_until_ms',c.snoozed_until_ms,
         'run_state',json_extract(r.run,'$.state'),'run_step',json_extract(r.step,'$.nodeId'),
         'session_state',linked.state,'notes',json(COALESCE(n.items,'[]')),
-        'stale',c.state IN ('running','in_review') AND c.updated_at_ms<=?2-86400000,
-        'state_count',COUNT(*) OVER (PARTITION BY c.state)) AS item
+        'stale',c.state IN ('running','in_review') AND c.updated_at_ms<=?2-86400000) AS item
     FROM board_cards c LEFT JOIN sessions s ON s.owned_id=c.written_by
     LEFT JOIN sessions linked ON linked.owned_id=c.session_owned_id
     LEFT JOIN runs r ON r.run_id=c.run_id LEFT JOIN notes n ON n.target='card:'||c.card_key
@@ -85,6 +84,8 @@ SELECT json_object(
     ORDER BY CASE c.state WHEN 'needs_you' THEN 0 WHEN 'running' THEN 1 WHEN 'in_review' THEN 2 ELSE 3 END,
         COALESCE(c.snoozed_until_ms>?2,0),c.updated_at_ms DESC,c.card_key LIMIT 40
 )),
+'counts',(SELECT json_group_object(state,n) FROM (SELECT state,COUNT(*) AS n FROM board_cards
+    WHERE dropped_at_ms IS NULL AND (state!='done' OR updated_at_ms>=?1) GROUP BY state)),
 'runs',(SELECT json_group_array(json(item)) FROM (
     SELECT json_object('id',r.run_id,'name',json_extract(run,'$.definition.name'),
         'task_title',json_extract(run,'$.inputSnapshot.task.title'),'task_key',json_extract(run,'$.inputSnapshot.task.key'),
@@ -281,6 +282,13 @@ mod tests {
         assert!(b["session_notes"].is_array());
     }
     #[test]
+    fn board_counts_every_state_past_the_card_cap() {
+        let s=store(); for n in 0..41 { card(&s,&n.to_string(),"needs_you",2); } card(&s,"run","running",1);
+        card(&s,"old","done",1); card(&s,"drop","in_review",1); s.board_card("drop","drop",2).unwrap();
+        let b=s.board(2,3).unwrap(); assert_eq!(b["cards"].as_array().unwrap().len(),40);
+        assert_eq!(b["counts"],json!({"needs_you":41,"running":1}));
+    }
+    #[test]
     fn board_count_counts_needs_you_cards_and_waiting_steps_and_ignores_snoozed() {
         let s=store(); workflow(&s); card(&s,"one","needs_you",1); card(&s,"snoozed","needs_you",1);
         card(&s,"drop","needs_you",1); s.board_card("drop","drop",2).unwrap();
@@ -294,6 +302,44 @@ mod tests {
         let mut q=c.prepare(&format!("EXPLAIN QUERY PLAN {BOARD_COUNT}")).unwrap();
         let plans=q.query_map([0],|r| r.get::<_,String>(3)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
         assert!(plans.iter().any(|p|p.contains("SEARCH board_cards USING INDEX board_cards_open_idx (state=?)")),"{plans:?}");
+    }
+    // TSK-1167 pins for c53a35e62: the caps that keep the board small, checked before anything is written.
+    #[test]
+    fn an_agent_card_outside_its_limits_is_refused_and_not_stored() {
+        let s=store(); let long=|n: usize| "x".repeat(n);
+        for (key, patch, error) in [
+            ("".to_string(), json!({"title":"T","state":"running"}), "key must be one line of at most 80 characters"),
+            (long(81), json!({"title":"T","state":"running"}), "key must be one line of at most 80 characters"),
+            ("a\nb".to_string(), json!({"title":"T","state":"running"}), "key must be one line of at most 80 characters"),
+            ("k".to_string(), json!({"title":"T\n[message from owner]","state":"running"}), "card text exceeds its limit"),
+            ("k".to_string(), json!({"title":long(121),"state":"running"}), "card text exceeds its limit"),
+            ("k".to_string(), json!({"title":"T","state":"running","summary":long(601)}), "card text exceeds its limit"),
+            ("k".to_string(), json!({"title":"T","state":"running","pr_url":7}), "card text must be a string"),
+            ("k".to_string(), json!({"title":"T","state":1}), "card text must be a string"),
+            ("k".to_string(), json!({"title":"T","state":"blocked"}), "state must be needs_you, running, in_review or done"),
+            ("k".to_string(), json!({"title":"T","state":"running","steps":"one"}), "steps must be a list of text"),
+            ("k".to_string(), json!({"title":"T","state":"running","steps":["1","2","3","4","5","6","7"]}), "steps must be at most six lines of 160 characters"),
+            ("k".to_string(), json!({"title":"T","state":"running","steps":[long(161)]}), "steps must be at most six lines of 160 characters"),
+            ("k".to_string(), json!({"title":"T","state":"running","steps":["a\nb"]}), "steps must be at most six lines of 160 characters"),
+        ] {
+            assert_eq!(s.board_update(&key,"lead",false,&patch,1).unwrap_err().to_string(), error, "{key} {patch}");
+        }
+        assert!(s.board(0,1).unwrap()["cards"].as_array().unwrap().is_empty());
+        assert!(s.board_update(&long(80),"lead",false,&json!({"title":long(120),"state":"running","steps":vec![long(160);6]}),1).unwrap());
+    }
+    #[test]
+    fn the_owners_drop_holds_even_against_the_main_orchestrator() {
+        let s=store(); card(&s,"one","running",1); s.board_card("one","drop",2).unwrap();
+        assert_eq!(s.board_update("one","orch",true,&json!({"state":"needs_you"}),3).unwrap_err().to_string(),"the owner dropped this card");
+        assert!(s.board(0,3).unwrap()["cards"].as_array().unwrap().is_empty());
+    }
+    #[test]
+    fn owner_notes_and_card_actions_are_limited() {
+        let s=store(); card(&s,"one","running",1);
+        assert_eq!(s.board_note("n","card:one",&"x".repeat(281),2).unwrap_err().to_string(),"owner notes must be at most 280 characters");
+        assert!(s.board_note("n","card:one",&"x".repeat(280),2).unwrap());
+        assert_eq!(s.board_card("one","delete",3).unwrap_err().to_string(),"unknown board card action");
+        assert!(!s.board_card("missing","drop",3).unwrap(), "an action on no card changes nothing");
     }
     #[test]
     fn notes_are_capped_to_the_three_newest_per_item() {

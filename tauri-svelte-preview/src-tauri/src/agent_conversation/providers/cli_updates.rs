@@ -201,6 +201,17 @@ mod tests {
             "An update for codex on agent-workbox is already running."
         );
     }
+    // Protects ecd21d542: a finished (or failed) update frees its slot, and an
+    // update on one machine never blocks the same provider on another.
+    #[test]
+    fn finished_update_frees_its_slot_and_other_machines_are_independent() {
+        let first = PendingCliUpdate::claim("pin-test-machine-a", "claude").unwrap();
+        let other_machine = PendingCliUpdate::claim("pin-test-machine-b", "claude").unwrap();
+        drop(first);
+        let _again = PendingCliUpdate::claim("pin-test-machine-a", "claude").unwrap();
+        assert!(PendingCliUpdate::claim("pin-test-machine-b", "claude").is_err());
+        drop(other_machine);
+    }
     #[tokio::test]
     async fn invalid_update_never_starts_a_shell() {
         assert!(run_cli(None, "claude && false", true)

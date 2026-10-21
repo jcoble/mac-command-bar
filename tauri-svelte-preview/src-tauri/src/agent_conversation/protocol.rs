@@ -465,10 +465,10 @@ pub enum AgentConversationPayload {
         #[serde(default)]
         attachment_ids: Vec<String>,
     },
-    AssistantDelta {
-        item_id: String,
-        delta: String,
-    },
+    AssistantDelta { item_id: String, delta: String },
+    /// The backend marked this finished helper done with this stored ISO stamp.
+    SessionCompleted { completed_at: String },
+
     AssistantMessage {
         item_id: String,
         text: String,

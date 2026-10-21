@@ -32,7 +32,8 @@
     selectedConversationChat,
     selectedConversationChatReady,
     pageSelectedConversation,
-    jumpSelectedConversationToLatest
+    jumpSelectedConversationToLatest,
+    trimSelectedConversationToLatest
   } from '$lib/shell/conversation/conversationConnection.ts';
   import {
     conversationMessagesContext,
@@ -342,6 +343,7 @@
         loadingOlder={childConversation.selectedLoadingOlder}
         pageError={childConversation.selectedPageError}
         onLoadOlder={() => void pageSelectedConversation('older', historyOwnedId)}
+        onReturnToLatest={() => void trimSelectedConversationToLatest(historyOwnedId)}
         hasNewer={childConversation.selectedHasAfter}
         loadingNewer={childConversation.selectedLoadingNewer}
         onLoadNewer={() => void pageSelectedConversation('newer', historyOwnedId)}

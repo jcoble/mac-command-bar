@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -130,5 +130,32 @@ test('remote download verifier rejects changed, truncated, and unexpected archiv
     await assert.rejects(run(unexpected, unexpectedBytes.length, createHash('sha256').update(unexpectedBytes).digest('hex')), /Unexpected backend archive entry/);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('the install script writes the token file readable only by its owner from the moment it exists', async () => {
+  const home = await mkdtemp(path.join(tmpdir(), 'assembly-remote-token-test-'));
+  try {
+    const start = REMOTE_BACKEND_INSTALL_SCRIPT.indexOf('token=$(');
+    const endMarker = 'mv "$HOME/.config/assembly/.server.env.new" "$HOME/.config/assembly/server.env"\n';
+    const end = REMOTE_BACKEND_INSTALL_SCRIPT.indexOf(endMarker);
+    assert.ok(start > 0 && end > start, 'token block exists');
+    const tokenBlock = REMOTE_BACKEND_INSTALL_SCRIPT.slice(start, end + endMarker.length);
+    const token = 'a'.repeat(64);
+    await mkdir(path.join(home, '.config', 'assembly'), { recursive: true });
+    await writeFile(path.join(home, '.config', 'assembly', 'server.env'), `ASSEMBLY_SERVER_TOKEN=${token}\n`);
+    // A stand-in `cat` reports the file's permissions while the token is being written into it.
+    const bin = path.join(home, 'bin');
+    await mkdir(bin);
+    await writeFile(path.join(bin, 'cat'), '#!/bin/sh\nexec 3>&1\nls -lL /dev/fd/3 | cut -c1-10 >"$HOME/mode-while-writing"\nexec /bin/cat "$@"\n', { mode: 0o755 });
+    await execFileAsync('sh', ['-c', `set -eu\numask 022\n${tokenBlock}`], {
+      env: { HOME: home, PATH: `${bin}:/usr/bin:/bin` }
+    });
+    assert.equal((await readFile(path.join(home, 'mode-while-writing'), 'utf8')).trim(), '-rw-------');
+    const saved = path.join(home, '.config', 'assembly', 'server.env');
+    assert.equal((await stat(saved)).mode & 0o777, 0o600);
+    assert.match(await readFile(saved, 'utf8'), new RegExp(`ASSEMBLY_SERVER_TOKEN=${token}\n`));
+  } finally {
+    await rm(home, { recursive: true, force: true });
   }
 });

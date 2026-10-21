@@ -10,11 +10,12 @@ use rusqlite::{
 };
 use serde::Serialize;
 
-mod board;
+mod board; mod helpers;
 mod evidence;
+mod lookup;
 mod phone;
-
-const SCHEMA_VERSION: i64 = 21;
+mod projects;
+const SCHEMA_VERSION: i64 = 22;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 static SESSION_STORE_ACTIVE_READS: AtomicUsize = AtomicUsize::new(0);
@@ -32,19 +33,19 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );";
 /// Event kinds where only the newest row still means anything.
 ///
-/// Both are running state rather than history: the conversation reads each one
-/// into a single value and the next one overwrites it, and neither is ever drawn
-/// in the transcript. Keeping every tick of them was two thirds of every row in
-/// the database — one session held two hundred and seventy-nine rows to carry a
-/// twenty-three message conversation — and dropping the older ones leaves what
-/// is read back byte for byte the same.
+/// All are running state rather than history: the conversation reads each one
+/// into a single value and the next one overwrites it, and none is ever drawn
+/// in the transcript (only the newest command list is read). Keeping every tick
+/// of them was two thirds of every row in the database — one session held two
+/// hundred and seventy-nine rows to carry a twenty-three message conversation —
+/// and dropping the older ones leaves what is read back byte for byte the same.
 ///
 /// `content.delta` is deliberately not here. It looks like the same kind of
 /// noise and is not: replies streamed before each one also ended as a whole
 /// message are stored only as deltas, so deleting them would delete half of
 /// those conversations. Those are worth merging one day, which is a rewrite
 /// rather than a delete.
-const SUPERSEDED_BY_NEWER: [&str; 2] = ["usage.updated", "session.config.updated"];
+const SUPERSEDED_BY_NEWER: [&str; 3] = ["usage.updated", "session.config.updated", "commands.updated"];
 
 /// Tool updates cannot join `SUPERSEDED_BY_NEWER` because they share one event
 /// kind and must instead be superseded per item within each session.
@@ -1844,6 +1845,7 @@ impl SessionStore {
                 add_evidence_artifact_schema(&transaction)?;
                 add_notion_task_projection_schema(&transaction)?;
                 upgrade_tool_events(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -1873,6 +1875,7 @@ impl SessionStore {
                 add_evidence_artifact_schema(&transaction)?;
                 add_notion_task_projection_schema(&transaction)?;
                 upgrade_tool_events(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -1897,6 +1900,7 @@ impl SessionStore {
                 add_evidence_artifact_schema(&transaction)?;
                 add_notion_task_projection_schema(&transaction)?;
                 upgrade_tool_events(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -1919,6 +1923,7 @@ impl SessionStore {
                 add_evidence_artifact_schema(&transaction)?;
                 add_notion_task_projection_schema(&transaction)?;
                 upgrade_tool_events(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -1937,6 +1942,7 @@ impl SessionStore {
                 add_evidence_artifact_schema(&transaction)?;
                 add_notion_task_projection_schema(&transaction)?;
                 upgrade_tool_events(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -1958,6 +1964,7 @@ impl SessionStore {
                 add_evidence_artifact_schema(&transaction)?;
                 add_notion_task_projection_schema(&transaction)?;
                 upgrade_tool_events(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -1975,6 +1982,7 @@ impl SessionStore {
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
                 upgrade_tool_events(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -1989,6 +1997,7 @@ impl SessionStore {
                     .map_err(|error| StoreError::sqlite("could not begin remote history upgrade", error))?;
                 add_remote_history_column(&transaction)?;
                 upgrade_tool_events(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| StoreError::sqlite("could not record remote history upgrade", error))?;
                 transaction.commit().map_err(|error| StoreError::sqlite("could not finish remote history upgrade", error))?;
@@ -1997,6 +2006,7 @@ impl SessionStore {
                 let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(|error| StoreError::sqlite("could not begin the tool normalization upgrade", error))?;
                 upgrade_tool_events(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| StoreError::sqlite("could not record the tool normalization upgrade", error))?;
                 transaction.commit()
@@ -2006,6 +2016,7 @@ impl SessionStore {
                 let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(|error| StoreError::sqlite("could not begin the item page upgrade", error))?;
                 add_tool_item_schema(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| StoreError::sqlite("could not record the item page upgrade", error))?;
                 transaction.commit()
@@ -2017,6 +2028,7 @@ impl SessionStore {
                     .map_err(|error| StoreError::sqlite("could not begin the child session upgrade", error))?;
                 add_child_session_schema(&transaction)?;
                 replace_replay_page_index(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| StoreError::sqlite("could not record the child session upgrade", error))?;
@@ -2028,6 +2040,7 @@ impl SessionStore {
                 let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(|error| StoreError::sqlite("could not begin the replay item upgrade", error))?;
                 replace_replay_page_index(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| StoreError::sqlite("could not record the replay item upgrade", error))?;
                 transaction.commit()
@@ -2037,12 +2050,24 @@ impl SessionStore {
                 let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(|error| StoreError::sqlite("could not begin the project upgrade", error))?;
                 add_project_schema(&transaction)?;
+                clear_superseded_events(&transaction)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| StoreError::sqlite("could not record the project upgrade", error))?;
                 transaction.commit()
                     .map_err(|error| StoreError::sqlite("could not finish the project upgrade", error))?;
             }
-            20 | SCHEMA_VERSION => {}
+            20 | 21 => {
+                // Live writes kept every superseded row until version 22; this
+                // drops them once, in the same change that records the version.
+                let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| StoreError::sqlite("could not begin the journal prune", error))?;
+                clear_superseded_events(&transaction)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| StoreError::sqlite("could not record the journal prune", error))?;
+                transaction.commit()
+                    .map_err(|error| StoreError::sqlite("could not finish the journal prune", error))?;
+            }
+            SCHEMA_VERSION => {}
             _ => {
                 return Err(StoreError::message(
                     "the session database schema version is not supported",
@@ -2080,7 +2105,7 @@ impl SessionStore {
     }
 
     /// Saves the row and optional event atomically: a failed event cannot leave the row ahead.
-    /// Do not trim old events: bounded history reads need them when the person scrolls back.
+    /// Drops only the rows the event replaces; history paging needs the rest.
     pub fn upsert_session_with_event(
         &self,
         session: &SessionRow,
@@ -2591,11 +2616,11 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not match folders to projects", error))
     }
 
-    /// Folders the path rules left unmatched, matched to the oldest local
+    /// Folders the path rules left unmatched, matched to the oldest registered
     /// project whose root shares their git common directory. Both arguments
-    /// are JSON arrays of `[path, common_dir]`: the folders, and the local
-    /// project roots.
-    pub fn match_folders_by_common_dir(&self, folders_json: &str, roots_json: &str) -> Result<Vec<(String, String)>> {
+    /// are JSON arrays of `[path, common_dir]`: the folders, and the registered
+    /// project roots on the specified machine.
+    pub fn match_folders_by_common_dir(&self, folders_json: &str, roots_json: &str, machine: &str) -> Result<Vec<(String, String)>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
@@ -2604,7 +2629,7 @@ impl SessionStore {
                  SELECT folder, project_id FROM (
                     SELECT f.folder, (
                         SELECT p.id FROM projects p JOIN r ON r.root = p.root_path
-                        WHERE p.machine = 'local' AND r.common = f.common
+                        WHERE p.machine = ?3 AND r.common = f.common
                         ORDER BY p.created_at, p.id
                         LIMIT 1
                     ) AS project_id
@@ -2613,23 +2638,10 @@ impl SessionStore {
             )
             .map_err(|error| StoreError::sqlite("could not prepare the common-dir match", error))?;
         let rows = statement
-            .query_map([folders_json, roots_json], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map(params![folders_json, roots_json, machine], |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|error| StoreError::sqlite("could not match folders by git common dir", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not match folders by git common dir", error))
-    }
-
-    /// The root folders of this Mac's projects.
-    pub fn local_project_roots(&self) -> Result<Vec<String>> {
-        let connection = self.lock()?;
-        let mut statement = connection
-            .prepare("SELECT root_path FROM projects WHERE machine = 'local' ORDER BY created_at, id")
-            .map_err(|error| StoreError::sqlite("could not prepare the project roots", error))?;
-        let rows = statement
-            .query_map([], |row| row.get(0))
-            .map_err(|error| StoreError::sqlite("could not list the project roots", error))?;
-        rows.collect::<rusqlite::Result<_>>()
-            .map_err(|error| StoreError::sqlite("could not list the project roots", error))
     }
 
     /// The distinct folders of local sessions that have no project yet.
@@ -3404,35 +3416,7 @@ impl SessionStore {
                 ],
             )
             .map_err(|error| StoreError::sqlite("could not append the event", error))?;
-        // Written in the same transaction as the row that supersedes them, so
-        // the database is never briefly missing the value they carried.
-        if SUPERSEDED_BY_NEWER.contains(&row.kind.as_str()) {
-            transaction
-                .execute(
-                    "DELETE FROM events
-                     WHERE owned_id = ? AND kind = ? AND seq < ?",
-                    params![row.owned_id, row.kind, row.seq],
-                )
-                .map_err(|error| {
-                    StoreError::sqlite("could not drop the superseded events", error)
-                })?;
-        }
-        if row.kind == "item.updated" {
-            transaction
-                .execute(
-                    "DELETE FROM events
-                     WHERE owned_id = ?
-                       AND kind = 'item.updated'
-                       AND item_id = json_extract(?, '$.payload.itemId')
-                       AND json_extract(payload, '$.payload.kind') = 'tool'
-                       AND json_extract(?, '$.payload.kind') = 'tool'
-                       AND seq < ?",
-                    params![row.owned_id, row.payload_json, row.payload_json, row.seq],
-                )
-                .map_err(|error| {
-                    StoreError::sqlite("could not drop the superseded tool updates", error)
-                })?;
-        }
+        drop_superseded_events(&transaction, row)?;
         let updated = transaction
             .execute(
                 "UPDATE sessions
@@ -4407,10 +4391,38 @@ fn insert_chronological_event(connection: &Connection, row: &EventRow) -> Result
             ],
         )
         .map_err(|error| StoreError::sqlite("could not append the event", error))?;
+    // After the insert: the normalized tool insert reads the older rows to
+    // merge their facts into the new one before they go.
+    drop_superseded_events(connection, row)
+}
+
+/// Deletes the rows `row` replaces: older rows of a `SUPERSEDED_BY_NEWER` kind
+/// and the updates of the same tool between its first and newest (the first
+/// keeps the tool's place for raw-event readers: the phone, remote replay).
+/// Runs in the writer's transaction, so the database never lacks their value.
+fn drop_superseded_events(connection: &Connection, row: &EventRow) -> Result<()> {
+    if SUPERSEDED_BY_NEWER.contains(&row.kind.as_str()) {
+        connection
+            .execute("DELETE FROM events WHERE owned_id = ? AND kind = ? AND seq < ?", params![row.owned_id, row.kind, row.seq])
+            .map_err(|error| StoreError::sqlite("could not drop the superseded events", error))?;
+    }
+    if row.kind == "item.updated" {
+        connection
+            .execute(
+                "DELETE FROM events
+                 WHERE owned_id = ? AND kind = 'item.updated' AND item_id = json_extract(?, '$.payload.itemId')
+                   AND json_extract(payload, '$.payload.kind') = 'tool' AND json_extract(?, '$.payload.kind') = 'tool'
+                   AND seq < ? AND seq > (SELECT MIN(first.seq) FROM events AS first
+                       WHERE first.owned_id = events.owned_id AND first.kind = 'item.updated' AND first.item_id = events.item_id)",
+                params![row.owned_id, row.payload_json, row.payload_json, row.seq],
+            )
+            .map_err(|error| StoreError::sqlite("could not drop the superseded tool updates", error))?;
+    }
     Ok(())
 }
 
-/// Keeps only the newest row of each superseded kind, per session.
+/// Keeps only the newest row of each superseded kind, per session, and the
+/// first and newest update of each tool.
 ///
 /// Runs on the caller's connection or transaction, so an upgrade can do it as
 /// part of the same durable change that records the new schema version.
@@ -4442,7 +4454,10 @@ fn clear_superseded_events(connection: &Connection) -> Result<()> {
                      AND newest.kind = events.kind
                      AND newest.item_id = events.item_id
                      AND json_extract(newest.payload, '$.payload.kind') = 'tool'
-               )",
+               )
+               AND seq > (SELECT MIN(first.seq) FROM events AS first
+                   WHERE first.owned_id = events.owned_id AND first.kind = events.kind
+                     AND first.item_id = events.item_id)",
             [],
         )
         .map_err(|error| {
@@ -4581,58 +4596,14 @@ fn add_notion_task_projection_schema(connection: &Connection) -> Result<()> {
 }
 
 /// Writes every persisted session field on the caller's connection or transaction.
-/// Where the transcript importer records how far back through a past transcript
-/// a session has been read.
-const IMPORT_CURSOR_KEY: &str = "import";
-
-/// The session's stored metadata, with an import cursor it already had carried
-/// forward when the writer did not bring one.
 ///
-/// Only the importer writes this key. Every other writer rebuilds `extra` from
-/// the fields the runtime knows about — generation, owner, config, capabilities,
-/// rail metadata — and the cursor is not among them, so an ordinary save deleted
-/// it. Resuming a past session does both at once: it reads the transcript and it
-/// starts the agent, and whichever finished second decided whether reading the
-/// transcript worked at all. When it lost, the reader got "Session has no import
-/// cursor" instead of a conversation.
-///
-/// Saving is not a decision to forget. A writer that supplies its own cursor
-/// still wins; this only refuses to drop one on the floor.
-fn extra_json_keeping_import_cursor(connection: &Connection, row: &SessionRow) -> Result<String> {
-    let Ok(serde_json::Value::Object(mut next)) =
-        serde_json::from_str::<serde_json::Value>(&row.extra_json)
-    else {
-        return Ok(row.extra_json.clone());
-    };
-    if next.contains_key(IMPORT_CURSOR_KEY) {
-        return Ok(row.extra_json.clone());
-    }
-    let stored: Option<String> = connection
-        .query_row(
-            "SELECT extra FROM sessions WHERE owned_id = ?",
-            params![row.owned_id],
-            |stored| stored.get(0),
-        )
-        .optional()
-        .map_err(|error| StoreError::sqlite("could not read the stored session metadata", error))?;
-    let Some(stored) = stored else {
-        return Ok(row.extra_json.clone());
-    };
-    let Ok(serde_json::Value::Object(previous)) =
-        serde_json::from_str::<serde_json::Value>(&stored)
-    else {
-        return Ok(row.extra_json.clone());
-    };
-    let Some(cursor) = previous.get(IMPORT_CURSOR_KEY) else {
-        return Ok(row.extra_json.clone());
-    };
-    next.insert(IMPORT_CURSOR_KEY.to_string(), cursor.clone());
-    serde_json::to_string(&serde_json::Value::Object(next))
-        .map_err(|_| StoreError::message("could not encode the session metadata"))
-}
-
+/// `extra.import` is the transcript importer's cursor, and only the importer
+/// writes it. Every other writer rebuilds `extra` from what the runtime knows,
+/// which never includes the cursor, so a plain overwrite deleted it and a
+/// resumed session then failed with "Session has no import cursor". The update
+/// keeps a stored cursor the writer did not bring; a writer that brings its own
+/// still wins. Done in SQL so a save never reads the stored metadata back.
 fn upsert_session_on(connection: &Connection, row: &SessionRow) -> Result<()> {
-    let extra_json = extra_json_keeping_import_cursor(connection, row)?;
     connection
         .execute(
             "INSERT INTO sessions (
@@ -4654,7 +4625,13 @@ fn upsert_session_on(connection: &Connection, row: &SessionRow) -> Result<()> {
                 suspended = excluded.suspended,
                 created_at = excluded.created_at,
                 last_activity_at = excluded.last_activity_at,
-                extra = excluded.extra,
+                extra = CASE
+                  WHEN NOT (json_valid(excluded.extra) AND json_valid(sessions.extra)) THEN excluded.extra
+                  WHEN json_type(excluded.extra) = 'object' AND json_type(sessions.extra) = 'object'
+                    AND json_type(excluded.extra, '$.import') IS NULL
+                    AND json_type(sessions.extra, '$.import') IS NOT NULL
+                  THEN json_set(excluded.extra, '$.import', json(sessions.extra -> '$.import'))
+                  ELSE excluded.extra END,
                 title_source = excluded.title_source,
                 project_id = COALESCE(sessions.project_id, excluded.project_id)",
             params![
@@ -4672,7 +4649,7 @@ fn upsert_session_on(connection: &Connection, row: &SessionRow) -> Result<()> {
                 row.suspended,
                 row.created_at_ms,
                 row.last_activity_at_ms,
-                extra_json,
+                row.extra_json,
                 row.title_source,
                 row.project_id,
             ],
@@ -5462,11 +5439,12 @@ mod tests {
         }
 
         let page = store.list_items_before("logical", i64::MAX, 512 * 1024, None).unwrap();
+        // Each command list replaces the one before it, so only generation 2's survives.
         assert_eq!(page.items.iter().map(|item| item.stable_id.as_str()).collect::<Vec<_>>(),
-            ["commands:1", "event:2", "commands:2", "event:5"]);
-        assert_eq!(page.items[0].first_sequence, 1);
-        assert_eq!(page.items[0].authority_sequence, Some(3));
-        assert_eq!(page.events.iter().map(|event| event.seq).collect::<Vec<_>>(), [2, 3, 4, 5]);
+            ["event:2", "commands:2", "event:5"]);
+        assert_eq!(page.items[1].first_sequence, 4);
+        assert_eq!(page.items[1].authority_sequence, Some(4));
+        assert_eq!(page.events.iter().map(|event| event.seq).collect::<Vec<_>>(), [2, 4, 5]);
         let newer = store.list_items_after("logical", 2, 512 * 1024, None).unwrap();
         assert_eq!(newer.items.iter().map(|item| item.stable_id.as_str()).collect::<Vec<_>>(),
             ["commands:2", "event:5"]);
@@ -5957,7 +5935,7 @@ mod tests {
             &serde_json::json!([["/work/wt/feature", "/work/repo/.git"], ["/tmp/x", "/tmp/x/.git"]]).to_string(),
             &serde_json::json!([
                 ["/work/wt/registered", "/work/repo/.git"], ["/work/repo", "/work/repo/.git"], ["/work/plain", "/work/plain/.git"]
-            ]).to_string(),
+            ]).to_string(), "local",
         ).unwrap();
         assert_eq!(by_common_dir, vec![("/work/wt/feature".to_owned(), "repo".to_owned())]);
 
@@ -6282,9 +6260,8 @@ mod tests {
         let events = store
             .list_events("session-a", i64::MIN, 100)
             .expect("list events");
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].seq, 3);
-        assert!(events[0].payload_json.contains(r#""status":"finished""#));
+        assert_eq!(events.iter().map(|event| event.seq).collect::<Vec<_>>(), [1, 3, 4]);
+        assert!(events[1].payload_json.contains(r#""status":"finished""#));
     }
 
     #[test]
@@ -6298,6 +6275,7 @@ mod tests {
             tool_event("session-a", 2, "item.updated", "tool-b", "started"),
             tool_event("session-a", 3, "item.updated", "tool-a", "finished"),
             tool_event("session-a", 4, "item.updated", "tool-b", "finished"),
+            tool_event("session-a", 5, "item.updated", "tool-a", "reported"),
         ] {
             store.append_event(&event).expect("append tool update");
         }
@@ -6307,7 +6285,7 @@ mod tests {
             .expect("list events");
         assert_eq!(
             events.iter().map(|event| event.seq).collect::<Vec<_>>(),
-            [3, 4]
+            [1, 2, 4, 5]
         );
     }
 
@@ -6472,10 +6450,10 @@ mod tests {
             .expect("list upgraded events");
         assert_eq!(
             events.iter().map(|event| event.seq).collect::<Vec<_>>(),
-            [3, 4]
+            [1, 3, 4]
         );
         let tool: serde_json::Value =
-            serde_json::from_str(&events[0].payload_json).expect("parse compacted tool");
+            serde_json::from_str(&events[1].payload_json).expect("parse compacted tool");
         assert_eq!(tool["payload"]["name"], "shell");
         assert_eq!(tool["payload"]["state"], "completed");
         assert_eq!(tool["payload"]["summary"], "working");

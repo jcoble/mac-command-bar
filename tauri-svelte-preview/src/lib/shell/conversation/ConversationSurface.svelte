@@ -47,7 +47,7 @@
     sendStructuredMessage,
     stopStructuredTurn
   } from '$lib/shell/conversation/conversationService';
-  import { selectedConversationChat, sendSelectedConversationMessage, pageSelectedConversation, jumpSelectedConversationToLatest } from '$lib/shell/conversation/conversationConnection';
+  import { selectedConversationChat, sendSelectedConversationMessage, pageSelectedConversation, jumpSelectedConversationToLatest, trimSelectedConversationToLatest } from '$lib/shell/conversation/conversationConnection';
   import {
     readAgentConversationConfig,
     setAgentConversationConfig,
@@ -723,7 +723,7 @@
     <section class="structured" data-testid="structured-conversation" aria-label={`${active.agent} conversation`}>
       {#if active.executionEnvironment === 'remote'}
         <div class="remote-location" title={remoteMachine?.sshTarget ?? undefined}>
-          Remote: {remoteMachine?.name ?? 'Saved machine'}{#if remoteMachine} ({remoteMachine.sshTarget}){/if} · {active.cwd}
+          Remote: {remoteMachine?.name ?? 'Saved machine'}{#if remoteMachine} ({remoteMachine.sshTarget}){/if} · {active.cwd}{#if remoteDisconnected} · Offline, showing the saved chat{/if}
         </div>
       {/if}
       {#if !appOwned}
@@ -770,7 +770,7 @@
         hasOlder={conversation.selectedHasBefore}
         loadingOlder={conversation.selectedLoadingOlder}
         pageError={conversation.selectedPageError}
-        onLoadOlder={() => void pageSelectedConversation('older')}
+        onLoadOlder={() => void pageSelectedConversation('older')} onReturnToLatest={() => void trimSelectedConversationToLatest()}
         hasNewer={conversation.selectedHasAfter}
         loadingNewer={conversation.selectedLoadingNewer}
         onLoadNewer={() => void pageSelectedConversation('newer')}

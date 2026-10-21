@@ -1,7 +1,10 @@
 //! One authenticated WebSocket boundary for conversations owned by a remote machine.
 
+mod handshake;
 mod history;
+mod relay_trust;
 mod transcripts;
+#[cfg(test)] mod routing_tests;
 pub(in crate::agent_conversation) mod install;
 pub(crate) mod install_flow;
 mod workspace;
@@ -26,7 +29,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(debug_assertions)]
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TungsteniteMessage};
+use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 
 use self::wire::{decode_history_chunk, parse_server_frame, send_client_frame,
     ClientFrame, RemoteCommand, RemoteResponse, ServerFrame};
@@ -65,7 +68,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 22;
+pub(super) const PROTOCOL_VERSION: u16 = 24;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -515,7 +518,8 @@ impl RemoteConnectionManager {
         status_sink: Arc<dyn Fn(RemoteConnectionStatus) + Send + Sync>,
         store: Arc<SessionStore>,
     ) -> Result<Self, String> {
-        let cached_sessions = read_cached_sessions(&store)?;
+        // A saved claim on one of this Mac's own session ids is dropped (see `may_route`).
+        let cached_sessions: Vec<_> = read_cached_sessions(&store)?.into_iter().filter(|session| matches!(store.get_session(&session.owned_id), Ok(None))).collect();
         let remote_sessions = cached_sessions
             .iter()
             .filter_map(|session| {
@@ -623,6 +627,7 @@ impl RemoteConnectionManager {
         profile_id: &str,
         sessions: &[AgentConversationSessionRecord],
     ) -> Result<(), String> {
+        let sessions = &sessions.iter().filter(|session| self.may_route(&session.owned_id, profile_id)).cloned().collect::<Vec<_>>();
         let incoming_ids = sessions.iter().map(|session| session.owned_id.as_str()).collect::<std::collections::HashSet<_>>();
         let mut next = self.cached_sessions();
         let mut moved = Vec::new();
@@ -689,23 +694,15 @@ impl RemoteConnectionManager {
 
     fn cache_session(&self, mut session: AgentConversationSessionRecord) -> Result<(), String> {
         session.execution_environment = ExecutionEnvironment::Remote;
-        let owned_id = session.owned_id.clone();
-        let profile_id = session
-            .remote_profile_id
-            .clone()
-            .ok_or_else(|| "Remote session did not identify its machine".to_string())?;
+        let profile_id = session.remote_profile_id.clone().ok_or_else(|| "Remote session did not identify its machine".to_string())?;
+        if !self.remember(session.owned_id.clone(), profile_id) {
+            return Err(format!("Remote session {} uses the id of another session", session.owned_id));
+        }
         let mut next = self.cached_sessions();
         next.retain(|stored| stored.owned_id != session.owned_id);
         next.push(session);
-        next.sort_by(|left, right| {
-            right
-                .last_activity_at_ms
-                .cmp(&left.last_activity_at_ms)
-                .then_with(|| left.owned_id.cmp(&right.owned_id))
-        });
-        self.save_cached_sessions(next)?;
-        self.remember(owned_id, profile_id);
-        Ok(())
+        next.sort_by(|left, right| right.last_activity_at_ms.cmp(&left.last_activity_at_ms).then_with(|| left.owned_id.cmp(&right.owned_id)));
+        self.save_cached_sessions(next)
     }
 
     fn forget_cached_session(&self, owned_id: &str) -> Result<(), String> {
@@ -968,9 +965,7 @@ impl RemoteConnectionManager {
         // A removal while this attempt was in flight wins: the profile neither
         // gets its client back nor any report or session from this attempt.
         self.adopt_client(&attempt, candidate)?;
-        for session in &sessions {
-            self.remember(session.owned_id.clone(), profile.id.clone());
-        }
+        sessions.retain(|session| self.remember(session.owned_id.clone(), profile.id.clone()));
         if let Some(client) = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clients.get_mut(&profile.id) {
             client.profile = Some(profile.clone());
         }
@@ -1169,11 +1164,20 @@ impl RemoteConnectionManager {
             .contains_key(owned_id)
     }
 
-    fn remember(&self, owned_id: impl Into<String>, profile_id: impl Into<String>) {
-        self.remote_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(owned_id.into(), profile_id.into());
+    /// A machine may route only ids that are neither this Mac's own sessions nor routed to another machine;
+    /// otherwise a hostile backend could list a local session's id and receive its prompts and approvals.
+    fn may_route(&self, owned_id: &str, profile_id: &str) -> bool {
+        let other_machine = self.remote_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(owned_id).is_some_and(|owner| owner != profile_id);
+        let allowed = !other_machine && matches!(self.store.get_session(owned_id), Ok(None));
+        if !allowed { eprintln!("Ignored remote session {owned_id} from {profile_id}: the id belongs to another session"); }
+        allowed
+    }
+
+    fn remember(&self, owned_id: impl Into<String>, profile_id: impl Into<String>) -> bool {
+        let (owned_id, profile_id) = (owned_id.into(), profile_id.into());
+        let allowed = self.may_route(&owned_id, &profile_id);
+        if allowed { self.remote_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(owned_id, profile_id); }
+        allowed
     }
 
     pub(crate) fn profile_for_owned_id(&self, owned_id: &str) -> Result<String, String> {
@@ -1200,12 +1204,14 @@ impl RemoteConnectionManager {
         })
     }
 
-    /// Carries one messaging operation from a session on `source` to the machines it concerns.
-    /// The desktop is the only router: remote machines reach each other through it. A sender's
-    /// label gets `@source` after its handle, so the receiver can answer it from anywhere.
-    async fn route_message(&self, source: &str, op: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+    /// Routes messages across machines with a replyable label identifying their source.
+    async fn route_message(&self, source: &str, op: &str, mut args: serde_json::Value) -> Result<serde_json::Value, String> {
         use serde_json::json;
+        relay_trust::prepare(&self.store, source, op, &mut args)?;
         match op {
+            "project_root" => self.store.project_root(if source == LOCAL_MACHINE { "local" } else { source },
+                args["project"].as_str().ok_or("project must be a project folder or title")?)
+                .map(|root| json!(root)).map_err(|error| error.to_string()),
             "directory" => {
                 let mut entries = Vec::new();
                 for machine in self.message_machines(source) {
@@ -1233,10 +1239,10 @@ impl RemoteConnectionManager {
                     }
                 };
                 let sender = args["sender"].as_str().unwrap_or_default();
-                let sender = match sender.split_once(" · ") {
+                let sender = if source != LOCAL_MACHINE { format!("{source}: {sender}") } else { match sender.split_once(" · ") {
                     Some((handle, label)) => format!("{handle}@{source} · {label}"),
                     None => format!("{sender}@{source}"),
-                };
+                }};
                 let id = self.message_machine(&machine, "enqueue",
                     json!({"to": name, "text": args["text"], "from": args["from"], "sender": sender, "role": args["role"]}), None).await?;
                 Ok(json!(format!("{machine}:{}", id.as_str().unwrap_or_default())))
@@ -1299,29 +1305,6 @@ impl RemoteConnectionManager {
         }
     }
 
-    /// One ordered page of agent-to-agent messages from `machine` or from this desktop and
-    /// every connected machine. Each message is stored once, on its receiver's machine, so the
-    /// pages merge in the requested order; a machine that cannot be reached is left out.
-    pub async fn list_messages(&self, machine: Option<&str>, args: serde_json::Value, request_id: u64) -> Vec<serde_json::Value> {
-        let machines = machine.map_or_else(|| self.message_machines(""), |machine| vec![machine.to_string()]);
-        let mut pages = Vec::new();
-        for machine in machines {
-            let Ok(serde_json::Value::Array(page)) = self.message_machine(&machine, "messages", args.clone(), Some(request_id)).await else { continue };
-            pages.push((machine, page));
-        }
-        merge_message_pages(pages, args["limit"].as_i64().unwrap_or(100).clamp(1, super::messaging::MAX_MESSAGE_PAGE) as usize, args["sort"].as_str().unwrap_or("time"))
-    }
-
-    pub async fn count_messages(&self, session: &str, after_ms: i64, request_id: u64) -> i64 {
-        let mut count = 0;
-        for machine in self.message_machines("") {
-            if let Ok(value) = self.message_machine(&machine, "count", serde_json::json!({"session":session,"after_ms":after_ms}), Some(request_id)).await {
-                count += value.as_i64().unwrap_or_default();
-            }
-        }
-        count
-    }
-
     /// Runs `work` until it ends or the desktop cancels `request_id`; a cancelled call gives `None`.
     pub(crate) async fn unless_cancelled<T>(&self, request_id: u64, work: impl std::future::Future<Output = T>) -> Option<T> {
         let mut cancellations = self.cancelled_requests.subscribe();
@@ -1338,7 +1321,7 @@ impl RemoteConnectionManager {
     }
 
     /// A frontend `request_id` is the wire id, so cancelling it stops the read on the server.
-    async fn message_machine(&self, machine: &str, op: &str, args: serde_json::Value, request_id: Option<u64>) -> Result<serde_json::Value, String> {
+    pub(crate) async fn message_machine(&self, machine: &str, op: &str, args: serde_json::Value, request_id: Option<u64>) -> Result<serde_json::Value, String> {
         if machine == LOCAL_MACHINE {
             let host = self.message_host.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
                 .ok_or("target machine not reachable: this desktop's sessions are not open yet")?;
@@ -1547,9 +1530,7 @@ impl RemoteConnectionManager {
                 session.remote_profile_id = Some(profile_id.clone());
             }
             self.replace_cached_profile_sessions(&profile_id, &sessions)?;
-            for session in &sessions {
-                self.remember(session.owned_id.clone(), profile_id.clone());
-            }
+            sessions.retain(|session| self.remember(session.owned_id.clone(), profile_id.clone()));
             all_sessions.extend(sessions);
         }
         if successful_profiles > 0 || first_error.is_none() {
@@ -2910,29 +2891,19 @@ async fn client_loop(
     let mut failed_connections = 0_u8;
     loop {
         ready.store(false, Ordering::Release);
-        let mut request = match url.as_str().into_client_request() {
+        let (request, challenge) = match handshake::upgrade_request(&url) {
             Ok(request) => request,
-            Err(error) => {
-                fail_queued_requests(requests, format!("Invalid remote URL: {error}"));
-                return;
-            }
+            Err(error) => { fail_queued_requests(requests, error); return; }
         };
-        let auth = format!("Bearer {token}");
-        match auth.parse() {
-            Ok(value) => {
-                request.headers_mut().insert("authorization", value);
-            }
-            Err(error) => {
-                fail_queued_requests(requests, format!("Invalid remote token: {error}"));
-                return;
-            }
-        }
         let connected = tokio_tungstenite::connect_async_with_config(request, None, true).await;
         let (mut socket, _) = match connected {
             Ok(socket) => socket,
             Err(error) => {
                 if let Some(reply) = initial_ready.take() {
-                    let _ = reply.send(Err(format!("Backend connection/authentication failed: {error}")));
+                    let message = if matches!(&error, tokio_tungstenite::tungstenite::Error::Http(response) if matches!(response.status().as_u16(), 401 | 426)) {
+                        "Remote backend needs an update: challenge authentication is required".to_string()
+                    } else { format!("Backend connection/authentication failed: {error}") };
+                    let _ = reply.send(Err(message));
                     return;
                 }
             failed_connections = failed_connections.saturating_add(1);
@@ -2944,15 +2915,7 @@ async fn client_loop(
             }
         };
         failed_connections = 0;
-        let handshake = tokio::time::timeout(Duration::from_secs(15), async {
-            let hello = socket.next().await.ok_or("Backend closed before protocol readiness")?
-                .map_err(|error| error.to_string())?;
-            match parse_server_frame(hello)? {
-                Some(ServerFrame::Ready { protocol_version }) if protocol_version == PROTOCOL_VERSION => Ok(()),
-                Some(ServerFrame::Ready { protocol_version }) => Err(if protocol_version > PROTOCOL_VERSION { format!("This Assembly client needs an update: backend protocol {protocol_version}, client protocol {PROTOCOL_VERSION}") } else { format!("Remote backend needs an update: protocol {protocol_version}, this Assembly requires {PROTOCOL_VERSION}") }),
-                _ => Err("Backend did not announce protocol readiness".into()),
-            }
-        }).await.unwrap_or_else(|_| Err("Backend readiness timed out".into()));
+        let handshake = handshake::sign_in(&mut socket, &token, &challenge).await;
         if let Err(error) = handshake {
             if let Some(reply) = initial_ready.take() { let _ = reply.send(Err(error.clone())); }
             fail_queued_requests(requests, error);
@@ -3151,7 +3114,7 @@ async fn client_loop(
                                 Err(error) => { interruption = error; break 'connected; }
                             }
                         }
-                        ServerFrame::Ready { protocol_version } if protocol_version != PROTOCOL_VERSION => {
+                        ServerFrame::Ready { protocol_version, .. } if protocol_version != PROTOCOL_VERSION => {
                             for (_, reply) in pending.drain() {
                                 let _ = reply.send(Err(format!("Unsupported remote protocol {protocol_version}")));
                             }
@@ -3325,7 +3288,7 @@ mod connection_tests {
     use super::*;
     use super::super::protocol::{BackgroundWorkItem, BackgroundWorkKind};
 
-    fn add_session(manager: &AgentRuntimeManager, owned_id: &str, title: &str) {
+    pub(super) fn add_session(manager: &AgentRuntimeManager, owned_id: &str, title: &str) {
         manager.store().upsert_session(&mcb_core::session_store::SessionRow {
             owned_id: owned_id.into(), native_session_id: None, provider: "codex".into(), model: None,
             effort: None, cwd: "/work".into(), worktree: None, branch: None, title: Some(title.into()),
@@ -3336,7 +3299,7 @@ mod connection_tests {
     }
 
     /// A message's sender label and text, read from the store file, whatever delivery did to it since.
-    fn stored_message(database: &std::path::Path, id: &str) -> (String, String) {
+    pub(super) fn stored_message(database: &std::path::Path, id: &str) -> (String, String) {
         rusqlite::Connection::open(database).unwrap().query_row(
             "SELECT sender_name, body FROM workflow_messages WHERE id = ?", [id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
     }
@@ -3535,8 +3498,8 @@ mod connection_tests {
     }
 
     #[test]
-    fn history_download_protocol_22_round_trips_compressed_chunks() {
-        assert_eq!(PROTOCOL_VERSION, 22);
+    fn history_download_protocol_24_round_trips_compressed_chunks() {
+        assert_eq!(PROTOCOL_VERSION, 24);
         let rows = vec![history_event(3), history_event(-2)];
         let encoded = encode_history_chunk(&rows).unwrap();
         assert_eq!(decode_history_chunk(&encoded).unwrap(), rows);
@@ -3680,23 +3643,15 @@ mod connection_tests {
         use super::super::messaging::MessagingEndpoint;
         let directory = std::env::temp_dir().join(format!("assembly-message-relay-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
-        // The remote machine and its session.
         let remote = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("remote.db")).unwrap();
         add_session(&remote, "there", "There");
-        let state = ServerState {
-            workflow: crate::workflow::WorkflowEngine::managed(remote.clone(), remote.store_handle()),
-            manager: remote.clone(), data_dir: directory.clone(), token: Arc::from("test-token"),
-            maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
-            restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
-            events: broadcast::channel(2).0, terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(), phone_chats: Arc::default(),
-        };
+        let state = server_state(remote.clone(), directory.clone(), Arc::from("test-token")).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(axum::serve(listener, Router::new().route("/assembly", get(upgrade_remote_socket)).with_state(state.clone())).into_future());
         // The desktop and its session, connected to that machine as `workbox-test`.
         let desktop = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("desktop.db")).unwrap();
         add_session(&desktop, "here", "Here");
-        // Top-level sessions reach each other only through the main orchestrator.
         desktop.store().set_main_orchestrator(Some("here")).unwrap();
         let connections = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), desktop.store_handle()).unwrap();
         connections.set_message_host(desktop.clone());
@@ -3711,12 +3666,24 @@ mod connection_tests {
         ready_answer.await.unwrap().unwrap();
         connections.client.lock().unwrap().clients.insert("workbox-test".into(), RemoteClient {
             requests: Some(requests), profile: Some(profile("workbox-test")), target_key: None, task: None, ready });
-
-        // The remote session finds the desktop's session by its title, through the desktop.
+        connections.remember("there", "workbox-test");
         let there = MessagingEndpoint::start().unwrap();
         there.set_relay(state.relay.relay());
         let there_token = there.issue("there").token;
         there.bind_store(&there_token, &remote.store_handle(), None);
+        // The backend has no projects; the desktop owns registrations for each machine.
+        let root = directory.join(".assembly/workflows");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("flow.yml"), "name: Remote\nsteps:\n  check: { run: [ls] }\n").unwrap();
+        for (machine, path) in [("workbox-test", directory.display().to_string()), ("local", "/wrong/local".into()), ("other", "/wrong/other".into())] {
+            desktop.store().insert_or_get_project(&crate::project_folders::new_project_row(machine.into(),
+                crate::project_folders::ProjectFolderInspection { root_path: path, title: "remote-project".into(), repo_key: String::new(), is_git: false })).unwrap();
+        }
+        assert!(remote.store().project_roots("local").unwrap().is_empty());
+        for project in ["remote-project", directory.to_str().unwrap()] {
+            let checked = there.handle(&there_token, json!({"name":"check_workflow","arguments":{"project":project,"path":".assembly/workflows/flow.yml"}})).await.unwrap();
+            assert_eq!(checked["content"][0]["text"], "ok\ncheck run");
+        }
         let listing = tool(&there, &there_token, json!({"name":"list_sessions"})).await;
         let machine_of = |owned_id: &str| listing.as_array().unwrap().iter()
             .find(|entry| entry["ownedId"] == owned_id).map(|entry| entry["machine"].clone());
@@ -3727,13 +3694,14 @@ mod connection_tests {
         assert!(id.starts_with("mac:"), "{sent}");
         let (sender, body) = stored_message(&directory.join("desktop.db"), &id["mac:".len()..]);
         let there_handle = remote.store().directory_name("there").unwrap().unwrap().0;
-        assert_eq!(sender, format!("{there_handle}@workbox-test · There"));
+        assert_eq!(sender, format!("workbox-test: {there_handle} · There"));
         assert_eq!(body, "hello from there");
-        // These test machines run no agent, so delivery may already have failed it.
+        let traffic = connections.list_messages(None, json!({"session":"there","limit":10}), 90).await;
+        assert_eq!(traffic.len(), 1);
+        assert_eq!(traffic[0]["fromOwnedId"], "workbox-test:there");
+        assert_eq!(connections.count_messages("there", 0, 91).await, 1);
         let status = tool(&there, &there_token, json!({"name":"message_status","arguments":{"id":id}})).await;
         assert!(["queued", "delivered", "failed"].contains(&status["status"].as_str().unwrap()), "{status}");
-
-        // The desktop session answers the label it was given, and the reply lands in the remote store.
         let here = MessagingEndpoint::start().unwrap();
         here.set_relay(connections.message_relay(LOCAL_MACHINE));
         let here_token = here.issue("here").token;
@@ -3745,11 +3713,10 @@ mod connection_tests {
         let here_handle = desktop.store().directory_name("here").unwrap().unwrap().0;
         assert_eq!(sender, format!("{here_handle}@mac · Here"));
         assert_eq!(body, "hello back");
+        assert_eq!(connections.count_messages("here", 0, 92).await, 2);
         let status = tool(&here, &here_token, json!({"name":"message_status","arguments":{"id":reply_id}})).await;
         assert!(["queued", "delivered", "failed"].contains(&status["status"].as_str().unwrap()), "{status}");
-
-        // A machine that was away while the owner chose an orchestrator keeps its older mark
-        // until it connects; then the owner's latest choice is put back there.
+        // Reconnecting restores the latest orchestrator choice.
         connections.set_main_orchestrator(LOCAL_MACHINE, Some("here")).await.unwrap();
         remote.store().set_main_orchestrator(Some("there")).unwrap();
         connections.restore_orchestrator_choice("workbox-test").await;
@@ -3766,7 +3733,6 @@ mod connection_tests {
             connections.restore_orchestrator_choice("workbox-test"));
         chosen.unwrap();
         assert_eq!(remote.store().main_orchestrator().unwrap().map(|(id, _)| id).as_deref(), Some("there"));
-
         connections.client.lock().unwrap().clients.clear();
         actor.await.unwrap();
         server.abort();
@@ -4863,10 +4829,7 @@ mod connection_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(axum::serve(listener, Router::new().route("/assembly", get(upgrade_remote_socket)).with_state(state.clone())).into_future());
-        let mut request = format!("ws://{address}/assembly").into_client_request().unwrap();
-        request.headers_mut().insert("Authorization", "Bearer test-token".parse().unwrap());
-        let (mut client, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-        client.next().await.unwrap().unwrap(); // Ready; socket subscriptions now exist.
+        let mut client = handshake::test_client(&format!("ws://{address}/assembly")).await;
         for sequence in 1..=32 {
             let mut event = large_history_event(4 * 1024 * 1024);
             event.sequence = sequence;
@@ -4896,7 +4859,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn readiness_requires_protocol_and_session_response() {
-        assert_eq!(PROTOCOL_VERSION, 22);
+        assert_eq!(PROTOCOL_VERSION, 24);
         for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -4904,8 +4867,7 @@ mod connection_tests {
             let (release_tx, release_rx) = oneshot::channel();
             let server = tokio::spawn(async move {
                 let (stream, _) = listener.accept().await.unwrap();
-                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-                socket.send(TungsteniteMessage::Text(serde_json::to_string(&ServerFrame::Ready { protocol_version: version }).unwrap().into())).await.unwrap();
+                let mut socket = handshake::test_backend(stream, version).await;
                 if version != PROTOCOL_VERSION { return; }
                 let _resume = socket.next().await.unwrap().unwrap();
                 let request = socket.next().await.unwrap().unwrap();
@@ -4950,10 +4912,7 @@ mod connection_tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            socket.send(TungsteniteMessage::Text(serde_json::to_string(
-                &ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }
-            ).unwrap().into())).await.unwrap();
+            let mut socket = handshake::test_backend(stream, PROTOCOL_VERSION).await;
             let _resume = socket.next().await.unwrap().unwrap();
             let _readiness = socket.next().await.unwrap().unwrap();
             let request = socket.next().await.unwrap().unwrap();
@@ -4991,9 +4950,7 @@ mod connection_tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            socket.send(TungsteniteMessage::Text(serde_json::to_string(
-                &ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }).unwrap().into())).await.unwrap();
+            let mut socket = handshake::test_backend(stream, PROTOCOL_VERSION).await;
             assert!(matches!(serde_json::from_str::<ClientFrame>(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap(), ClientFrame::Resume { cursors } if cursors.is_empty()));
             let _readiness = socket.next().await.unwrap().unwrap();
             let mut first = large_history_event(32);
@@ -5011,9 +4968,7 @@ mod connection_tests {
             assert!(tokio::time::timeout(Duration::from_millis(100), socket.next()).await.is_err(), "events must not produce Ack frames");
             socket.close(None).await.unwrap();
             let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            socket.send(TungsteniteMessage::Text(serde_json::to_string(
-                &ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }).unwrap().into())).await.unwrap();
+            let mut socket = handshake::test_backend(stream, PROTOCOL_VERSION).await;
             let resume: ClientFrame = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
             assert!(matches!(resume, ClientFrame::Resume { cursors }
                 if cursors.get("large-history") == Some(&2) && cursors.get("other-history") == Some(&1)));
@@ -5160,9 +5115,7 @@ mod connection_tests {
             let saved = manager.clone();
             let server = tokio::spawn(async move {
                 let (stream, _) = listener.accept().await.unwrap();
-                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-                socket.send(TungsteniteMessage::Text(encode_server_frame(&ServerFrame::Ready {
-                    protocol_version: PROTOCOL_VERSION }).unwrap().into())).await.unwrap();
+                let mut socket = handshake::test_backend(stream, PROTOCOL_VERSION).await;
                 let resume: ClientFrame = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
                 assert!(matches!(resume, ClientFrame::Resume { cursors } if cursors == BTreeMap::from([("large-history".into(), 0)])));
                 let _readiness = socket.next().await.unwrap().unwrap();
@@ -5225,9 +5178,7 @@ mod connection_tests {
         let saved = manager.clone();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            socket.send(TungsteniteMessage::Text(encode_server_frame(&ServerFrame::Ready {
-                protocol_version: PROTOCOL_VERSION }).unwrap().into())).await.unwrap();
+            let mut socket = handshake::test_backend(stream, PROTOCOL_VERSION).await;
             let resume: ClientFrame = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
             assert!(matches!(resume, ClientFrame::Resume { cursors } if cursors.get("large-history") == Some(&10)));
             let _readiness = socket.next().await.unwrap().unwrap();
@@ -5376,10 +5327,7 @@ mod connection_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(axum::serve(listener, Router::new().route("/assembly", get(upgrade_remote_socket)).with_state(state.clone())).into_future());
-        let mut request = format!("ws://{address}/assembly").into_client_request().unwrap();
-        request.headers_mut().insert("authorization", "Bearer test-token".parse().unwrap());
-        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-        assert!(matches!(parse_server_frame(socket.next().await.unwrap().unwrap()).unwrap(), Some(ServerFrame::Ready { .. })));
+        let mut socket = handshake::test_client(&format!("ws://{address}/assembly")).await;
         send_client_frame(&mut socket, &ClientFrame::Resume { cursors: BTreeMap::from([("large-history".into(), 0)]) }).await.unwrap();
         let first = parse_server_frame(socket.next().await.unwrap().unwrap()).unwrap().unwrap();
         assert!(matches!(first, ServerFrame::ReplayStart { .. }));
@@ -5422,10 +5370,7 @@ mod connection_tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            socket.send(TungsteniteMessage::Text(serde_json::to_string(
-                &ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }
-            ).unwrap().into())).await.unwrap();
+            let mut socket = handshake::test_backend(stream, PROTOCOL_VERSION).await;
             let _resume = socket.next().await.unwrap().unwrap();
             let _readiness = socket.next().await.unwrap().unwrap();
             socket.send(TungsteniteMessage::Text(serde_json::to_string(

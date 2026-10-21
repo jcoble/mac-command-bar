@@ -45,6 +45,7 @@ import type {
   SourceTreeSearchPage,
   SourceWorkspaceSymbol
 } from './sourceData.ts';
+import { bridgeTokenHeader } from './devBridgeToken.ts';
 import { mapWorkspaceSnapshotPaths, parseRemoteWorkspacePath, remoteWorkspacePath } from './workspacePaths.ts';
 
 export const defaultSourceScanLimit = 10_000;
@@ -791,7 +792,7 @@ export async function validateProjectRootFromTauri(
     const result = await invoke<ProjectRootValidationResult | null>('validate_project_root', {
       path,
       generation
-    });
+    }, undefined, signal);
     return signal?.aborted ? null : result;
   } finally {
     signal?.removeEventListener('abort', cancel);
@@ -2307,7 +2308,7 @@ export async function listOwnerInboxFromTauri(signal: AbortSignal): Promise<Owne
 }
 
 /** Invokes a command that reads other machines; aborting `signal` cancels it there and returns null. */
-async function invokeCancellable<T>(command: string, args: Record<string, unknown>, signal: AbortSignal): Promise<T | null> {
+export async function invokeCancellable<T>(command: string, args: Record<string, unknown>, signal: AbortSignal): Promise<T | null> {
   if (!isTauriRuntime() || signal.aborted) return null;
   const requestId = createAgentConversationRequestId();
   const { invoke } = await import('./workspaceInvoke.ts');
@@ -3412,9 +3413,7 @@ async function postLocalSourceBridge<T>(
   try {
     response = await fetch(`/__mcb/source/${action}`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json'
-      },
+      headers: { 'content-type': 'application/json', ...bridgeTokenHeader() },
       body: JSON.stringify(payload)
     });
   } catch {
