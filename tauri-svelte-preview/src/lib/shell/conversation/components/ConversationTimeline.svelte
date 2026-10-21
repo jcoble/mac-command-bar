@@ -704,7 +704,7 @@
     <div class="timeline-list" data-testid="conversation-timeline-list" style:height={`${totalSize}px`}>
       {#each virtualRows as virtualRow (virtualRow.key)}
         {@const row = rows[virtualRow.index]}
-          <div class="turn-row" data-index={virtualRow.index} style:transform={`translateY(${virtualRow.start}px)`} use:measureRow class:compact-tool={row.item?.kind === 'tool' || !!row.run} data-row-key={row.key} data-anchor-item-id={row.anchorItemId} data-turn-id={row.group?.turnId} data-testid="conversation-timeline-row">
+          <div class="turn-row" data-index={virtualRow.index} style:top={`${virtualRow.start}px`} use:measureRow class:compact-tool={row.item?.kind === 'tool' || !!row.run} data-row-key={row.key} data-anchor-item-id={row.anchorItemId} data-turn-id={row.group?.turnId} data-testid="conversation-timeline-row">
             {#if row.run}
               <button class="run-header" data-run-id={row.run.itemId} type="button" aria-expanded={runOpen(row.run)} onclick={() => toggleRun(row.run!)}>
                 <span class="run-icon" aria-hidden="true">
