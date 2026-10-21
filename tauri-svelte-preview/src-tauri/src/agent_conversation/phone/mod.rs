@@ -2024,7 +2024,13 @@ mod tests {
         let mut turn = event(1, Payload::Turn { turn_id: "turn".into(), state: TurnState::Completed });
         turn.owned_id = "session-a".into();
         state.events.send(turn).unwrap();
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        // The worker handles one event at a time, so once it has taken this second one it is done with the reply.
+        state.events.send(event(2, Payload::Turn { turn_id: "turn".into(), state: TurnState::Started })).unwrap();
+        for _ in 0..200 {
+            if state.events.is_empty() { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(state.events.is_empty(), "the push worker never took the events");
         assert!(fake.messages.lock().unwrap().is_empty(), "a finished reply sent a push");
     }
 
