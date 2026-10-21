@@ -1,9 +1,9 @@
 name: Spec to PR
 # For a task whose body already holds a reviewed implementation spec.
-# Build, checks, code review, proof, PR, final review. The owner merges.
+# Build, checks, code review, proof, PR, final review, merge (unless the owner picks "I'll merge").
 inputs:
   task: { description: Notion task whose body is the reviewed spec, required: true }
-  i_merge: { description: "I'll merge", default: true }
+  i_merge: { description: "I'll merge", default: false }
 limits: { max_sessions: 2, step_timeout_minutes: 90, max_rounds: 4 }
 steps:
   build: { agent: { provider: claude, model: opus }, prompt: prompts/spec-build.md }
