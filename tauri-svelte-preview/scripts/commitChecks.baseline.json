@@ -41,7 +41,7 @@
     "tauri-svelte-preview/src-tauri/src/workflow/mod.rs": 5826,
     "tauri-svelte-preview/src/lib/shell/files/components/CodeMirrorSourceEditor.svelte": 1263,
     "tauri-svelte-preview/src/lib/SourceDockviewShell.svelte": 753,
-    "tauri-svelte-preview/src/lib/components/panels/ActivityFilesPanel.svelte": 1335,
+    "tauri-svelte-preview/src/lib/components/panels/ActivityFilesPanel.svelte": 1324,
     "tauri-svelte-preview/src/lib/components/panels/ActivityGitPanel.svelte": 1795,
     "tauri-svelte-preview/src/lib/components/panels/ActivityWorktreesPanel.svelte": 824,
     "tauri-svelte-preview/src/lib/components/panels/GitInsightsPanel.svelte": 1402,

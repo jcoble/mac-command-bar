@@ -47,6 +47,42 @@ test('rejects CSS :has selectors and Tailwind has variants', () => {
   assert.equal(hits.filter((hit) => hit.category === 'tailwind-has-variant').length, 6);
 });
 
+test('rejects animations that never end', () => {
+  const source = `
+.a { animation: spin 1s linear infinite; }
+.b { animation-iteration-count: INFINITE; }
+<span style:animation="pulse 2s infinite"></span>
+<span style="animation: fade 1s ease-in infinite alternate"></span>
+<div class="animate-spin"></div>
+<div class="motion-safe:animate-pulse"></div>
+<div class="animate-ping"></div>
+<div class="animate-bounce"></div>
+<span style:animation={"spin 1s infinite"}></span>
+<span style:animation-iteration-count={'infinite'}></span>
+<span style:animation|important="spin 1s infinite"></span>
+<span style:animation-iteration-count|important="infinite"></span>
+<span style:animation="spin {duration}s infinite"></span>
+`;
+  const hits = scanSource('src/fixture.svelte', source);
+  assert.deepEqual(hits.map((hit) => [hit.line, hit.category]), [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].map((line) => [line, 'endless-animation']));
+  assert.equal(scanSource('src/fixture.css', '.a { animation: spin 1s infinite; }')[0]?.category, 'endless-animation');
+  assert.equal(scanSource('src/fixture.css', '.a { animation: "spin" 1s infinite; }')[0]?.category, 'endless-animation');
+  const wrapped = '.a {\n  animation:\n    spin 1s infinite;\n}\n.b {\n  animation-iteration-count:\n    infinite;\n}';
+  assert.deepEqual(scanSource('src/fixture.css', wrapped).map((hit) => [hit.line, hit.category]), [[2, 'endless-animation'], [6, 'endless-animation']]);
+});
+
+test('allows animations that end', () => {
+  const source = `
+.pop { animation: pop 200ms ease-out; }
+.twice { animation-iteration-count: 2; }
+.named { animation: infinite-scroll 200ms var(--infinite-easing); }
+/* this used to be animation: spin 1s infinite */
+<span style:animation="pop 200ms ease-out" title="Infinite scroll">Infinite scroll</span>
+<div class="animate-in fade-in"></div>
+`;
+  assert.deepEqual(scanSource('src/fixture.svelte', source), []);
+});
+
 test('allows async implementations, Promise interfaces and ordinary CSS', () => {
   const source = `
 interface Loader { load(): Promise<string>; }
