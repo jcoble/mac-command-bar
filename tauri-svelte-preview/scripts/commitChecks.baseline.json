@@ -58,7 +58,7 @@
     "tauri-svelte-preview/src/lib/shell/conversation/components/ConversationComposer.svelte": 728,
     "tauri-svelte-preview/src/lib/shell/conversation/components/ConversationTimeline.svelte": 803,
     "tauri-svelte-preview/src/lib/shell/conversation/conversationConnection.ts": 948,
-    "tauri-svelte-preview/src/lib/shell/conversation/conversationService.ts": 1738,
+    "tauri-svelte-preview/src/lib/shell/conversation/conversationService.ts": 1737,
     "tauri-svelte-preview/src/lib/shell/conversation/conversationStore.svelte.ts": 1234,
     "tauri-svelte-preview/src/lib/shell/conversation/conversationTimeline.ts": 1401,
     "tauri-svelte-preview/src/lib/shell/conversation/conversationTypes.ts": 716,

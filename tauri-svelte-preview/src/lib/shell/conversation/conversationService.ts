@@ -1462,15 +1462,12 @@ async function waitFor(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Sends one message through the current writer while preserving attachment recovery. */
+/** Sends one message through the current writer while preserving attachment recovery; `withAttachments` false leaves the composer's screenshots. */
 export async function sendStructuredMessage(
   ownedId: string,
   text: string,
-  startConfig?: {
-    reasoningEffort?: string | null;
-    model?: string | null;
-    approvalPolicy?: string | null;
-  }
+  startConfig?: { reasoningEffort?: string | null; model?: string | null; approvalPolicy?: string | null },
+  withAttachments = true
 ): Promise<AgentConversationSendReceipt | undefined> {
   let state = getConversationSession(ownedId);
   if (!state) return;
@@ -1486,7 +1483,7 @@ export async function sendStructuredMessage(
   // for the transcript until the backend's copy of the message claims them —
   // recorded before the request, because the backend records and dispatches
   // its own copy while the request is still running.
-  const attachments = state.attachments;
+  const attachments = withAttachments ? state.attachments : [];
   const releaseHold = (): void => recordSentConversationAttachments(ownedId,
     (getConversationSession(ownedId)?.unclaimedSentAttachments ?? []).filter((held) => !attachments.some((item) => item.id === held.id)));
   if (attachments.length) {
@@ -1538,6 +1535,8 @@ export async function sendStructuredMessage(
           ? startConfig.reasoningEffort
           : state.agentConfig.reasoningEffort
       });
+      // The ensure applies only the selected chat's connection; a background session's (a Board answer) is applied here.
+      if (activated && rail.activeOwnedId !== ownedId) setConversationConnection(activated);
       const revived = getConversationSession(ownedId);
       const nextGeneration = generationForSend(previousGeneration, activated?.generation ?? -1);
       if (nextGeneration === null || !revived) {

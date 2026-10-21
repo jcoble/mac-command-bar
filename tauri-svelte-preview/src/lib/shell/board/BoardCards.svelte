@@ -16,6 +16,7 @@
   import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
   import { cn } from '$lib/utils.js';
   import BoardNotes from './BoardNotes.svelte';
+  import BoardQuestions from './BoardQuestions.svelte';
   import { changeBoardCard, type BoardCard, type BoardCardAction, type MachineBoard } from './boardSource.ts';
 
   interface Props {
@@ -50,6 +51,8 @@
   const entries = $derived(boards.flatMap((board) =>
     board.value.cards.map((card) => ({ id: `${board.machine}:${card.key}`, machine: board.machine, card }))));
   const done = $derived(inState('done'));
+  const questions = $derived(boards.flatMap((board) => board.value.questions ?? []));
+  const openQuestions = $derived(questions.filter((q) => q.answered_at_ms === null).length);
 
   const snoozed = (card: BoardCard): boolean => card.snoozed_until_ms !== null && card.snoozed_until_ms > Date.now();
   const isOpen = (entry: Entry): boolean => toggled[entry.id] ?? entry.card.state === 'needs_you';
@@ -238,11 +241,12 @@
 {/snippet}
 
 <div class="col" data-testid="board-cards">
-  {#if entries.length === 0 && dropped.length === 0}
+  {#if entries.length === 0 && dropped.length === 0 && questions.length === 0}
     <p class="muted px-1 py-6 text-center">No cards yet. Agents post them with the <code>board_update</code> tool.</p>
-  {:else if filter !== 'all' && !total(filter) && !inState(filter).length}
+  {:else if filter !== 'all' && !total(filter) && !inState(filter).length && !(filter === 'needs_you' && openQuestions)}
     <p class="muted px-1 py-6 text-center">No cards here.</p>
   {/if}
+  {#if filter === 'all' || filter === 'needs_you'}<BoardQuestions {boards} {filter} {signal} {onError} {onOpenSession} />{/if}
   {#each SECTIONS as section (section.state)}
     {@const list = inState(section.state)}
     {#if (filter === 'all' || filter === section.state) && (list.length || total(section.state))}
