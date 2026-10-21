@@ -28,12 +28,6 @@ const tailwindHasPattern = /\b(?:(?:group|peer)-)?has-(?:\[[^\]\r\n]+\]|[A-Za-z]
 // Animations end (AGENTS.md): an endless loop repaints every frame, so CSS, inline styles and the
 // Tailwind loop classes may not repeat forever. A value ends at a quote, except a quoted keyframe name, and
 // may hold Svelte {expressions}.
-// Only the files below are exempt, each with its reason.
-const endlessAnimationAllowedFiles = new Set([
-  // Owner-chosen working indicator (TSK-1391); pauses off screen, in a hidden window and with reduced
-  // motion; motion pending the owner's decision in TSK-1564.
-  'src/lib/shell/components/feedback/WorkingSpinner.svelte'
-]);
 const endlessAnimationPattern = /\banimation(?:-iteration-count)?(?:\|important)?\s*(?::|=\s*\{?\s*["'`]?)(?:[^;{}"'`<>]|\{[^{}"'`<>]*\}|(["'])[\w-]*\1)*?(?<![\w-])infinite(?![\w-])|\banimate-(?:spin|pulse|ping|bounce)\b/gi;
 
 const allowedHits = new Set([
@@ -328,8 +322,8 @@ function run(): void {
   const sourceFiles = staged ? [] : files(srcRoot).sort();
   const scan = staged ? scanStagedFiles() : { count: sourceFiles.length, hits: sourceFiles.flatMap(scanFile) };
   const hits = scan.hits.filter((hit) =>
-    hit.category === 'endless-animation' ? !endlessAnimationAllowedFiles.has(hit.file)
-    : hit.category.startsWith('css-')
+    hit.category === 'endless-animation'
+    || hit.category.startsWith('css-')
     || hit.category === 'tailwind-has-variant'
     || !allowedHits.has(`${hit.file}:${hit.term}:${hit.text}`)
   );
