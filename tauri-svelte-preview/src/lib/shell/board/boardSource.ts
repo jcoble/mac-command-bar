@@ -22,6 +22,11 @@ export type BoardStep = {
   workflow_name: string | null; task_key: string | null; updated_at_ms: number;
   notes: BoardNote[];
 };
+export type BoardQuestion = {
+  id: number; key: string; title: string; body: string; recommended: string | null;
+  session_owned_id: string; session_name: string | null; session_state: string | null;
+  answer: string | null; asked_at_ms: number; answered_at_ms: number | null;
+};
 export type MachineBoard = {
   machine: string;
   value: {
@@ -29,6 +34,8 @@ export type MachineBoard = {
     /** Every card per state, including those past the 40-card limit. */
     counts: Partial<Record<BoardCard['state'], number>>;
     session_notes: Array<{ target: string; notes: BoardNote[] }>;
+    /** Missing from a machine on an older build. */
+    questions?: BoardQuestion[];
   };
 };
 export type BoardCount = { count: number; snoozed_until_ms: number | null };
@@ -61,4 +68,10 @@ export async function addBoardNote(
   machine: string, target: string, body: string, nowMs: number, signal: AbortSignal
 ): Promise<boolean | null> {
   return board('board_note', { machine, target, body, now_ms: nowMs }, signal);
+}
+
+/** Records the owner's answer; false when the question was already answered. */
+export async function answerBoardQuestion(machine: string, id: number, answer: string, nowMs: number): Promise<boolean | null> {
+  // A recorded answer must not be cancelled halfway, so this takes no signal.
+  return invokeCancellable('board', { op: 'board_question', args: { machine, id, answer, now_ms: nowMs } }, new AbortController().signal);
 }

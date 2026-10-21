@@ -38,7 +38,7 @@
     "test:git-graph-view-model": "node --experimental-strip-types scripts/gitGraphViewModel.test.mjs",
     "test:git-task-links": "node --experimental-strip-types scripts/gitTaskLinks.test.mjs",
     "test:orchestration-event": "node scripts/orchestrationEvent.test.mjs",
-    "test:workflows": "node --experimental-strip-types scripts/workflowStepFacts.test.ts && node --experimental-strip-types scripts/workflowTimeline.test.ts && node --experimental-strip-types scripts/ownerInbox.test.ts && node --experimental-strip-types scripts/agentActivityModel.test.ts && node --import ./scripts/svelteRuneTestSetup.ts --experimental-strip-types scripts/workflowStore.test.ts",
+    "test:workflows": "node --experimental-strip-types scripts/workflowStepFacts.test.ts && node --experimental-test-module-mocks --experimental-strip-types src/lib/shell/workflows/ownerInboxActions.test.ts && node --experimental-strip-types scripts/workflowTimeline.test.ts && node --experimental-strip-types scripts/ownerInbox.test.ts && node --experimental-strip-types scripts/agentActivityModel.test.ts && node --import ./scripts/svelteRuneTestSetup.ts --experimental-strip-types scripts/workflowStore.test.ts",
     "test:board": "node --experimental-strip-types scripts/boardPopup.test.ts",
     "test:worktree-cleanup-plan": "node --experimental-strip-types scripts/worktreeCleanupPlan.test.mjs",
     "test:worktree-cleanup-runbook": "node --experimental-strip-types scripts/worktreeCleanupRunbook.test.mjs",

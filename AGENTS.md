@@ -232,3 +232,6 @@ one next to it doesn't. Before calling work done, name which of these you covere
   Helpers and workflow workers don't post. Key: the task key if there is one, else a name no other session would pick.
 - Post when you start, update when the state changes, and use `needs_you` only when the owner must act,
   with `steps` saying what to do. Link `run_id` and `pr_url`.
+- Record every question you ask the owner on the board before asking it, in the same turn (`board_update` with
+  `question`, `title`, `recommended`), and start the chat question with the `Q<n>` it returns. When it is answered
+  anywhere, mark it with `answer`; to ask it again, send a new `question` under the same key.

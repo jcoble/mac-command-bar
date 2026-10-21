@@ -6,7 +6,7 @@ use tokio::sync::broadcast::{error::RecvError, Receiver};
 pub fn tool() -> Value {
     json!({
         "name": "board_update",
-        "description": "Create or update a card on the owner's Build board. The session the owner gave a task to keeps one card for it; the main orchestrator may update any card. Helpers cannot post, and workflow workers should not: their parent's card or their run already shows. Key: the task key if there is one, otherwise a short name no other session would pick. Post when you start, update when the state changes, and use needs_you only when the owner must act, with steps saying what to do. Questions in your own session, approvals and workflow pauses already show.",
+        "description": "Create or update a card on the owner's Build board. The session the owner gave a task to keeps one card for it; the main orchestrator may update any card. Helpers cannot post, and workflow workers should not: their parent's card or their run already shows. Key: the task key if there is one, otherwise a short name no other session would pick. Post when you start, update when the state changes, and use needs_you only when the owner must act, with steps saying what to do. Record every question you ask the owner before you ask it, in the same turn: pass question (the explanation, with options, your recommendation and why, and PR, task and proof links), title and recommended. The reply gives its number n: start your chat question with Q<n>, since the owner's answer arrives as 'Q<n>: …'. When it is answered anywhere, call again with the same key and answer. To ask it again, call with the same key and a new question. Approvals and workflow pauses already show.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -26,7 +26,12 @@ pub fn tool() -> Value {
                 "pr_url": {"type": "string", "description": "The PR."},
                 "run_id": {"type": "string", "description": "A run on this machine."},
                 "session": {"type": "string",
-                    "description": "A session on this machine (handle or name); default the caller."}
+                    "description": "A session on this machine (handle or name); default the caller."},
+                "question": {"type": "string", "maxLength": 1200,
+                    "description": "Marks this call as a question; required to ask or re-ask. At most 1200."},
+                "recommended": {"type": "string", "maxLength": 300, "description": "Your recommended answer, at most 300."},
+                "answer": {"type": "string", "maxLength": 600,
+                    "description": "The answer the question got, at most 600; marks it answered."}
             },
             "required": ["key"]
         }
@@ -48,7 +53,13 @@ pub(super) fn update(store: &SessionStore, caller: &str, role: &str, mut args: V
         args["session"] = json!(owned_id);
     }
     let key = args["key"].as_str().ok_or("key must be a string")?;
-    store.board_update(key, caller, role == "orchestrator", &args, chrono::Utc::now().timestamp_millis())
+    let now = chrono::Utc::now().timestamp_millis();
+    if args.get("question").is_some() || args.get("answer").is_some() {
+        let id = store.board_question_update(key, caller, role == "orchestrator", &args, now).map_err(|e| e.to_string())?;
+        mcb_core::broker::messages_changed();
+        return Ok(json!({"key": key, "saved": true, "question": id}));
+    }
+    store.board_update(key, caller, role == "orchestrator", &args, now)
         .map_err(|error| error.to_string())?;
     mcb_core::broker::messages_changed();
     Ok(json!({"key": key, "saved": true}))
@@ -63,10 +74,11 @@ pub(super) fn answer(store: &SessionStore, op: &str, args: &Value) -> Result<Val
         "board_count" => store.board_count(number("now_ms")?),
         "board_card" => store.board_card(text("key")?, text("action")?, number("at")?).map(Value::Bool),
         "board_note" => store.board_note(&uuid::Uuid::new_v4().to_string(), text("target")?, text("body")?, number("now_ms")?).map(Value::Bool),
+        "board_question" => store.board_question_answer(number("id")?, text("answer")?, number("now_ms")?).map(Value::Bool),
         _ => return Err(format!("Unknown messaging operation {op}")),
     };
     let value = result.map_err(|error| error.to_string())?;
-    if matches!(op, "board_card" | "board_note") && value == Value::Bool(true) {
+    if matches!(op, "board_card" | "board_note" | "board_question") && value == Value::Bool(true) {
         mcb_core::broker::messages_changed();
     }
     Ok(value)
@@ -148,6 +160,40 @@ mod tests {
         assert_eq!(fired.load(Ordering::SeqCst), 3);
         answer(&store, "board_card", &json!({"key": "missing", "action": "done", "at": 4})).unwrap();
         assert_eq!(fired.load(Ordering::SeqCst), 3);
+        let id = update(&store, "lead", "top", json!({"key": "q", "title": "Merge?", "question": "Why"})).unwrap()["question"].as_i64().unwrap();
+        assert_eq!(fired.load(Ordering::SeqCst), 4);
+        assert_eq!(answer(&store, "board_question", &json!({"id": id, "answer": "Q1: yes", "now_ms": 5})).unwrap(), json!(true));
+        assert_eq!(fired.load(Ordering::SeqCst), 5);
+        assert_eq!(answer(&store, "board_question", &json!({"id": id, "answer": "Q1: no", "now_ms": 6})).unwrap(), json!(false));
+        assert_eq!(fired.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn a_recorded_question_replies_with_its_number() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let reply = update(&store, "lead", "top", json!({"key": "q", "title": "Merge?", "question": "Why", "recommended": "yes"})).unwrap();
+        let board = answer(&store, "board", &json!({"today_ms": 0, "now_ms": 5})).unwrap();
+        assert_eq!(reply, json!({"key": "q", "saved": true, "question": board["questions"][0]["id"]}));
+        assert_eq!(update(&store, "helper", "helper", json!({"key": "q", "answer": "yes"})).unwrap_err(), "helpers cannot post to the board");
+    }
+
+    #[test]
+    fn a_title_only_call_on_a_question_key_does_not_touch_the_question() {
+        let store = SessionStore::open_in_memory().unwrap();
+        update(&store, "lead", "top", json!({"key": "q", "title": "Merge?", "question": "Why"})).unwrap();
+        update(&store, "lead", "top", json!({"key": "q", "answer": "yes"})).unwrap();
+        assert_eq!(update(&store, "lead", "top", json!({"key": "q", "title": "Other"})).unwrap_err(), "title and state are required for a new card");
+        let board = answer(&store, "board", &json!({"today_ms": 0, "now_ms": 5})).unwrap();
+        assert_eq!((&board["questions"][0]["title"], &board["questions"][0]["answer"]), (&json!("Merge?"), &json!("yes")));
+        assert_eq!(board["cards"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn an_owner_answer_needs_its_id_and_its_machine() {
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
+        assert_eq!(answer(&store, "board_question", &json!({"answer": "yes", "now_ms": 1})).unwrap_err(), "id is required");
+        let connections = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store).unwrap();
+        assert_eq!(board_op(&connections, "board_question", json!({"id": 1, "answer": "yes", "now_ms": 1}), 1).await.unwrap_err(), "machine is required");
     }
 
     #[test]
