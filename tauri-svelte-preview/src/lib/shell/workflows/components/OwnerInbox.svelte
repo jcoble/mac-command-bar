@@ -27,7 +27,9 @@
   let steps = $state<OwnerInboxStep[]>([]);
   let loading = $state(false);
   let busy = $state(false);
+  // An action's refusal stays until the next action; a reload clears only its own failure.
   let error = $state('');
+  let loadError = $state('');
   let loader: AbortController | null = null;
   // Lives while the inbox is shown; an action that finishes after it closes changes nothing.
   let shown: AbortController | null = null;
@@ -71,14 +73,14 @@
 
   async function load(signal: AbortSignal): Promise<void> {
     loading = true;
-    error = '';
+    loadError = '';
     try {
       const found = (await listOwnerInboxFromTauri(signal)) ?? [];
       if (signal.aborted) return;
       steps = found;
       stepCount = found.length;
     } catch (cause) {
-      if (!signal.aborted) error = `Could not load the inbox: ${message(cause)}`;
+      if (!signal.aborted) loadError = `Could not load the inbox: ${message(cause)}`;
     }
     if (!signal.aborted) loading = false;
   }
@@ -119,7 +121,7 @@
     <p class="min-w-0 flex-1 truncate text-sm text-muted-foreground">Steps and sessions waiting for you.</p>
     <Button size="sm" variant="ghost" disabled={loading} onclick={() => start()}><RefreshCw />Refresh</Button>
   </div>
-  {#if error}<p role="alert" class="px-3 py-2 text-sm text-destructive">{error}</p>{/if}
+  {#if error || loadError}<p role="alert" class="px-3 py-2 text-sm text-destructive">{error || loadError}</p>{/if}
 
   {#if steps.length === 0 && sessions.length === 0}
     <EmptyState title={loading ? 'Loading the inbox' : 'Nothing is waiting for you.'} />
