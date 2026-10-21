@@ -42,7 +42,7 @@ const setupConversationEvents = Function(...Object.keys(dependencies), `${code}\
   ...Object.values(dependencies)
 );
 
-const setup = setupConversationEvents(1);
+const setup = setupConversationEvents(1, new AbortController().signal);
 await requested; // both listeners are registered before the snapshot read starts
 handlers.get('remote-connection-changed')!({ payload: { profileId: 'live-event', state: 'reconnecting' } });
 releaseEnvironment({

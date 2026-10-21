@@ -372,7 +372,7 @@ function snapshotChunks(
   const pageMessages = messagesFromPage(snapshot.page);
   const current = getConversationSession(selection.historyOwnedId);
   selection.latestWindowSize = pageMessages.length;
-  const prefixEnd = selection.replaceHistory && !snapshot.activeTurnId && !conversationHasRunningTool(selection.chat.messages) ? -1 : selection.chat.messages.findIndex((message) => message.id === pageMessages[0]?.id);
+  const prefixEnd = selection.replaceHistory && !snapshot.activeTurnId && (snapshot.suspended || !conversationHasRunningTool(selection.chat.messages)) ? -1 : selection.chat.messages.findIndex((message) => message.id === pageMessages[0]?.id);
   selection.replaceHistory = false;
   const prefix = prefixEnd > 0 ? selection.chat.messages.slice(0, prefixEnd) : [];
   let messages = [...prefix, ...pageMessages];
@@ -566,6 +566,7 @@ function createConnection(selection: ActiveConversation): SubscribeConnectionAda
       const abort = (): void => joined.abort();
       signal?.addEventListener('abort', abort, { once: true });
       selection.controller.signal.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted || selection.controller.signal.aborted) abort();
       const queue = enqueueFactory(joined.signal, selection);
       return (async function* () {
         let dispose = (): void => {};
@@ -601,9 +602,8 @@ function createConnection(selection: ActiveConversation): SubscribeConnectionAda
           if (joined.signal.aborted) next();
           else {
             dispose = next;
-            // A new session has no backend row until its first send starts it, so
-            // there is no snapshot. Its empty chat is ready now; the started
-            // session's first event reloads the real snapshot.
+            // A new session has no backend row or snapshot until its first send.
+            // Its empty chat is ready; the first event reloads the real snapshot.
             if (!found) queue.push({ type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: selection.historyOwnedId } as StreamChunk);
           }
         }
@@ -959,12 +959,12 @@ export async function trimSelectedConversationToLatest(historyOwnedId?: string):
   const selection = historyOwnedId && historyOwnedId !== active?.historyOwnedId ? childActive : active;
   const current = selection && getConversationSession(selection.historyOwnedId);
   const keep = selection?.latestWindowSize ?? 0;
-  // Nothing moves while a page, a send, a turn, a running tool, a restore, a jump or a pending decision is in flight.
+  // A suspended adapter has no live tools; unfinished historical tool states must not pin its older pages.
   if (!selection || !current || (historyOwnedId && selection.historyOwnedId !== historyOwnedId) || !selection.push
     || !keep || selection.chat.messages.length <= keep || selection.resolveReady || selection.pendingSend || current.activeTurnId
     || selection.pendingAdmission || selection.anchorAdmission || current.selectedLoadingOlder || current.selectedLoadingNewer
     || Object.keys(current.pendingApprovals).length || Object.keys(current.pendingInputs).length
-    || conversationHasRunningTool(selection.chat.messages)) return;
+    || (!current.suspended && conversationHasRunningTool(selection.chat.messages))) return;
   // The older-page lock holds until the chat takes the trimmed snapshot, so no page merges into the old list.
   current.selectedHasBefore = true;
   setSelectedConversationPageLoading(selection.historyOwnedId, 'older', true);

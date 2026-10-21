@@ -962,7 +962,7 @@ test('remote reconnect reacquires only the still-selected child watch', async ()
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
   const block = source.slice(
     source.indexOf('async function reacquireSelectedChildHistory('),
-    source.indexOf('async function handleConversationStreamEnvelope(')
+    source.indexOf('function handleConversationStreamEnvelope(')
   );
   const read = {
     workspaceOwnedId: 'parent', ownedId: 'opaque-child', abortController: new AbortController(),
@@ -1314,7 +1314,7 @@ await test('an admitted send returns the native receipt', async () => {
 
 test('file notifications and runtime state do not depend on the selected transcript', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
-  const handler = source.slice(source.indexOf('async function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
+  const handler = source.slice(source.indexOf('function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
   for (const selection of ['root', 'child', 'another-session']) {
     const ownedId = `file-notification-${selection}`;
     const runtimeStates: string[] = [];
@@ -1615,7 +1615,7 @@ await test('an observed active turn routes Stop to the backend', async () => {
 
 await test('an inactive terminal event clears send state before finished rail presence', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
-  const block = source.slice(source.indexOf('async function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
+  const block = source.slice(source.indexOf('function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
   const code = stripTypeScriptTypes(block, { mode: 'strip' }).replace(/^export /gm, '');
   const calls: string[] = [];
   const ownedId = 'inactive-finish';
@@ -1690,7 +1690,7 @@ await test('an inactive terminal event clears send state before finished rail pr
 await test('remote rail activity reconciles without opening background conversations', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
   const block = source.slice(source.indexOf('async function refreshRemoteSessionActivity('), source.indexOf('// A session an agent started'))
-    + source.slice(source.indexOf('async function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
+    + source.slice(source.indexOf('function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
   const code = stripTypeScriptTypes(block, { mode: 'strip' }).replace(/^export /gm, '');
   const ownedId = 'remote-background-activity';
   const row = {
@@ -1700,11 +1700,12 @@ await test('remote rail activity reconciles without opening background conversat
   const state = { activeTurnId: undefined as string | undefined, suspended: true, sending: false, generation: 1 };
   let opened = false;
   let finishRead: (records: unknown[]) => void = () => {};
+  let readStarted = () => {};
   const dependencies = {
     selectedConversationRead: null,
     childConversationRead: null,
     rail: { activeOwnedId: 'another-session', owned: [row], remoteConnections: { workbox: 'connected' }, error: null },
-    listRemoteAgentConversationSessionsFromTauri: () => new Promise<unknown[]>((resolve) => { finishRead = resolve; }),
+    listRemoteAgentConversationSessionsFromTauri: () => new Promise<unknown[]>((resolve) => { finishRead = resolve; readStarted(); }),
     updateOwnedSession: (_id: string, patch: Partial<typeof row>) => Object.assign(row, patch),
     getConversationSession: () => opened ? state : null,
     preparingSends: new Map(),
@@ -1719,7 +1720,7 @@ await test('remote rail activity reconciles without opening background conversat
   const api = Function(...Object.keys(dependencies), `
     let conversationEventsDisposed = false;
     let conversationEventsGeneration = 1;
-    let remoteActivityRead = 0;
+    let remoteActivityController = null;
     const railActivityEvents = new Map();
     ${code}
     return { refresh: () => refreshRemoteSessionActivity(1),
@@ -1743,7 +1744,6 @@ await test('remote rail activity reconciles without opening background conversat
     ownedId, provider: 'codex' as const, generation: 1, sequence, timestampMs: sequence * 10,
     payload: { kind: 'turn', state: turnState, turnId }
   });
-
   const reconnect = api.refresh();
   finishRead([record('remote-turn')]);
   await reconnect;
@@ -1752,20 +1752,20 @@ await test('remote rail activity reconciles without opening background conversat
   await api.event(event(1, 'remote-turn', 'completed'));
   assert.equal(row.activeTurnId, null, 'completion clears the inventory active-turn flag');
   assert.notEqual(presence(), 'working');
-
   row.runtimeState = 'suspended';
   await api.event(event(2, 'next-turn', 'started'));
   assert.equal(presence(), 'working', 'a live start overrides both cached suspension and old unread completion');
   assert.equal(opened, false, 'the user never needed to open this session');
-
   const racingRead = api.refresh();
   await api.event(event(3, 'next-turn', 'completed'));
+  const rereading = new Promise<void>((resolve) => { readStarted = resolve; });
   finishRead([record('next-turn')]);
-  await racingRead;
+  await rereading;
   assert.equal(row.activeTurnId, null, 'an older inventory reply cannot revive a completed turn');
+  finishRead([record(null)]);
+  await racingRead;
   await api.event(event(2, 'next-turn', 'started'));
   assert.equal(row.activeTurnId, null, 'duplicate replay cannot revive a completed turn');
-
   await api.event(event(4, 'failed-turn', 'started'));
   await api.event({ ownedId, provider: 'codex', generation: 1, sequence: 5, timestampMs: 50,
     payload: { kind: 'error', code: 'test', message: 'Runtime ended', recoverable: false } });

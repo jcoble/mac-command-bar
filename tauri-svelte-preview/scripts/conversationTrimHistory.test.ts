@@ -64,7 +64,7 @@ function loadConnection() {
   const olderCursors: number[] = [];
   let admitSend: (receipt: unknown) => void = () => undefined;
   let liveEvent: (event: unknown) => void = () => undefined;
-  const snapshotState: { activeTurnId?: string } = {};
+  const snapshotState: { activeTurnId?: string; suspended?: boolean } = {};
   const createChat = (options: any) => {
     const processor = new StreamProcessor();
     const chat = {
@@ -206,6 +206,23 @@ test('background_command_still_running_keeps_the_history', async () => {
     const jump = await openAndPageTwice('background-jump');
     await jump.api.jumpSelectedConversationToLatest('background-jump');
     assert.deepEqual(ids(jump.chat.messages), range(1, 30, 'u'), 'the jump keeps the earlier pages');
+  } finally {
+    runningToolAt = 0;
+  }
+});
+
+test('suspended_session_drops_history_despite_unfinished_historical_tool_states', async () => {
+  runningToolAt = 15;
+  try {
+    const trim = await openAndPageTwice('suspended-trim');
+    trim.session.suspended = true;
+    await trim.api.trimSelectedConversationToLatest();
+    assert.deepEqual(ids(trim.chat.messages), range(21, 30, 'u'), 'a stopped adapter cannot keep the old command running');
+
+    const jump = await openAndPageTwice('suspended-jump');
+    jump.snapshotState.suspended = true;
+    await jump.api.jumpSelectedConversationToLatest('suspended-jump');
+    assert.deepEqual(ids(jump.chat.messages), range(21, 30, 'u'), 'the suspended snapshot replaces the older pages');
   } finally {
     runningToolAt = 0;
   }

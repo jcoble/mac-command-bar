@@ -1,16 +1,15 @@
 import {
-  listenHistoryDownloadProgress,
-  readHistoryDownloadProgressFromTauri,
-  type HistoryDownloadProgress,
   changeAgentConversationCheckoutFromTauri,
   createAgentConversationRequestId,
   listAgentConversationItemsAfterFromTauri,
   listAgentConversationItemsBeforeFromTauri,
   listAgentConversationSessionsFromTauri,
+  listenHistoryDownloadProgress,
   listRemoteAgentConversationSessionsFromTauri,
   readAgentConversationCapabilitiesFromTauri,
   readAgentConversationChildHistoryFromTauri,
   readAgentConversationSelectionFromTauri,
+  readHistoryDownloadProgressFromTauri,
   readRemoteAssemblyEnvironmentFromTauri,
   registerAgentConversationStream,
   stopAgentConversationChildHistoryFromTauri,
@@ -18,22 +17,22 @@ import {
   type AgentConversationSessionRecord,
   type BackgroundWorkItem,
   type ExecutionEnvironment,
+  type HistoryDownloadProgress,
   type ProjectionStreamRegistration,
   type StreamEnvelope
 } from '$lib/tauriSource';
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { get } from 'svelte/store';
+import { findSessionRecord, normalizeProvider, ownedSessionFromBackend } from '../ownedSessions.ts';
 import {
   revokeTrackedObjectUrl,
   trackTauriListener
 } from '../resourceDiagnostics.svelte.ts';
 import { sessionTitleFromPrompt } from '../sessionStrip.ts';
-import { publishWorkspaceFileChange } from '../workspaceFileChangeBus.ts';
-import { agentItemFromEvent, displayItemFromAgentItem } from './conversationTimeline.ts';
-import { addOwnedSession, rail, setRemoteConnection, updateOwnedSession } from '../stores/sessionRailStore.svelte';
-import { normalizeProvider, findSessionRecord, ownedSessionFromBackend } from '../ownedSessions.ts';
 import type { RemoteConnectionState } from '../stores/sessionRailStore.svelte';
+import { addOwnedSession, rail, setRemoteConnection, updateOwnedSession } from '../stores/sessionRailStore.svelte';
+import { publishWorkspaceFileChange } from '../workspaceFileChangeBus.ts';
 import {
   decideConversationActivation,
   generationForSend,
@@ -45,19 +44,16 @@ import { setAgentConversationConfig } from './conversationConfig.ts';
 import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
 import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
 import { shouldClearConversationSending } from './conversationReducer.ts';
-import { sessionPresenceHistory, sessionPresenceEventFromConversation, synchronizeSessionPresenceWork } from './sessionPresence.ts';
 import {
-  setConversationHistoryDownload,
-  clearConversationHistoryDownload,
   ACTIVE_EVENT_WINDOW_BYTES,
   ACTIVE_EVENT_WINDOW_EVENTS,
-  displayEventFrom,
   applyChildConversationHistoryStatus,
   beginConversationConfigChange,
+  clearConversationHistoryDownload,
   clearConversationWriterLeaseTransition,
   confirmConversationConfigChange,
+  displayEventFrom,
   ensureConversationSession,
-  evictConversationSession,
   failChildConversationTranscript,
   failConversationConfigChange,
   getConversationSession,
@@ -68,43 +64,44 @@ import {
   setConversationCapabilityError,
   setConversationConnection,
   setConversationDraft,
-  setConversationSendError,
+  setConversationHistoryDownload,
   setConversationSending,
   setConversationWriterLeaseTransition
 } from './conversationStore.svelte.ts';
+import { agentItemFromEvent, displayItemFromAgentItem } from './conversationTimeline.ts';
 import type {
   AgentCapabilities,
   AgentConfigOption,
   AgentConfigValue,
+  AgentConversationChildHistory,
   AgentConversationConnection,
   AgentConversationEvent,
   AgentConversationHandoffDirection,
   AgentConversationHandoffPhase,
   AgentConversationHandoffReceipt,
   AgentConversationHandoffRequest,
-  AgentConversationProvider,
-  AgentConversationSendReceipt,
   AgentConversationItemPage,
+  AgentConversationProvider,
   AgentConversationSelectionSnapshot,
+  AgentConversationSendReceipt,
   AgentUserInputResponse,
   AgentWriterLeaseOwner,
   AgentWriterLeaseTransition,
-  ConversationAttachment,
-  AgentConversationChildHistory
+  ConversationAttachment
 } from './conversationTypes.ts';
 import {
   applyConversationHandoffReceipt,
   createConversationHandoffRequest,
   handoffGenerationMatches
 } from './conversationTypes.ts';
+import { sessionPresenceEventFromConversation, sessionPresenceHistory, synchronizeSessionPresenceWork } from './sessionPresence.ts';
 
 let conversationStream: ProjectionStreamRegistration | null = null;
-let unlistenTitles: (() => void) | null = null;
-let unlistenRemoteConnections: (() => void) | null = null;
+let conversationEventsController: AbortController | null = null;
 let conversationEventsSetup: Promise<void> | null = null;
 let conversationEventsDisposed = false;
 let conversationEventsGeneration = 0;
-let remoteActivityRead = 0;
+let remoteActivityController: AbortController | null = null;
 const railActivityEvents = new Map<string, { generation: number; sequence: number }>();
 const CHILD_HISTORY_PAGE_BYTES = 512 * 1024;
 
@@ -854,6 +851,7 @@ export async function subscribeSelectedConversation(input: {
   onEvent: (event: AgentConversationEvent) => void;
   onError: (error: unknown) => void;
 }): Promise<() => void> {
+  if (input.signal?.aborted) return () => {};
   const child = input.ownedId !== input.workspaceOwnedId;
   (child ? childConversationRead : selectedConversationRead)?.abortController.abort();
   const abortController = new AbortController();
@@ -881,21 +879,21 @@ export async function subscribeSelectedConversation(input: {
   else selectedConversationRead = read;
   const dispose = (): void => {
     input.signal?.removeEventListener('abort', abortFromOwner);
+    abortController.signal.removeEventListener('abort', dispose);
     abortController.abort();
     read.events.length = 0;
+    read.bytes = 0;
     if ((child ? childConversationRead : selectedConversationRead) === read) clearConversationHistoryDownload(input.workspaceOwnedId, child);
     if (selectedConversationRead === read) selectedConversationRead = null;
     if (childConversationRead === read) childConversationRead = null;
   };
+  abortController.signal.addEventListener('abort', dispose, { once: true });
   try {
     await startConversationEvents();
-    if (abortController.signal.aborted) { dispose(); return dispose; }
+    if (abortController.signal.aborted) return dispose;
     // Initial child resolution owns its progress subscription before the child key exists.
     if (!child) await attachHistoryDownload(input.workspaceOwnedId, input.ownedId, null, null, abortController.signal);
-    if (abortController.signal.aborted) {
-      dispose();
-      return dispose;
-    }
+    if (abortController.signal.aborted) return dispose;
     read.reading = false;
     await reloadSelectedConversation(read);
     return dispose;
@@ -942,10 +940,12 @@ export async function readSelectedConversationAttachments(
 
 export async function startConversationEvents(): Promise<void> {
   if (!isTauri() || conversationStream) return;
-  conversationEventsDisposed = false;
   if (conversationEventsSetup) return conversationEventsSetup;
+  conversationEventsDisposed = false;
   const streamGeneration = ++conversationEventsGeneration;
-  const setup = setupConversationEvents(streamGeneration);
+  const controller = new AbortController();
+  conversationEventsController = controller;
+  const setup = setupConversationEvents(streamGeneration, controller.signal);
   conversationEventsSetup = setup;
   try {
     await setup;
@@ -954,76 +954,75 @@ export async function startConversationEvents(): Promise<void> {
   }
 }
 
-async function setupConversationEvents(streamGeneration: number): Promise<void> {
-  const registration = await registerAgentConversationStream(
-    (envelope) => handleConversationStreamEnvelope(streamGeneration, envelope),
-    () => handleConversationStreamResync(streamGeneration)
-  );
-  // A session starts out named after the first words of its prompt. Once
-  // its first turn is done the app writes a short summary over that, and this
-  // is how the rail row hears about it.
+async function setupConversationEvents(streamGeneration: number, signal: AbortSignal): Promise<void> {
+  let registration: ProjectionStreamRegistration | null = null;
   let stopTitles: (() => void) | null = null;
-  // A remote machine's transport connects, starts attempting, or stops. This is
-  // the app's one listener for it; rail rows read the store it writes.
   let stopRemoteConnections: (() => void) | null = null;
+  const dispose = (): void => {
+    stopTitles?.();
+    stopTitles = null;
+    stopRemoteConnections?.();
+    stopRemoteConnections = null;
+    if (conversationStream === registration) conversationStream = null;
+    // unregister deactivates delivery immediately and handles native cleanup errors.
+    void registration?.unregister();
+    registration = null;
+  };
+  signal.addEventListener('abort', dispose, { once: true });
   const remoteConnectionEventsSeen = new Set<string>();
   try {
-    const stopTitleEvents = await listen<{ ownedId: string; title: string }>(
-      'session-title-changed',
-      ({ payload }) => showNamedSession(payload.ownedId, payload.title, streamGeneration)
+    registration = await registerAgentConversationStream(
+      (envelope) => handleConversationStreamEnvelope(streamGeneration, envelope),
+      () => handleConversationStreamResync(streamGeneration)
     );
-    stopTitles = trackTauriListener(stopTitleEvents);
-    const stopRemoteConnectionEvents = await listen<{
-      profileId: string;
-      state: RemoteConnectionState;
-    }>('remote-connection-changed', ({ payload }) => {
+    if (signal.aborted || !registration) { dispose(); return; }
+    stopTitles = trackTauriListener(await listen<{ ownedId: string; title: string }>(
+      'session-title-changed', ({ payload }) => {
+        if (registration && !signal.aborted) showNamedSession(payload.ownedId, payload.title, streamGeneration);
+      }
+    ));
+    if (signal.aborted) { dispose(); return; }
+    stopRemoteConnections = trackTauriListener(await listen<{
+      profileId: string; state: RemoteConnectionState;
+    }>('remote-connection-changed', async ({ payload }) => {
+      if (!registration || signal.aborted) return;
       remoteConnectionEventsSeen.add(payload.profileId);
       setRemoteConnection(payload.profileId, payload.state);
       if (payload.state === 'connected') {
-        void refreshRemoteSessionActivity(streamGeneration);
-        void reacquireSelectedChildHistory(payload.profileId, streamGeneration);
+        await Promise.all([refreshRemoteSessionActivity(streamGeneration),
+          reacquireSelectedChildHistory(payload.profileId, streamGeneration)]);
       }
-    });
-    stopRemoteConnections = trackTauriListener(stopRemoteConnectionEvents);
+    }));
+    if (signal.aborted) { dispose(); return; }
     const remoteEnvironment = await readRemoteAssemblyEnvironmentFromTauri();
+    if (signal.aborted) return;
     rail.remoteProfiles = remoteEnvironment.profiles;
     const readyRemoteProfiles = new Set(remoteEnvironment.readyProfileIds);
     for (const profile of remoteEnvironment.profiles) {
       if (remoteConnectionEventsSeen.has(profile.id)) continue;
       setRemoteConnection(profile.id, readyRemoteProfiles.has(profile.id) ? 'connected' : 'disconnected');
     }
-    // Start-up waits for this setup before it opens a session, so the remote
-    // read runs on its own.
-    void refreshRemoteSessionActivity(streamGeneration);
-    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !registration) {
-      await registration?.unregister();
-      stopTitles();
-      stopTitles = null;
-      stopRemoteConnections();
-      stopRemoteConnections = null;
-      return;
-    }
     conversationStream = registration;
-    unlistenTitles = stopTitles;
-    stopTitles = null;
-    unlistenRemoteConnections = stopRemoteConnections;
-    stopRemoteConnections = null;
+    // Chat startup does not wait for remote inventory; shutdown cancels its read.
+    void refreshRemoteSessionActivity(streamGeneration);
   } catch (error) {
-    stopTitles?.();
-    stopRemoteConnections?.();
-    await registration?.unregister();
-    throw error;
+    dispose();
+    signal.removeEventListener('abort', dispose);
+    if (!signal.aborted) throw error;
   }
 }
 
 /** Reconcile compact runtime records after reconnect, without loading transcripts. */
 async function refreshRemoteSessionActivity(streamGeneration: number, readAgain = true): Promise<void> {
-  const read = ++remoteActivityRead;
+  if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
+  remoteActivityController?.abort();
+  const controller = new AbortController();
+  remoteActivityController = controller;
   const observed = new Map(railActivityEvents);
   let raced = false;
   try {
-    const records = await listRemoteAgentConversationSessionsFromTauri();
-    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || read !== remoteActivityRead) return;
+    const records = await listRemoteAgentConversationSessionsFromTauri(controller.signal);
+    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || controller.signal.aborted) return;
     for (const record of records ?? []) {
       // An event during the read is newer than this reply. Read again: after a restart it may be a replay.
       if (observed.get(record.ownedId) !== railActivityEvents.get(record.ownedId)) { raced = true; continue; }
@@ -1044,10 +1043,12 @@ async function refreshRemoteSessionActivity(streamGeneration: number, readAgain 
         if (!record.activeTurnId) setConversationSending(record.ownedId, false);
       }
     }
-    if (raced && readAgain) void refreshRemoteSessionActivity(streamGeneration, false);
+    if (raced && readAgain) await refreshRemoteSessionActivity(streamGeneration, false);
   } catch (error) {
-    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || read !== remoteActivityRead) return;
+    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || controller.signal.aborted) return;
     rail.error = `Could not refresh remote turn activity: ${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    if (remoteActivityController === controller) remoteActivityController = null;
   }
 }
 
@@ -1199,10 +1200,10 @@ async function reacquireSelectedChildHistory(
   requestSelectedConversationReload(read);
 }
 
-async function handleConversationStreamEnvelope(
+function handleConversationStreamEnvelope(
   streamGeneration: number,
   envelope: StreamEnvelope<AgentConversationEvent>
-): Promise<void> {
+): void {
   if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
   const payload = envelope.chunk;
   admitSelectedConversationEvent(payload);
@@ -1312,6 +1313,11 @@ async function handleConversationStreamResync(streamGeneration: number): Promise
 export function stopConversationEvents(): void {
   conversationEventsDisposed = true;
   conversationEventsGeneration += 1;
+  conversationEventsController?.abort();
+  conversationEventsController = null;
+  conversationEventsSetup = null;
+  remoteActivityController?.abort();
+  remoteActivityController = null;
   for (const ownedId of childHistoryReads.keys()) stopChildConversationHistory(ownedId);
   selectedConversationRead?.abortController.abort();
   selectedConversationRead = null;
@@ -1321,12 +1327,6 @@ export function stopConversationEvents(): void {
   adoptController.abort();
   adoptController = new AbortController();
   sessionsNotFound.clear();
-  void conversationStream?.unregister();
-  conversationStream = null;
-  unlistenTitles?.();
-  unlistenTitles = null;
-  unlistenRemoteConnections?.();
-  unlistenRemoteConnections = null;
   for (const ownedId of [...terminalProjections.keys()]) stopConversationTerminalProjection(ownedId);
 }
 
