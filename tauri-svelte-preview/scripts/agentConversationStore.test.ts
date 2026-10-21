@@ -1498,7 +1498,7 @@ await test('Stop during revival prevents dispatch and releases the prepared runt
     shouldReviveBeforeSend: () => true,
     decideConversationActivation: () => ({ kind: 'structured', nativeSessionMode: 'resume' }),
     ensureStructuredConversation: async () => { await revival; state.generation = 2; return { generation: 2 }; },
-    generationForSend: (_before: number, after: number) => after,
+    generationForSend: (_before: number, after: number) => after, setConversationConnection: () => undefined,
     sendSupportsImages: () => false,
     buildConversationPrompt: (text: string) => ({ text, content: [] }),
     hasBackendCapability: async () => true,

@@ -1535,6 +1535,8 @@ export async function sendStructuredMessage(
           ? startConfig.reasoningEffort
           : state.agentConfig.reasoningEffort
       });
+      // The ensure applies only the selected chat's connection; a background session's (a Board answer) is applied here.
+      if (activated && rail.activeOwnedId !== ownedId) setConversationConnection(activated);
       const revived = getConversationSession(ownedId);
       const nextGeneration = generationForSend(previousGeneration, activated?.generation ?? -1);
       if (nextGeneration === null || !revived) {
