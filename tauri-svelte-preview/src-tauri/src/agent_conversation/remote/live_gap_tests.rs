@@ -201,7 +201,6 @@ async fn resume_replays_only_the_sessions_it_names() {
         maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
         restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
         events: broadcast::channel(16).0, terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
-        phone_chats: Arc::default(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
