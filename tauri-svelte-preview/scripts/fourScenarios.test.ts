@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -132,4 +134,41 @@ test('two worktrees keep independent run state when one is stopped', () => {
   assert.doesNotThrow(() => refuseWhileRunning(runs.get(linkA), isLive));
   assert.throws(() => refuseWhileRunning(runs.get(linkB), isLive), /still running/);
   assert.deepEqual([...live], [20]);
+});
+
+test('lane startup supplies the checkout adapters and their hashes to Tauri', () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'four-scenarios-adapters-'));
+  try {
+    const preview = path.join(fixture, 'checkout/tauri-svelte-preview');
+    const adapters = path.join(preview, 'src-tauri/adapters');
+    const bin = path.join(fixture, 'bin');
+    for (const dir of [adapters, bin, path.join(preview, 'scripts'), path.join(fixture, 'data')]) fs.mkdirSync(dir, { recursive: true });
+    fs.copyFileSync(new URL('./dev-app.sh', import.meta.url), path.join(preview, 'scripts/dev-app.sh'));
+    fs.writeFileSync(path.join(adapters, 'manifest.json'), '{}');
+    for (const name of ['codex-acp', 'claude-agent-acp', 'agy-acp', 'agy_acp_server.par']) fs.writeFileSync(path.join(adapters, name), name, { mode: 0o755 });
+    const shim = `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path'), cp = require('node:child_process');
+const args = process.argv.slice(2), name = path.basename(process.argv[1]);
+if (name === 'free') console.log('Mem: 31 0 0 0 0 20');
+if (name === 'xwininfo') console.log('1710x990 "Assembly"');
+if (name === 'assembly-native-ui') fs.writeFileSync(args[1], Buffer.alloc(21000));
+if (name === 'pnpm' && args[0] === 'tauri:dev') cp.execFileSync('sh', ['scripts/dev-app.sh', ...args.slice(1)], { stdio: 'inherit' });
+if (name === 'pnpm' && (args[0] === 'tauri' || args[0] === 'exec')) fs.writeFileSync(process.env.RECEIPT, JSON.stringify({ env: process.env, args }));
+`;
+    for (const name of ['pnpm', 'Xvfb', 'free', 'ss', 'xwininfo', 'assembly-native-ui']) fs.writeFileSync(path.join(bin, name), shim, { mode: 0o755 });
+    const receipt = path.join(fixture, 'receipt.json');
+    const env = { ...process.env, HOME: fixture, PATH: `${bin}:${process.env.PATH}`, RECEIPT: receipt, CLAUDECODE: 'parent-session', CODEX_CONFIG: JSON.stringify({ 'mcp_servers.assembly.default_tools_approval_mode': 'never' }) };
+    for (const key of Object.keys(env)) if (/^MCB_.*_ACP_(PATH|SHA256)$/.test(key)) delete env[key];
+    execFileSync(process.execPath, ['--experimental-strip-types', new URL('./fourScenarios.ts', import.meta.url).pathname, 'start', '--worktree', path.join(fixture, 'checkout'), '--data', path.join(fixture, 'data')], { env, stdio: 'pipe' });
+    const actual = JSON.parse(fs.readFileSync(receipt, 'utf8'));
+    for (const [prefix, name] of [['MCB_CODEX_ACP', 'codex-acp'], ['MCB_CLAUDE_AGENT_ACP', 'claude-agent-acp'], ['MCB_AGY_ACP', 'agy-acp']]) {
+      assert.equal(path.resolve(actual.env[`${prefix}_PATH`]), path.join(adapters, name));
+      assert.equal(actual.env[`${prefix}_SHA256`], createHash('sha256').update(name).digest('hex'));
+    }
+    assert.equal(actual.env.CLAUDECODE, undefined);
+    assert.equal(actual.env.CODEX_CONFIG, undefined);
+    assert.deepEqual(actual.args.slice(0, 5), ['exec', 'tauri', 'dev', '--config', 'src-tauri/tauri.dev.attach.conf.json']);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
 });
