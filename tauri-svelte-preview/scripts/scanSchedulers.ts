@@ -117,6 +117,10 @@ const allowedHits = new Set([
   // window is visible; going off screen, hiding the window or the action's destroy on unmount clears it.
   'src/lib/shell/conversation/components/ConversationTimeline.svelte:setInterval:let timer: ReturnType<typeof setInterval> | null = null;',
   'src/lib/shell/conversation/components/ConversationTimeline.svelte:setInterval:timer = setInterval(() => { backgroundNow = Date.now(); }, 1000);',
+  // TSK-1563: scrolling saves the reader's place and checks for paging once a frame instead of per event.
+  // One pending frame at a time; unmounting cancels it, and the work it runs checks the render window.
+  'src/lib/shell/conversation/components/ConversationTimeline.svelte:requestAnimationFrame:viewFrame ||= requestAnimationFrame(() => { viewFrame = 0; saveView(); requestPage(frameOlder); });',
+  'src/lib/shell/conversation/components/ConversationTimeline.svelte:cancelAnimationFrame:onDestroy(() => { stop.abort(); cancelAnimationFrame(viewFrame); });',
   // TSK-1424 A: a running tool group's first scroll to its newest row waits for the first render inside an
   // effect; unmounting aborts the group's signal, which the wait checks after the tick.
   "src/lib/shell/conversation/components/ConversationToolGroup.svelte:tick:import { getContext, onDestroy, setContext, tick, untrack } from 'svelte';",
