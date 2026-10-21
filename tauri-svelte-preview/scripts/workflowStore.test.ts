@@ -2,6 +2,8 @@
 import assert from 'node:assert/strict';
 import {
   applyWorkflowSnapshots,
+  beginWorkflowLoad,
+  failWorkflowLoad,
   resetWorkflowStore,
   selectWorkflowRun,
   upsertWorkflowSnapshot,
@@ -39,6 +41,19 @@ const shown = () => workflowState.runs.map((each) => [each.id, each.lastSequence
   // Without a desktop engine the list says so instead of looking empty.
   applyWorkflowSnapshots(null);
   assert.equal(workflowState.unavailableReason, 'Workflow runs are available in the desktop app.');
+}
+
+{ // an_action_error_survives_live_updates_but_a_load_error_clears_on_the_next_read
+  // Runs are re-read on every change; the owner must still be able to read why an action failed.
+  resetWorkflowStore();
+  workflowState.error = 'Retry: Only a failed or waiting node can be retried';
+  beginWorkflowLoad();
+  applyWorkflowSnapshots([run('a', 1)]);
+  upsertWorkflowSnapshot(run('a', 2));
+  assert.equal(workflowState.error, 'Retry: Only a failed or waiting node can be retried');
+  failWorkflowLoad('Could not load workflows: offline');
+  applyWorkflowSnapshots([run('a', 3)]);
+  assert.equal(workflowState.error, null, 'a read that works again clears its own failure');
 }
 
 console.log('workflowStore tests passed');
