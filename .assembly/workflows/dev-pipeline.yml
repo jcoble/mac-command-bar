@@ -4,19 +4,19 @@ inputs:
   i_merge: { description: "I'll merge", default: false }
 limits: { max_sessions: 3, step_timeout_minutes: 60, max_rounds: 5 }
 steps:
-  recon: { agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/recon.md }
+  recon: { agent: { provider: claude, model: sonnet }, prompt: prompts/recon.md }
   spec: { needs: [recon], agent: { provider: claude, model: opus }, prompt: prompts/spec.md }
   # Three reviewers check the spec at once; findings from any of them send it back.
   spec-review:
     needs: [spec]
-    review: { of: spec, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/spec-review.md }
+    review: { of: spec, agent: { provider: claude, model: sonnet }, prompt: prompts/spec-review.md }
   spec-ui-review:
     needs: [spec]
     review: { of: spec, agent: { provider: claude, model: opus }, prompt: prompts/spec-ui-review.md }
   spec-adversarial-review:
     needs: [spec]
     review: { of: spec, agent: { provider: claude, model: sonnet }, prompt: prompts/spec-adversarial-review.md }
-  build: { needs: [spec-review, spec-ui-review, spec-adversarial-review], agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
+  build: { needs: [spec-review, spec-ui-review, spec-adversarial-review], agent: { provider: claude, model: opus }, prompt: prompts/build.md }
   checks:
     needs: [build]
     run:
@@ -39,7 +39,7 @@ steps:
     on_fail: build
   code-review:
     needs: [checks]
-    review: { of: build, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/code-review.md }
+    review: { of: build, agent: { provider: claude, model: sonnet }, prompt: prompts/code-review.md }
   proof:
     needs: [code-review]
     agent: { provider: claude, model: opus }
@@ -53,11 +53,11 @@ steps:
   # The repository's review bot reviews the PR; its findings are fixed or answered here.
   pr-feedback:
     needs: [pr]
-    agent: { provider: codex, model: gpt-6.1-sol }
+    agent: { provider: claude, model: opus }
     prompt: prompts/pr-feedback.md
   final-review:
     needs: [pr-feedback]
-    review: { of: build, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/final-review.md }
+    review: { of: build, agent: { provider: claude, model: sonnet }, prompt: prompts/final-review.md }
   # The body is rewritten when a command step starts, so this one carries the final review.
   pr-body:
     needs: [final-review]
