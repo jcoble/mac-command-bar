@@ -346,7 +346,12 @@ impl MessagingEndpoint {
                     (Some(target), _) => {
                         let message = store.append_message("", &owned_id, &target, MessageKind::Message, text)
                             .map_err(|error| error.to_string())?;
+                        let parent = store.sibling_parent(&owned_id, &target).map_err(|error| error.to_string())?;
                         if let Some(manager) = manager {
+                            if let Some(parent) = parent {
+                                let manager = manager.clone();
+                                tauri::async_runtime::spawn(async move { manager.deliver_if_idle(&parent).await });
+                            }
                             tauri::async_runtime::spawn(async move { manager.deliver_if_idle(&target).await });
                         }
                         message.id

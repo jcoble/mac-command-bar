@@ -1302,15 +1302,16 @@ impl AgentRuntimeManager {
         Ok(())
     }
 
-    /// Sends a newly queued message at once when its target is between turns.
-    /// A busy target receives it when its turn ends.
+    /// Delivers queued messages between turns, or steers an authorized message into a busy helper.
     /// Boxed because activation hands this to the messaging endpoint, and the
     /// send below activates again.
     pub(crate) fn deliver_if_idle<'a>(&'a self, owned_id: &'a str)
         -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
         let generation = match self.hydrate_overlay_from_store(owned_id) {
-            Ok(true) => self.idle_generation(owned_id),
+            Ok(true) => self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(owned_id).filter(|session| session.state != AgentRuntimeState::Closed)
+                .map(|session| session.generation),
             Ok(false) => None,
             Err(error) => {
                 crate::debug_log::stderr_log!("Could not load message target {owned_id}: {error}");
@@ -1357,13 +1358,15 @@ impl AgentRuntimeManager {
             }
             delivering.insert(owned_id.to_string(), false);
         }
+        let mut delivered_any = false;
         loop {
             let delivered = self.drain_next_message(owned_id, generation, now_ms).await;
+            delivered_any |= matches!(delivered, Ok(true));
             let mut delivering = self.delivering.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            // A sent prompt starts a turn, and that turn's end reads the queue.
-            if matches!(delivered, Ok(true)) || delivering.get(owned_id) != Some(&true) {
+            // Steering can leave more messages ready in the same active turn.
+            if !matches!(delivered, Ok(true)) && delivering.get(owned_id) != Some(&true) {
                 delivering.remove(owned_id);
-                return delivered;
+                return delivered.map(|_| delivered_any);
             }
             delivering.insert(owned_id.to_string(), false);
         }
@@ -1375,11 +1378,17 @@ impl AgentRuntimeManager {
         generation: u64,
         now_ms: i64,
     ) -> Result<bool, String> {
+        let steering_parent = {
+            let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            sessions.get(owned_id).filter(|session| session.active_turn_id.is_some()
+                && session.capabilities.session.steering).and_then(|session| session.helper_of.clone())
+        };
+        // An unrelated sender must not hold back the helper's parent or siblings.
         // Expired messages fail in order, so the first live one is sent.
         let message = loop {
             let Some(message) = self
                 .store
-                .pending_for(owned_id)
+                .pending_for_sender(owned_id, steering_parent.as_deref())
                 .map_err(|error| error.to_string())?
             else {
                 return Ok(false);
@@ -1392,9 +1401,17 @@ impl AgentRuntimeManager {
                 .map_err(|error| error.to_string())?;
         };
 
-        // A turn the person started since the caller looked takes the message
-        // when it ends, not as a steer in the middle of it.
-        if self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(owned_id)
+        let sibling_parent = self.store.sibling_parent(&message.from_agent, owned_id)
+            .map_err(|error| error.to_string())?;
+        let steering = {
+            let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            sessions.get(owned_id).is_some_and(|session| session.active_turn_id.is_some()
+                && session.capabilities.session.steering
+                && session.helper_of.is_some()
+                && (session.helper_of.as_deref() == Some(message.from_agent.as_str())
+                    || session.helper_of == sibling_parent))
+        };
+        if !steering && self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(owned_id)
             && self.idle_generation(owned_id).is_none()
         {
             return Ok(false);
@@ -1414,7 +1431,7 @@ impl AgentRuntimeManager {
         // stays queued for that turn's end instead of failing.
         let busy = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(owned_id) && self.idle_generation(owned_id).is_none();
-        if result.is_err() && busy {
+        if result.is_err() && (steering || busy) {
             return Ok(false);
         }
         self.store
@@ -7968,6 +7985,7 @@ mod tests {
         tool_details, unified_diff, unwrap_console_block,
     };
     use crate::agent_conversation::protocol::AgentCommandDescriptor;
+    mod helper_messages;
     mod checkout;
     mod model_effort;
     mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close;
@@ -10115,148 +10133,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn a_message_during_an_active_turn_uses_session_steering() {
-        let fixture = fixture_manager_with_acp_session("steering").await;
-        {
-            let mut sessions = fixture.manager.sessions.lock().unwrap();
-            let session = sessions.get_mut(&fixture.owned_id).unwrap();
-            session.active_turn_id = Some("turn-running".into());
-            session.state = AgentRuntimeState::Working;
-        }
-
-        let receipt = fixture
-            .manager
-            .prompt(
-                &fixture.owned_id,
-                fixture.generation,
-                test_prompt("change direction"),
-            )
-            .await
-            .expect("steer active turn");
-
-        let events = fixture.manager.list_events(&fixture.owned_id, 0).unwrap();
-        assert_eq!(receipt.owned_id, fixture.owned_id);
-        assert_eq!(receipt.generation, fixture.generation);
-        assert_eq!(receipt.turn_id, "turn-running");
-        assert!(receipt.user_item_id.starts_with("user-steer-"));
-        let admitted = events.iter().find(|event| event.sequence == receipt.admitted_sequence).unwrap();
-        assert_eq!(admitted.turn_id.as_deref(), Some(receipt.turn_id.as_str()));
-        assert!(matches!(&admitted.payload,
-            AgentConversationPayload::UserMessage { item_id, text, .. }
-                if item_id == &receipt.user_item_id && text == "change direction"));
-        assert!(!events
-            .iter()
-            .any(|event| matches!(event.payload, AgentConversationPayload::Turn { .. })));
-        let log = fs::read_to_string(fixture.root.join("steering.jsonl")).unwrap();
-        assert!(log.contains("\"method\":\"_session/steering\""));
-        assert!(log.contains("\"idleBehavior\":\"promptRequired\""));
-
-        fixture
-            .manager
-            .close(&fixture.owned_id, fixture.generation)
-            .await
-            .unwrap();
-        fs::remove_dir_all(fixture.root).unwrap();
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn steering_receipt_keeps_the_original_turn_after_completion() {
-        let root = temp_root();
-        let log = root.join("steering.jsonl");
-        let mut manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&log, "steering");
-        manifest.args[1] = manifest.args[1].replace("outcome=injected",
-            "outcome=injected\n      while [ ! -f \"$log.steer-ack\" ]; do sleep 0.01; done");
-        let manager = AgentRuntimeManager::new(ProviderRegistry::new([
-            (AgentConversationProvider::Codex, manifest),
-        ]).unwrap());
-        let owned_id = "owned-steering-completed";
-        let generation = manager.ensure_inner(request(root.to_str().unwrap(), owned_id,
-            AgentConversationProvider::Codex)).unwrap().0.generation;
-        manager.activate(owned_id, generation).await.unwrap();
-        {
-            let mut sessions = manager.sessions.lock().unwrap();
-            let session = sessions.get_mut(owned_id).unwrap();
-            session.active_turn_id = Some("turn-original".into());
-            session.state = AgentRuntimeState::Working;
-        }
-        let sender = manager.clone();
-        let pending = tokio::spawn(async move {
-            sender.prompt(owned_id, generation, test_prompt("late steering ack")).await
-        });
-        wait_until(|| fs::read_to_string(&log).unwrap_or_default().contains("_session/steering")).await;
-        {
-            let mut sessions = manager.sessions.lock().unwrap();
-            let session = sessions.get_mut(owned_id).unwrap();
-            record_payload_for_session_and_dispatch(session, &manager.emitter,
-                AgentConversationPayload::Turn {
-                    turn_id: "turn-original".into(),
-                    state: super::super::protocol::TurnState::Completed,
-                }).unwrap();
-            session.active_turn_id = None;
-            session.state = AgentRuntimeState::Ready;
-        }
-        fs::write(root.join("steering.jsonl.steer-ack"), "release").unwrap();
-        let receipt = tokio::time::timeout(Duration::from_secs(5), pending).await.unwrap().unwrap().unwrap();
-        assert_eq!(receipt.turn_id, "turn-original");
-        let stored = manager.list_events(owned_id, receipt.admitted_sequence).unwrap();
-        let admitted = stored.first().unwrap();
-        assert_eq!(admitted.turn_id.as_deref(), Some("turn-original"));
-        assert!(matches!(&admitted.payload, AgentConversationPayload::UserMessage { item_id, .. }
-            if item_id == &receipt.user_item_id));
-        assert_eq!(manager.sessions.lock().unwrap().get(owned_id).unwrap().active_turn_id, None);
-        manager.close(owned_id, generation).await.unwrap();
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn steering_not_consumed_preserves_the_existing_turn_and_journal() {
-        for kind in ["steering_idle", "steering_failed"] {
-            let fixture = fixture_manager_with_acp_session(kind).await;
-            {
-                let mut sessions = fixture.manager.sessions.lock().unwrap();
-                let session = sessions.get_mut(&fixture.owned_id).unwrap();
-                session.active_turn_id = Some("turn-running".into());
-                session.state = AgentRuntimeState::Working;
-            }
-            let result = fixture
-                .manager
-                .prompt(
-                    &fixture.owned_id,
-                    fixture.generation,
-                    test_prompt("keep my correction"),
-                )
-                .await;
-            assert!(
-                result.is_err(),
-                "unconsumed input must return to draft recovery"
-            );
-            let events = fixture.manager.list_events(&fixture.owned_id, 0).unwrap();
-            assert!(!events.iter().any(|event| matches!(&event.payload, AgentConversationPayload::UserMessage { text, .. } if text == "keep my correction")));
-            assert_eq!(
-                fixture
-                    .manager
-                    .sessions
-                    .lock()
-                    .unwrap()
-                    .get(&fixture.owned_id)
-                    .unwrap()
-                    .active_turn_id
-                    .as_deref(),
-                Some("turn-running")
-            );
-            let wire = fs::read_to_string(fixture.root.join(format!("{kind}.jsonl"))).unwrap();
-            assert!(wire.contains("_session/steering"));
-            assert!(!wire.contains("\"method\":\"session/prompt\""));
-            fixture
-                .manager
-                .close(&fixture.owned_id, fixture.generation)
-                .await
-                .unwrap();
-            fs::remove_dir_all(fixture.root).unwrap();
-        }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn prompt_after_failed_session_replacement_continues_the_event_sequence() {
         let fixture = fixture_manager_with_acp_session("prompt_with_update").await;
 
@@ -11993,63 +11869,6 @@ mod tests {
         assert_eq!(log.matches(r#""method":"session/new""#).count(), 1);
         assert_eq!(log.matches(r#""method":"session/resume""#).count(), 1);
         assert_eq!(log.matches(r#""method":"session/prompt""#).count(), 1);
-
-        fixture
-            .manager
-            .close(&fixture.owned_id, fixture.generation)
-            .await
-            .unwrap();
-        fs::remove_dir_all(fixture.root).unwrap();
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn queued_message_delivers_when_session_goes_quiescent() {
-        let fixture = fixture_manager_with_acp_session("queued_message_feed").await;
-        let message = fixture
-            .manager
-            .store
-            .append_message(
-                "",
-                "worker-a",
-                &fixture.owned_id,
-                mcb_core::broker::MessageKind::Message,
-                "Review the patch",
-            )
-            .expect("queue message");
-        let prompts = || {
-            fs::read_to_string(fixture.root.join("queued_message_feed.jsonl"))
-                .unwrap()
-                .matches(r#""method":"session/prompt""#)
-                .count()
-        };
-        let receipt = || {
-            fixture.manager.store.pending_for(&fixture.owned_id).unwrap().map(|pending| pending.id)
-        };
-
-        fixture
-            .manager
-            .prompt(&fixture.owned_id, fixture.generation, test_prompt("finish current turn"))
-            .await
-            .expect("prompt starts");
-        let end_first_turn = prompt_result(&fixture).await;
-        fixture.manager.deliver_if_idle(&fixture.owned_id).await;
-        assert_eq!(receipt(), Some(message.id.clone()), "a busy session keeps the message queued");
-        assert_eq!(prompts(), 1);
-
-        feed(&fixture, &[end_first_turn]);
-        wait_until(|| prompts() == 2).await;
-        wait_until(|| receipt().is_none()).await;
-        assert_eq!(fixture.manager.store.message_status(&message.id, "worker-a").unwrap(), "delivered");
-        let expected = "[message from worker-a]\nReview the patch";
-        let snapshot = fixture
-            .manager
-            .snapshot(&fixture.owned_id)
-            .expect("read snapshot")
-            .expect("session exists");
-        assert_eq!(snapshot.events.iter().filter(|event| matches!(
-            &event.payload,
-            AgentConversationPayload::UserMessage { text, .. } if text == expected
-        )).count(), 1);
 
         fixture
             .manager
