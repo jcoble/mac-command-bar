@@ -43,10 +43,17 @@
       diffs = kept;
     } else {
       next.add(edit.itemId);
-      if (edit.diff === undefined) void readDiff(edit.itemId);
     }
     openPaths = next;
   }
+
+  /* An opened file with no inline diff reads it, including one opened while its edit ran that
+     lost the inline diff when the edit finished. */
+  $effect(() => {
+    for (const edit of item.edits) {
+      if (openPaths.has(edit.itemId) && edit.diff === undefined && diffs[edit.itemId] === undefined) void readDiff(edit.itemId);
+    }
+  });
 
   /** The diff row this group folded away, in the shape that draws it. */
   function fileDisplayItem(edit: ConversationFileEdit, diff: string): Extract<ConversationDisplayItem, { kind: 'file' }> {
