@@ -40,16 +40,40 @@ function readChunks(path: string): Chunk[] {
   });
 }
 
-/** Each run from its RUN_STARTED to its RUN_FINISHED; `paused` when that finish is an interrupt. */
+/**
+ * Each run from its RUN_STARTED to its RUN_FINISHED; `paused` when that finish is an interrupt.
+ * Once any surface answers, the backend ends the paused run again with a plain RUN_FINISHED,
+ * just before the continuation starts; that finish leads the continuation's chunks. Every
+ * text message ends once, and before its run does (a pause may leave one open).
+ */
 function runsOf(chunks: Chunk[]): Run[] {
   const runs: Run[] = [];
   let open: Run | null = null;
+  let answered: Chunk[] = [];
+  const texts = new Set<string>();
   for (const chunk of chunks) {
-    if (chunk.type === 'RUN_STARTED') open = { runId: chunk.runId!, chunks: [], paused: false };
+    const interrupt = chunk.type === 'RUN_FINISHED' && (chunk as { outcome?: { type?: string } }).outcome?.type === 'interrupt';
+    const last = runs.at(-1);
+    if (!open && chunk.type === 'RUN_FINISHED' && !interrupt && last?.paused && chunk.runId === last.runId) {
+      answered.push(chunk);
+      continue;
+    }
+    if (chunk.type === 'RUN_STARTED') {
+      open = { runId: chunk.runId!, chunks: answered, paused: false };
+      answered = [];
+    }
     assert.ok(open, `${chunk.type} arrived outside a run`);
     open.chunks.push(chunk);
+    if (chunk.type === 'TEXT_MESSAGE_START') {
+      assert.ok(!texts.has(chunk.messageId!), `text message ${chunk.messageId} started twice`);
+      texts.add(chunk.messageId!);
+    } else if (chunk.type === 'TEXT_MESSAGE_CONTENT' || chunk.type === 'TEXT_MESSAGE_END') {
+      assert.ok(texts.has(chunk.messageId!), `${chunk.type} for text message ${chunk.messageId} that is not open`);
+      if (chunk.type === 'TEXT_MESSAGE_END') texts.delete(chunk.messageId!);
+    }
     if (chunk.type === 'RUN_FINISHED' || chunk.type === 'RUN_ERROR') {
-      open.paused = chunk.type === 'RUN_FINISHED' && (chunk as { outcome?: { type?: string } }).outcome?.type === 'interrupt';
+      open.paused = interrupt;
+      if (!interrupt) assert.deepEqual([...texts], [], `run ${open.runId} ended with text messages still open`);
       runs.push(open);
       open = null;
     }
@@ -214,7 +238,7 @@ function pauseAndContinuation(chunks: Chunk[]): { pause: Run; continuation: Run;
   const runs = runsOf(chunks);
   const pause = runs.find((run) => run.paused);
   assert.ok(pause, 'the recording has a paused run');
-  const continuation = runs.find((run) => run.chunks[0].parentRunId === pause.runId);
+  const continuation = runs.find((run) => run.chunks.find((chunk) => chunk.type === 'RUN_STARTED')?.parentRunId === pause.runId);
   assert.ok(continuation, `the recording continues run ${pause.runId}`);
   return { pause, continuation, threadId: pause.chunks[0].threadId! };
 }
@@ -331,11 +355,17 @@ for (const path of fixtures) {
     const { server, chat, errors, pause, continuation, threadId } = await pausedTurn(chunks, (p) => [p]);
     assert.equal(locked(chat), true);
     // The backend ends the paused run as soon as any surface answers, then continues under it.
-    server.push({ type: 'RUN_FINISHED', threadId, runId: pause.runId } as Chunk);
+    const start = continuation.chunks.findIndex((chunk) => chunk.type === 'RUN_STARTED');
+    let answer = continuation.chunks.slice(0, start);
+    if (!answer.length) {
+      answer = [{ type: 'RUN_FINISHED', threadId, runId: pause.runId } as Chunk];
+      console.log(`${name}: no answer finish recorded; checked a synthesized one`);
+    }
+    server.push(...answer);
     await server.idle();
     assert.equal(interruptsOf(chat).length, 0, 'the answered pause is gone');
     assert.equal(locked(chat), false, 'the composer unlocks');
-    server.push(...continuation.chunks);
+    server.push(...continuation.chunks.slice(start));
     await server.idle();
     assert.equal(interruptsOf(chat).length, 0);
     const messageId = firstTextMessageId(continuation);
