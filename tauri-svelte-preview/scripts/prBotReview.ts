@@ -5,14 +5,14 @@
 // Run from the branch's worktree: node --experimental-strip-types tauri-svelte-preview/scripts/prBotReview.ts
 import { execFileSync } from 'node:child_process';
 
-const BOT = 'chatgpt-codex-connector';
+const BOT = 'chatgpt-codex-connector[bot]';
 // Two waits of 15 minutes keep the whole run near 30 minutes, well inside the workflow step timeouts.
 const WAIT_MINUTES = 15;
 const POLL_SECONDS = 30;
 const POLLS = (WAIT_MINUTES * 60) / POLL_SECONDS;
 
 type ReviewState = { commit_sha: string | null; status: string | null };
-type Thread = { id: string; isResolved: boolean; comments: { nodes: Array<{ databaseId: number; author: { login: string } | null; path: string; line: number | null; originalLine: number | null; body: string }> } };
+type Thread = { id: string; isResolved: boolean; comments: { nodes: Array<{ databaseId: number; author: { __typename: string; login: string } | null; path: string; line: number | null; originalLine: number | null; body: string }> } };
 
 function gh(args: string[]): string {
   return execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
@@ -27,8 +27,12 @@ export function reviewState(commentBodies: string[]): ReviewState | null {
   return null;
 }
 
+// GraphQL reports a bot's login without the "[bot]" suffix REST adds, so check the account type as well.
 export function openBotThreads(threads: Thread[]): Thread[] {
-  return threads.filter((thread) => !thread.isResolved && thread.comments.nodes[0]?.author?.login.startsWith(BOT));
+  return threads.filter((thread) => {
+    const author = thread.comments.nodes[0]?.author;
+    return !thread.isResolved && author?.__typename === 'Bot' && `${author.login}[bot]` === BOT;
+  });
 }
 
 function main(): void {
@@ -38,7 +42,7 @@ function main(): void {
   const head = pr.headRefOid;
   const botComments = () => JSON.parse(gh(['api', '--paginate', '--slurp', `repos/${repo}/issues/${pr.number}/comments`]))
     .flat()
-    .filter((comment: { user: { login: string } }) => comment.user.login.startsWith(BOT))
+    .filter((comment: { user: { login: string } }) => comment.user.login === BOT)
     .map((comment: { body: string }) => comment.body) as string[];
 
   const askForReview = () => {
@@ -65,7 +69,7 @@ function main(): void {
     reviewed = waitForReview();
   }
 
-  const query = `query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:1){nodes{databaseId author{login} path line originalLine body}}}}}}}`;
+  const query = `query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:1){nodes{databaseId author{__typename login} path line originalLine body}}}}}}}`;
   const pages = JSON.parse(gh(['api', 'graphql', '--paginate', '--slurp', '-f', `query=${query}`, '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `number=${pr.number}`])) as Array<{ data: { repository: { pullRequest: { reviewThreads: { nodes: Thread[] } } } } }>;
   const open = openBotThreads(pages.flatMap((page) => page.data.repository.pullRequest.reviewThreads.nodes));
   if (open.length === 0) {
