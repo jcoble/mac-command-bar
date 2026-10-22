@@ -278,3 +278,59 @@ mod tests {
 #[cfg(test)]
 #[path = "connection_pin_tests.rs"]
 mod connection_pin_tests;
+
+impl RemoteCommand {
+    /// What the head server refuses in proof mode: whatever reaches outside the run or changes the mode.
+    pub(in crate::agent_conversation) fn refuse_in_proof_mode(&self) -> Result<(), String> {
+        use crate::proof_mode::refuse;
+        match self {
+            Self::Workspace { operation, .. } => crate::proof_mode::refuse_command(operation, &serde_json::Value::Null),
+            Self::BeginImport { .. } | Self::ExtendImport { .. } => refuse("Importing transcripts"),
+            Self::InstallProviderUpdates { .. } | Self::RestartForProviderUpdates => refuse("Updating providers"),
+            Self::SetConfig(request) if request.approval_policy.is_some() => refuse("Changing the mode"),
+            Self::SetConfigOption(request) if request.option_id == "mode" => refuse("Changing the mode"),
+            Self::TerminalStart(_) => refuse("The terminal"),
+            Self::Workflow { operation, .. } if matches!(operation.as_str(), "create" | "start") => refuse("Starting workflow runs"),
+            _ => Ok(()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod proof_mode_tests {
+    use super::RemoteCommand;
+
+    fn command(value: serde_json::Value) -> RemoteCommand {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn the_head_server_refuses_imports_updates_mode_changes_the_terminal_and_runs() {
+        let refused = [
+            serde_json::json!({"command":"beginImport","input":{"provider":"claude","native_session_id":"n","transcript_path":"/t","cwd":"/","title":null,"project_id":null}}),
+            serde_json::json!({"command":"extendImport","input":{"owned_id":"o"}}),
+            serde_json::json!({"command":"installProviderUpdates","input":{"provider":"codex"}}),
+            serde_json::json!({"command":"restartForProviderUpdates"}),
+            serde_json::json!({"command":"setConfig","input":{"ownedId":"o","generation":1,"model":null,"reasoningEffort":null,"approvalPolicy":"auto"}}),
+            serde_json::json!({"command":"setConfigOption","input":{"ownedId":"o","generation":1,"optionId":"mode","value":"auto"}}),
+            serde_json::json!({"command":"terminalStart","input":{"cwd":"/","shell":null,"cols":null,"rows":null,"ownedId":null,"command":null}}),
+            serde_json::json!({"command":"workflow","input":{"operation":"start","args":{}}}),
+            serde_json::json!({"command":"workspace","input":{"operation":"merge_github_pull_request","args":{}}}),
+        ].map(command);
+        let allowed = [
+            serde_json::json!({"command":"listSessions"}),
+            serde_json::json!({"command":"setConfigOption","input":{"ownedId":"o","generation":1,"optionId":"model","value":"m"}}),
+            serde_json::json!({"command":"workflow","input":{"operation":"list","args":{}}}),
+        ].map(command);
+        for command in refused.iter().chain(&allowed) {
+            assert!(command.refuse_in_proof_mode().is_ok(), "only in proof mode: {command:?}");
+        }
+        crate::proof_mode::turn_on_for_this_thread("planted\n\n");
+        for command in &refused {
+            assert!(command.refuse_in_proof_mode().unwrap_err().ends_with("is off in proof mode"), "{command:?}");
+        }
+        for command in &allowed {
+            assert!(command.refuse_in_proof_mode().is_ok(), "{command:?}");
+        }
+    }
+}

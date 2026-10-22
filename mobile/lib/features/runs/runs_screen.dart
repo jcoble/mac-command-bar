@@ -15,8 +15,7 @@ import 'runs_repository.dart';
 /// ([AsyncValue.isRefreshing]) keeps its rows.
 bool showsValue<T>(AsyncValue<T> v) => v.hasValue && !v.isReloading;
 
-/// Active runs (running, paused, waiting for the owner) and the 20 newest
-/// finished ones, on the selected machine.
+/// The selected machine's runs, grouped: Needs you, Running, Done today.
 class RunsScreen extends ConsumerWidget {
   const RunsScreen({super.key});
 
@@ -26,21 +25,8 @@ class RunsScreen extends ConsumerWidget {
     return RefreshIndicator(
       onRefresh: () => ref.read(runsProvider.notifier).refresh(),
       child: switch (runs) {
-        AsyncValue(:final value?) when showsValue(runs) => ListView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-          children: [
-            if (value.active.isEmpty && value.recent.isEmpty)
-              const RunsMessage('No runs on this machine yet.'),
-            if (value.active.isNotEmpty) ...[
-              SectionLabel('Active · ${value.active.length}'),
-              _RunGroup(value.active),
-            ],
-            if (value.recent.isNotEmpty) ...[
-              const SectionLabel('Recent'),
-              _RunGroup(value.recent),
-            ],
-          ],
+        AsyncValue(:final value?) when showsValue(runs) => _groups(
+          groupRuns(value, DateTime.now()),
         ),
         AsyncValue(:final error?) => ListView(
           physics: const AlwaysScrollableScrollPhysics(),
@@ -50,6 +36,49 @@ class RunsScreen extends ConsumerWidget {
       },
     );
   }
+
+  Widget _groups(RunGroups groups) {
+    final shown = [
+      ('Needs you', groups.needsYou),
+      ('Running', groups.running),
+      ('Done today', groups.doneToday),
+    ].where((g) => g.$2.isNotEmpty);
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+      children: [
+        if (shown.isEmpty) const RunsMessage('No runs today.'),
+        for (final (label, runs) in shown) ...[
+          SectionLabel('$label · ${runs.length}'),
+          _RunGroup(runs),
+        ],
+      ],
+    );
+  }
+}
+
+typedef RunGroups = ({
+  List<RunRow> needsYou,
+  List<RunRow> running,
+  List<RunRow> doneToday,
+});
+
+/// Splits [runs]: unfinished runs waiting on the owner, the other unfinished
+/// ones, and finished runs last updated since local midnight of [now]. Runs
+/// that finished before today are not shown.
+RunGroups groupRuns(RunsList runs, DateTime now) {
+  final midnight = DateTime(
+    now.year,
+    now.month,
+    now.day,
+  ).millisecondsSinceEpoch;
+  bool waiting(RunRow run) =>
+      run.state == 'waiting-input' || run.state == 'waiting-approval';
+  return (
+    needsYou: runs.active.where(waiting).toList(),
+    running: runs.active.where((run) => !waiting(run)).toList(),
+    doneToday: runs.recent.where((run) => run.updatedAt >= midnight).toList(),
+  );
 }
 
 class _RunGroup extends StatelessWidget {

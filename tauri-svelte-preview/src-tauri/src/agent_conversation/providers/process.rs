@@ -35,6 +35,11 @@ impl SidecarEnvironment {
         self
     }
 
+    pub fn set(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.values.insert(name.into(), Some(value.into()));
+        self
+    }
+
     pub fn remove(mut self, name: impl Into<String>) -> Self {
         self.values.insert(name.into(), None);
         self
@@ -147,9 +152,14 @@ impl SidecarProcess {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         environment.apply(&mut command);
-        // The descriptor's launch arguments and environment; settings probes skip pre-approval (TSK-1506).
-        let wanted = super::descriptors::LaunchFor { pre_approval: !environment.skip_assembly_tool_approval, ..Default::default() };
-        let launch = super::descriptors::for_adapter(&manifest.id).and_then(|descriptor| descriptor.launch(wanted)).unwrap_or_default();
+        // The descriptor's launch arguments and environment, read-only in proof mode; settings probes skip pre-approval (TSK-1506).
+        let launch = match super::descriptors::for_adapter(&manifest.id) {
+            Some(descriptor) => crate::proof_mode::session_launch(descriptor, !environment.skip_assembly_tool_approval)?,
+            None => {
+                crate::proof_mode::refuse("An agent without a provider descriptor")?;
+                Default::default()
+            }
+        };
         command.args(&launch.args);
         for (key, value) in &launch.env {
             let inherited = match environment.values.get(key) { Some(value) => value.clone(), None => std::env::var(key).ok() };

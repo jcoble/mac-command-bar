@@ -3,7 +3,7 @@
 //! the person explicitly chooses API transport in Settings.
 
 mod anthropic;
-mod keychain;
+pub(crate) mod keychain;
 mod openai;
 
 use serde::{Deserialize, Serialize};

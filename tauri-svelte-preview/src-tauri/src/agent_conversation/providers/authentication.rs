@@ -204,6 +204,18 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_provider_check_that_needs_sign_in_says_so() {
+        let root = std::env::temp_dir().join(format!("mcb-auth-probe-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let manifest = super::super::acp_client::tests::fixture_manifest_named(&root.join("frames"), "auth");
+        let providers = super::super::ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)]).unwrap();
+        let manager = crate::agent_conversation::manager::AgentRuntimeManager::new(providers);
+        let error = manager.probe_provider_config(AgentConversationProvider::Claude, root.to_str().unwrap()).await.unwrap_err();
+        assert_eq!(error, sign_in_needed(AgentConversationProvider::Claude));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     // Adapter frames from the TSK-1508 unauthenticated probe (probe-unauth.log:2,5,9).
     const CODEX_SIGN_IN: &str = "acp-error: {\"code\":-32000,\"message\":\"Authentication required\"}";
     const CLAUDE_093_SIGN_IN: &str = "acp-error: {\"code\":-32603,\"message\":\"Internal error\",\"data\":{\"details\":\"Authentication required\"}}";

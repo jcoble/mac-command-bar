@@ -156,6 +156,7 @@ pub(super) fn write_attachment_chunk(
 }
 
 pub(super) async fn execute_server_command(state: &ServerState, upload: &Arc<Mutex<Option<PendingAttachment>>>, command: RemoteCommand, progress: crate::agent_conversation::providers::updates::ProgressSink) -> Result<RemoteResponse, String> {
+    command.refuse_in_proof_mode()?;
     let vault = state.data_dir.join("conversation-attachments");
     let command = match command {
         RemoteCommand::AttachmentChunk { upload_id, owned_id, mime_type, first, last, bytes } => {
@@ -269,6 +270,13 @@ pub(super) async fn execute_server_command(state: &ServerState, upload: &Arc<Mut
         // Phone pairing needs this server's pairing code and database, not the engine.
         if let Some(answer) = crate::agent_conversation::phone::operation(state, &operation, &args) {
             return answer.map(RemoteResponse::Workflow);
+        }
+        // The Workflows screen's costs come from this machine's usage rows, not the engine.
+        if operation == "usage" {
+            let (path, run_id) = (state.data_dir.join("usage-history.sqlite3"), args["runId"].as_str().map(str::to_string));
+            let rows = tokio::task::spawn_blocking(move || crate::usage_db::UsageDb::open(path)?.read_workflow_usage(run_id.as_deref()))
+                .await.map_err(|error| error.to_string())??;
+            return serde_json::to_value(rows).map(RemoteResponse::Workflow).map_err(|error| error.to_string());
         }
         // A dropped socket or a client cancel aborts this request's task; the engine
         // call runs on its own task so a run is never left half-started.

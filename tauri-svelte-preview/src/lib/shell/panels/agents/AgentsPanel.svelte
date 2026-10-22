@@ -7,6 +7,7 @@
   import Bot from '@lucide/svelte/icons/bot';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import MessageSquare from '@lucide/svelte/icons/message-square';
+  import Workflow from '@lucide/svelte/icons/workflow';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
@@ -61,8 +62,10 @@
     onMessagesSeen: () => void;
     /** Opens the full Messages screen filtered to one workflow run. */
     onShowRunMessages: (runId: string, label: string) => void;
+    /** Opens the full Workflows screen. */
+    onOpenWorkflows: () => void;
   }
-  let { visible, root, ownedId, messagesUnread, onMessagesSeen, onShowRunMessages }: Props = $props();
+  let { visible, root, ownedId, messagesUnread, onMessagesSeen, onShowRunMessages, onOpenWorkflows }: Props = $props();
   let view = $state<'session' | 'workflows' | 'messages' | 'inbox'>('session');
   let inboxStepCount = $state(0);
   let transcriptState = $state<'loading' | 'unavailable' | 'ready' | 'error'>('unavailable');
@@ -286,6 +289,10 @@
   </div>
 
   {#if view === 'workflows'}
+    <!-- Runs are watched on the full Workflows screen; starting a run stays here until the screen can. -->
+    <div class="px-2 pb-2">
+      <Button size="sm" class="w-full" onclick={onOpenWorkflows}><Workflow />Open Workflows</Button>
+    </div>
     <WorkflowRuns
       visible={visible}
       root={workflowRoot}
