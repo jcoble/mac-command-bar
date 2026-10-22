@@ -98,7 +98,8 @@ fn simple_commands(line: &str, depth: usize) -> Option<Vec<String>> {
     }
     while let Some(c) = chars.next() {
         match (quote, c) {
-            (Some('\''), '\'') | (Some(_), '"') => quote = None,
+            // A string ends only at its own quote character.
+            (Some(open), c) if c == open => quote = None,
             (Some('"'), '\\') | (None, '\\') => {
                 // A backslash before a newline joins the lines.
                 if let Some(next) = chars.next().filter(|next| *next != '\n') {
@@ -269,6 +270,16 @@ mod tests {
         }
         assert_eq!(empty.decide("gh api repos/o/r/pulls/1"), Decision::Ask);
         assert_eq!(empty.decide("for n in 1 2; do echo $n; done"), Decision::Ask);
+
+        // A quote inside the other kind of quote does not end the string.
+        let allow_printf = policy(&["printf *", "echo *"], &[], &[], Decision::Ask);
+        for command in [
+            r#"printf '%s\n' '{"ok":true}' && gh pr merge 1"#,
+            r#"echo "it's" && gh pr merge 1"#,
+        ] {
+            assert_eq!(allow_printf.decide(command), Decision::Deny, "{command}");
+        }
+        assert_eq!(allow_printf.decide(r#"printf '%s' '{"a":1}'"#), Decision::Allow);
     }
 
     #[test]
