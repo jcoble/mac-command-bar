@@ -194,10 +194,10 @@
     if (conversation.sending || conversation.activeTurnId || ownedSession.activeTurnId) {
       return 'Finish the active turn before changing checkout.';
     }
-    if (Object.keys(conversation.pendingApprovals).length > 0 || ownedSession.pendingPermission) {
+    if (ownedSession.pendingPermission) {
       return 'Resolve the pending permission before changing checkout.';
     }
-    if (Object.keys(conversation.pendingInputs).length > 0 || ownedSession.pendingInput) {
+    if (ownedSession.pendingInput) {
       return 'Complete the pending input before changing checkout.';
     }
     if (activeTool) return 'Wait for the active tool operation to finish before changing checkout.';

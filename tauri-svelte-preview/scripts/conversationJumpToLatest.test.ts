@@ -11,7 +11,6 @@ import { fileURLToPath } from 'node:url';
 import { compileModule } from 'svelte/compiler';
 import { EventType, StreamProcessor } from '@tanstack/ai/client';
 import * as conversationMessages from '../src/lib/shell/conversation/conversationMessages.ts';
-import { usageDropIsCompaction } from '../src/lib/shell/conversation/conversationReducer.ts';
 
 function compileForTest(path: URL, filename: string): string {
   const stripped = stripTypeScriptTypes(readFileSync(path, 'utf8'), { mode: 'strip' });
@@ -44,8 +43,12 @@ function page(first: number, last: number, hasBefore: boolean) {
   return {
     items: numbers.map((n) => ({ itemId: `u${n}`, stableId: `u${n}`, firstTimestampMs: n,
       firstSequence: n, lastSequence: n, positionKnown: true, prefixComplete: true })),
-    events: numbers.map((n) => ({ ownedId: 'chat', provider: 'codex', generation: 1, sequence: n, timestampMs: n,
-      payload: { kind: 'userMessage', itemId: `u${n}`, turnId: `t${n}`, text: `message ${n}` } })),
+    events: [],
+    chunks: numbers.flatMap((n) => [
+      { type: EventType.TEXT_MESSAGE_START, messageId: `u${n}`, role: 'user', metadata: { itemType: 'user-message', turnId: `t${n}`, startedAtMs: n, firstSequence: n } },
+      { type: EventType.TEXT_MESSAGE_CONTENT, messageId: `u${n}`, delta: `message ${n}` },
+      { type: EventType.TEXT_MESSAGE_END, messageId: `u${n}` }
+    ]),
     turns: numbers.map((n) => ({ turnId: `t${n}` })),
     watermark: last, transferBytes: 0, oversized: false, hasBefore, hasAfter: false,
     hasEarlierTranscript: false, beforeCursor: first, afterCursor: last
@@ -77,7 +80,9 @@ function loadConnection() {
   const dependencies = {
     normalizeProvider: (agent: string) => ({ agent }),
     EventType,
+    StreamProcessor,
     createChat,
+    resumeConversationRun: async () => undefined,
     attachmentDisplayMetadata: (attachment: unknown) => attachment,
     discardRestoredAttachments: () => undefined,
     readNewerSelectedConversationItems: async () => null,
@@ -87,15 +92,15 @@ function loadConnection() {
     restoreAttachmentList: async () => [],
     sendStructuredMessage: async () => undefined,
     subscribeSelectedConversation: async (options: any) => {
-      options.onSnapshot({ page: page(21, 30, true), pendingEvents: [], pendingSequence: 30, suspended: false,
+      const latest = page(21, 30, true);
+      options.onSnapshot({ page: latest, chunks: latest.chunks, runs: [], pendingEvents: [], pendingSequence: 30, suspended: false,
         connection: { generation: 1, provider: 'codex', state: 'connected' } });
       return () => undefined;
     },
     ...conversationMessages,
     ...store,
     extendAgentConversationImportFromTauri: async () => null,
-    rail: { owned: [] },
-    usageDropIsCompaction
+    rail: { owned: [] }
   };
   return Function(...Object.keys(dependencies), `${stripTypeScriptTypes(body, { mode: 'strip' })}
     return { selectConversationChat, selectedConversationChatReady, pageSelectedConversation, jumpSelectedConversationToLatest };

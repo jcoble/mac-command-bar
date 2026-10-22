@@ -22,6 +22,8 @@ const environment = new Promise((resolve) => { releaseEnvironment = resolve; });
 const rail = { remoteProfiles: [] as unknown[] };
 const dependencies = {
   registerAgentConversationStream: async () => ({ unregister: async () => {} }),
+  registerAguiStream: async () => ({ unregister: async () => {} }),
+  admitSelectedConversationChunks: () => undefined,
   handleConversationStreamEnvelope: () => {},
   handleConversationStreamResync: () => {},
   listen: async (name: string, handler: Handler) => { handlers.set(name, handler); return () => handlers.delete(name); },

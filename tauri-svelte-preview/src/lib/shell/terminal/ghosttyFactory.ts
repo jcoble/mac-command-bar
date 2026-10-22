@@ -3,7 +3,8 @@ import type { TerminalView } from '../../liveConversationTerminals';
 import { settings } from '../settings/settingsStore.svelte';
 import { addTerminalView } from '../resourceDiagnostics.svelte.ts';
 import { terminalFontStack } from '../settings/themes/fontRegistry';
-import { currentTheme, registerTerminalApplier } from '../settings/themes/themeService';
+import { registerTerminalApplier } from '../settings/themes/themeService';
+import { getTheme } from '../settings/themes/themeRegistry';
 
 const liveTerminals = new Map<import('ghostty-web').Terminal, () => void>();
 
@@ -64,7 +65,7 @@ export function makeTerminalView(
     fontSize: appearance.fontSize,
     lineHeight: appearance.lineHeight,
     scrollback: 8000,
-    theme: { ...currentTheme().terminal }
+    theme: { ...getTheme(settings.appearance.themeId).terminal }
   });
   const fitAddon = new modules.FitAddon();
   terminal.loadAddon(fitAddon);

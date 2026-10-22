@@ -9,7 +9,6 @@ export { displayEventFrom } from './conversationMessages.ts';
  */
 import { createConversationState, reduceConversationEvent, shouldClearConversationSending } from './conversationReducer.ts';
 import type {
-  AgentApprovalRequest,
   AgentCapabilities,
   AgentCommandDescriptor,
   AgentEvent,
@@ -20,9 +19,6 @@ import type {
   AgentConversationSelectionSnapshot,
   AgentConversationTurnFacts,
   AgentConfigValue,
-  AgentPermissionOption,
-  AgentPermissionRequest,
-  AgentUserInputRequest,
   AgentWriterLease,
   AgentWriterLeaseTransition,
   ConversationAttachment,
@@ -33,9 +29,7 @@ import type {
 import {
   agentItemFromEvent,
   availableCommandsFromEvent,
-  displayItemFromAgentItem,
-  displayItemFromApproval,
-  permissionRequestFromEvent
+  displayItemFromAgentItem
 } from './conversationTimeline.ts';
 import {
   emptyAgentConversationConfigState,
@@ -118,8 +112,6 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   capabilitiesGeneration: number;
   capabilityError: string | null;
   availableCommands: AgentCommandDescriptor[];
-  pendingApprovals: Record<string, AgentPermissionRequest>;
-  pendingInputs: Record<string, AgentUserInputRequest>;
   pendingConfig: Record<string, AgentConfigValue>;
   configErrors: Record<string, string>;
   recentEvents: ConversationRecentEvent[];
@@ -214,8 +206,6 @@ function freshState(
     capabilitiesGeneration: 0,
     capabilityError: null,
     availableCommands: [],
-    pendingApprovals: {},
-    pendingInputs: {},
     pendingConfig: {},
     configErrors: {},
     recentEvents: [],
@@ -278,8 +268,6 @@ function applyConversationSnapshotControls(
   current.connectionState = snapshot.connection.state;
   current.suspended = snapshot.suspended;
   current.activeTurnId = snapshot.suspended ? undefined : snapshot.activeTurnId;
-  current.pendingApprovals = {};
-  current.pendingInputs = {};
   current.children = [];
   for (const event of snapshot.pendingEvents) applyTypedEventPayload(current, displayEventFrom(event));
 }
@@ -650,26 +638,6 @@ function mergeConversationChild(
   else current.children.push(child);
 }
 
-function permissionOptions(value: unknown): AgentPermissionOption[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (typeof entry === 'string') {
-      return [{
-        optionId: entry,
-        name: entry === 'accept' ? 'Allow' : entry === 'decline' || entry === 'cancel' ? 'Deny' : entry
-      }];
-    }
-    if (!isRecord(entry)) return [];
-    const optionId = asString(entry.optionId) ?? asString(entry.id);
-    if (!optionId) return [];
-    return [{
-      optionId,
-      name: asString(entry.name) ?? asString(entry.label) ?? optionId,
-      kind: asString(entry.kind) ?? undefined
-    }];
-  });
-}
-
 function applyTypedEventPayload(current: ConversationWorkspaceState, event: AgentConversationEvent | AgentEvent): void {
   const payload = event.payload as Record<string, unknown>;
   const raw = isRecord(payload);
@@ -681,9 +649,6 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
       : payload.kind === 'userInputResolved' ? 'user-input.resolved'
       : payload.kind === 'error' ? 'runtime.error'
         : payload.kind === 'usage' ? 'usage.updated' : '';
-  const requestIdFromEvent = 'requestId' in event ? event.requestId : undefined;
-  const turnIdFromEvent = 'turnId' in event ? event.turnId : undefined;
-  const itemIdFromEvent = 'itemId' in event ? event.itemId : undefined;
   const capabilities = isRecord(payload.capabilities) ? payload.capabilities as unknown as AgentCapabilities : null;
   if (capabilities && Array.isArray(capabilities.configOptions) && Array.isArray(capabilities.commands)) {
     current.capabilities = capabilities;
@@ -729,57 +694,6 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
     for (const child of payload.children) {
       mergeConversationChild(current, child, event.provider, event.generation, event.timestampMs);
     }
-  }
-  const richPermission = permissionRequestFromEvent(event);
-  if (richPermission) {
-    if (richPermission.state === 'requested') current.pendingApprovals[richPermission.requestId] = richPermission;
-    else delete current.pendingApprovals[richPermission.requestId];
-  } else if (eventType === 'approval.requested') {
-    const requestId = asString(payload.requestId) ?? requestIdFromEvent;
-    if (requestId) {
-      const tool = isRecord(payload.toolCall) ? payload.toolCall : null;
-      const toolTitle = asString(payload.toolTitle) ?? asString(tool?.title) ?? asString(payload.summary) ?? asString(payload.title) ?? 'Permission requested';
-      const options = permissionOptions(payload.options);
-      current.pendingApprovals[requestId] = {
-        ownedId: current.ownedId,
-        generation: current.generation,
-        requestId,
-        turnId: turnIdFromEvent,
-        itemId: itemIdFromEvent,
-        title: asString(payload.title) ?? 'Approval needed',
-        toolTitle,
-        description: asString(payload.description) ?? asString(payload.summary) ?? undefined,
-        options: options.length ? options : [
-          { optionId: 'accept', name: 'Allow', kind: 'allow_once', synthetic: true },
-          { optionId: 'decline', name: 'Deny', kind: 'reject_once', synthetic: true }
-        ],
-        state: 'requested'
-      };
-    }
-  }
-  if (eventType === 'approval.resolved') {
-    const requestId = asString(payload.requestId) ?? requestIdFromEvent;
-    if (requestId) delete current.pendingApprovals[requestId];
-  }
-  if (eventType === 'user-input.requested') {
-    const requestId = asString(payload.requestId) ?? requestIdFromEvent;
-    if (requestId && Array.isArray(payload.fields)) {
-      current.pendingInputs[requestId] = {
-        ownedId: current.ownedId,
-        generation: current.generation,
-        requestId,
-        turnId: turnIdFromEvent,
-        itemId: itemIdFromEvent,
-        title: asString(payload.title) ?? 'Input requested',
-        description: asString(payload.description) ?? undefined,
-        fields: payload.fields as AgentUserInputRequest['fields'],
-        canDecline: payload.canDecline === true
-      };
-    }
-  }
-  if (eventType === 'user-input.resolved') {
-    const requestId = asString(payload.requestId) ?? requestIdFromEvent;
-    if (requestId) delete current.pendingInputs[requestId];
   }
 }
 
@@ -1017,28 +931,6 @@ export function failConversationConfigChange(ownedId: string, optionId: string, 
   if (!current) return;
   delete current.pendingConfig[optionId];
   current.configErrors[optionId] = message;
-}
-
-export function setConversationPendingApproval(
-  ownedId: string,
-  request: AgentApprovalRequest & { state: string }
-): void {
-  const current = conversationSessions[ownedId];
-  if (current && request.ownedId === ownedId && request.generation === current.generation) {
-    current.pendingApprovals[request.requestId] = {
-      ...request,
-      toolTitle: request.title,
-      options: permissionOptions(request.options),
-      state: request.state
-    };
-  }
-}
-
-export function setConversationPendingInput(ownedId: string, request: AgentUserInputRequest): void {
-  const current = conversationSessions[ownedId];
-  if (current && request.ownedId === ownedId && request.generation === current.generation) {
-    current.pendingInputs[request.requestId] = request;
-  }
 }
 
 export function setConversationHistoryDownload(workspaceOwnedId: string, progress: HistoryDownloadProgress): void {
