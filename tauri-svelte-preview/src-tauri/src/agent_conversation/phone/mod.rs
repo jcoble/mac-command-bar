@@ -51,8 +51,8 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 const CHAT_PAGE_BYTES: u32 = 1024 * 1024;
 const LATEST_CHAT_ITEMS: usize = 100;
 const MAX_PUSH_TOKEN_CHARS: usize = 4096;
-/// A tool call opened on the phone sends at most this much output and diff.
-const MAX_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
+/// A tool call opened on the phone sends at most this much output and diff; streamed command output keeps as much.
+pub(super) const MAX_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
 const MAX_TOOL_DIFF_BYTES: usize = 64 * 1024;
 /// A session's changes send at most this much diff; the file list is always whole.
 const MAX_CHANGES_DIFF_BYTES: usize = 256 * 1024;
@@ -167,8 +167,7 @@ pub(super) async fn start_listener(bind: Option<&str>, state: ServerState) -> bo
 
 /// Rings the phones once for each inbox item that appears. It wakes on any permission request or run
 /// change, recomputes the inbox, and sends for each `(id, version)` it has not seen. It starts from
-/// the items already waiting, so a restart does not ring for them again. It also rings once when a turn
-/// completes in a session the phone has opened.
+/// the items already waiting, so a restart does not ring for them again. A finished reply rings nothing.
 fn spawn_push(state: ServerState, sender: PushSender) {
     use tokio::sync::broadcast::error::RecvError;
     tokio::spawn(async move {
@@ -178,13 +177,6 @@ fn spawn_push(state: ServerState, sender: PushSender) {
         loop {
             let closed = tokio::select! {
                 event = events.recv() => match event {
-                    Ok(event) if matches!(event.payload, Payload::Turn { state: TurnState::Completed, .. }) => {
-                        let opened = state.phone_chats.lock().unwrap_or_else(PoisonError::into_inner).contains(&event.owned_id);
-                        if let (true, Ok(Some(machine))) = (opened, state.manager.store().phone_machine()) {
-                            sender.send_turn_push(state.manager.store(), &machine, &event.owned_id).await;
-                        }
-                        continue;
-                    }
                     Ok(event) if !matches!(event.payload, Payload::Approval { .. }) => continue,
                     Err(RecvError::Closed) => true,
                     _ => false,
@@ -360,16 +352,10 @@ fn known_session(state: &ServerState, owned_id: &str) -> Result<(), Response> {
         .map(|_| ()).ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))
 }
 
-/// Remembers that the phone has this session open, so its finished replies ring the phone.
-fn opened_on_phone(state: &ServerState, owned_id: &str) {
-    state.phone_chats.lock().unwrap_or_else(PoisonError::into_inner).insert(owned_id.to_owned());
-}
-
 /// `GET /phone/v1/sessions/{id}/chat?after=<seq>`: that session's chat.
 async fn session_chat(State(state): State<ServerState>, Path(owned_id): Path<String>,
     Query(query): Query<HashMap<String, String>>) -> Reply {
     known_session(&state, &owned_id)?;
-    opened_on_phone(&state, &owned_id);
     read_chat(&state, &owned_id, &query)
 }
 
@@ -833,7 +819,6 @@ async fn upload_attachment(State(state): State<ServerState>, Path(owned_id): Pat
 /// with up to 8 uploaded images.
 async fn send_session_chat(State(state): State<ServerState>, Path(owned_id): Path<String>, body: Bytes) -> Reply {
     known_session(&state, &owned_id)?;
-    opened_on_phone(&state, &owned_id);
     send_to(&state, owned_id, &body).await
 }
 
@@ -1452,7 +1437,7 @@ mod tests {
     use futures_util::StreamExt;
     use serde_json::{json, Value};
     use std::time::Duration;
-
+    mod device_removal;
     const PHONE_URL: &str = "https://phone.example.ts.net:8778";
 
     async fn phone_server() -> (ServerState, String) {
@@ -1729,7 +1714,7 @@ mod tests {
         assert_eq!(again.json::<Value>().await.unwrap(), json!({"error": "stale"}));
         // The engine takes an answer only from the owner, and recorded this one once.
         let run = state.workflow.get_run(&run_id).unwrap();
-        assert_eq!(run.input_snapshot["answers"], json!([{"step": "checks", "decision": "accept", "reply": null}]));
+        assert_eq!(run.input_snapshot["answers"], json!([{"step": "checks", "decision": "accept", "reply": null, "by": "owner", "why": null}]));
         assert_eq!(serde_json::to_value(run.state).unwrap(), "completed");
     }
 
@@ -2021,38 +2006,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn phone_turn_push_rings_only_for_sessions_opened_on_the_phone() {
+    async fn a_finished_reply_does_not_ring_the_phone() {
         use super::push::tests::{fake_fcm, test_sender};
         let (state, base) = phone_server().await;
         let token = paired(&state, &base).await;
         let set = client(reqwest::Method::POST, &base, "/push-token", &token).json(&json!({"fcmToken": "fcm-1"})).send().await.unwrap();
         assert_eq!(set.status(), reqwest::StatusCode::NO_CONTENT);
-        for owned_id in ["session-a", "session-b"] {
-            state.manager.store().upsert_session(&mcb_core::session_store::SessionRow { owned_id: owned_id.into(), native_session_id: None,
-                provider: "codex".into(), model: None, effort: None, cwd: "/work/assembly".into(), worktree: None, branch: None,
-                title: Some("SECRET-TITLE".into()), title_source: None, project: None, project_id: None,
-                state: "ready".into(), suspended: false, created_at_ms: 1, last_activity_at_ms: 1, extra_json: "{}".into() }).unwrap();
-        }
+        state.manager.store().upsert_session(&mcb_core::session_store::SessionRow { owned_id: "session-a".into(), native_session_id: None,
+            provider: "codex".into(), model: None, effort: None, cwd: "/work/assembly".into(), worktree: None, branch: None,
+            title: None, title_source: None, project: None, project_id: None,
+            state: "ready".into(), suspended: false, created_at_ms: 1, last_activity_at_ms: 1, extra_json: "{}".into() }).unwrap();
         let chat = client(reqwest::Method::GET, &base, "/sessions/session-a/chat", &token).send().await.unwrap();
         assert_eq!(chat.status(), reqwest::StatusCode::OK);
         let fake = fake_fcm(200, "{}").await;
         super::spawn_push(state.clone(), test_sender(&fake));
         tokio::time::sleep(Duration::from_millis(200)).await;
-        for owned_id in ["session-b", "session-a"] {
-            let mut turn = event(1, Payload::Turn { turn_id: "turn".into(), state: TurnState::Completed });
-            turn.owned_id = owned_id.into();
-            state.events.send(turn).unwrap();
-        }
+        let mut turn = event(1, Payload::Turn { turn_id: "turn".into(), state: TurnState::Completed });
+        turn.owned_id = "session-a".into();
+        state.events.send(turn).unwrap();
+        // The worker handles one event at a time, so once it has taken this second one it is done with the reply.
+        state.events.send(event(2, Payload::Turn { turn_id: "turn".into(), state: TurnState::Started })).unwrap();
         for _ in 0..200 {
-            if !fake.messages.lock().unwrap().is_empty() { break; }
+            if state.events.is_empty() { break; }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let messages = fake.messages.lock().unwrap();
-        assert_eq!(messages.len(), 1, "{messages:?}");
-        let sent = messages[0].to_string();
-        assert!(sent.contains("\"Reply ready\"") && sent.contains("\"sessionId\":\"session-a\""), "{sent}");
-        assert!(!sent.contains("SECRET-TITLE") && !sent.contains("session-b"), "{sent}");
+        assert!(state.events.is_empty(), "the push worker never took the events");
+        assert!(fake.messages.lock().unwrap().is_empty(), "a finished reply sent a push");
     }
 
     #[tokio::test]

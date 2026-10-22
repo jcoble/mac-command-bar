@@ -49,6 +49,7 @@
   import Copy from '@lucide/svelte/icons/copy';
   import WrapText from '@lucide/svelte/icons/wrap-text';
   import {
+    cachedHighlight,
     highlightCode,
     fenceLanguage,
     plainHighlightedLines,
@@ -71,9 +72,10 @@
   let copied = $state(false);
   let host = $state<HTMLDivElement | null>(null);
   let onScreen = $state(false);
-  /** Plain until the block is worth scanning, so the code is readable at once. */
+  /** Plain until the block is worth scanning, so the code is readable at once; a block
+   *  coloured before, scrolled back into view, is drawn coloured straight away. */
   const lines = $derived(
-    onScreen ? highlightCode(value, language) : plainHighlightedLines(value)
+    onScreen ? highlightCode(value, language) : cachedHighlight(value, language) ?? plainHighlightedLines(value)
   );
 
   // A block is only scanned once a person can actually see it. A transcript

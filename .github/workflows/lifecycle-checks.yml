@@ -3,6 +3,8 @@ name: Lifecycle checks
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -30,3 +32,36 @@ jobs:
           pnpm exec node --experimental-strip-types scripts/scanSchedulers.test.ts
           pnpm test:workspace-invoke
           pnpm test:git-diff-timeout
+          pnpm test:regressions
+
+  rust-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            tauri-svelte-preview/src-tauri
+            core
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+      # The git tests expect new repositories to start on main, as on the dev machines.
+      - name: Start new git repositories on main
+        run: git config --global init.defaultBranch main
+      # Skipped on this runner only:
+      # - the two lsp tests need the language servers that pnpm install puts in node_modules/.bin;
+      # - the rotation test needs a new inode for a re-created file, and ext4 here reuses the old one.
+      - name: Check and test the app crate
+        working-directory: tauri-svelte-preview/src-tauri
+        run: |
+          cargo check --locked --no-default-features
+          cargo test --locked --no-default-features -- \
+            --skip files::lsp::tests::a_read_mode_workspace_starts_no_language_server \
+            --skip files::lsp::tests::command_search_paths_prefer_pinned_application_language_servers \
+            --skip agent_conversation::terminal_projection::tests::detects_truncation_rotation_and_archive_move
+      - name: Test the core crate
+        working-directory: core
+        run: cargo test --locked

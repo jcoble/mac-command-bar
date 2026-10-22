@@ -33,6 +33,8 @@ import {
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import { setGitSurfaceDiagnostics } from '../resourceDiagnostics.svelte.ts';
 import { parseRemoteWorkspacePath } from '../../workspacePaths.ts';
+import { rail } from '../stores/sessionRailStore.svelte.ts';
+import { createGitAmend } from './gitAmend.ts';
 import {
   addGitRemoteFromTauri,
   amendGitCommitFromTauri,
@@ -65,6 +67,7 @@ import {
 } from '../../tauriSource.ts';
 import {
   clearSelectedGitFile,
+  describeGitError,
   gitPanel,
   resetGitPanelState,
   type GitActionKind,
@@ -244,11 +247,6 @@ export function absolutePathWithin(root: string, relativePath: string): string {
   return tail === '' ? base : `${base}/${tail}`;
 }
 
-function describeError(error: unknown, fallback: string): string {
-  const message = error instanceof Error ? error.message : String(error ?? '');
-  return message.trim() === '' ? fallback : message;
-}
-
 export interface GitService {
   /** The state this service writes. The panel reads the same object. */
   readonly state: GitPanelState;
@@ -292,10 +290,8 @@ export interface GitService {
   unstagePaths(paths: string[]): Promise<void>;
   /** Commit the staged changes using `state.commitMessage` unless one is given. */
   commit(message?: string): Promise<void>;
-  /**
-   * Rewrite the last commit with the staged changes. The panel asks first —
-   * amending a commit that is already pushed rewrites shared history.
-   */
+  setAmend(on: boolean): void;
+  /** Rewrite the last commit with the staged changes, then turn Amend off. `setAmend(true)` fills an empty box with the last message. */
   amendCommit(message?: string): Promise<void>;
   /**
    * Throw away the named files' changes. THE CALLER MUST HAVE ASKED FIRST:
@@ -339,6 +335,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
    * is cleared, or the repository changes. */
   let diffRead = new AbortController();
   let historySurfaceVisible = false;
+  const amend = createGitAmend(state);
   let sourceControlSyncGeneration = 0;
 
   function publishGitDiagnostics(): void {
@@ -392,7 +389,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     } catch (error) {
       if (!stillCurrent(statusGuard, id, root)) return;
       state.status = null;
-      state.statusError = describeError(error, 'Could not read the repository status.');
+      state.statusError = describeGitError(error, 'Could not read the repository status.', rail.remoteProfiles);
       void publishSourceControl();
     } finally {
       if (stillCurrent(statusGuard, id, root)) state.statusLoading = false;
@@ -436,7 +433,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       // A failed "Load more" keeps what is already on screen; only a failed
       // refresh has nothing left to show.
       if (!loadingMore) state.history = [];
-      state.historyError = describeError(error, 'Could not read the commit history.');
+      state.historyError = describeGitError(error, 'Could not read the commit history.', rail.remoteProfiles);
     } finally {
       if (stillCurrent(historyGuard, id, root)) {
         if (loadingMore) state.historyLoadingMore = false;
@@ -574,7 +571,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       publishGitDiagnostics();
     } catch (error) {
       if (!stillCurrent(diffGuard, id, root) || state.diffRevision !== revision) return;
-      state.diffError = describeError(error, 'Could not read the changes for this file.');
+      state.diffError = describeGitError(error, 'Could not read the changes for this file.', rail.remoteProfiles);
     } finally {
       if (stillCurrent(diffGuard, id, root) && state.diffRevision === revision) {
         state.diffLoading = false;
@@ -681,7 +678,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       return true;
     } catch (error) {
       if (state.root !== root) return false;
-      state.actionError = describeError(error, 'The git command did not finish.');
+      state.actionError = describeGitError(error, 'The git command did not finish.', rail.remoteProfiles);
       return false;
     } finally {
       if (state.actionBusy === kind) state.actionBusy = '';
@@ -742,12 +739,11 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       // Only clear the box on a commit that actually happened.
       if (state.actionError === '' && state.status !== before) state.commitMessage = '';
     },
-
+    setAmend: amend.set,
     async amendCommit(message?: string): Promise<void> {
-      const text = (message ?? state.commitMessage).trim();
-      const before = state.status;
-      await runAction('amend', (root) => backend.amend(root, text), { reloadHistory: true });
-      if (state.actionError === '' && state.status !== before) state.commitMessage = '';
+      const text = amend.messageFor((message ?? state.commitMessage).trim());
+      const amended = await runAction('amend', (root) => backend.amend(root, text), { reloadHistory: true });
+      if (amended) amend.finish();
     },
 
     async discardPaths(paths: string[]): Promise<void> {
@@ -851,7 +847,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
         await refresh();
       } catch (error) {
         if (signal.aborted || state.root !== root) return;
-        state.actionError = describeError(error, 'Git could not set up the folder.');
+        state.actionError = describeGitError(error, 'Git could not set up the folder.', rail.remoteProfiles);
       } finally {
         if (state.actionBusy === 'init') state.actionBusy = '';
       }

@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+
 use serde_json::Value;
 use similar::TextDiff;
 
 use super::super::history::transcript;
+use super::super::phone::MAX_TOOL_OUTPUT_BYTES;
+use super::super::protocol::AgentConversationPayload;
 use super::text_from_value;
 
 pub(super) fn tool_item_id(update: &Value, turn_id: &str) -> String {
@@ -11,6 +15,50 @@ pub(super) fn tool_item_id(update: &Value, turn_id: &str) -> String {
         .and_then(Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| format!("tool-{turn_id}"))
+}
+
+/// codex-acp 2.x streams a command's output as `_meta.terminal_output_delta`
+/// chunks (2.2.2 frame logs, TSK-1589), and a stored tool event's output
+/// replaces the one before it, so each chunk's event carries everything so
+/// far. `live_tool_calls` holds the joined text and drops it when the call
+/// finishes; the finishing frame has no chunk and the store carries the joined
+/// output onto it.
+pub(in crate::agent_conversation) fn join_terminal_output(
+    live_tool_calls: &mut HashMap<String, String>,
+    prior: Option<(String, String)>,
+    params: &Value,
+    payload: &mut AgentConversationPayload,
+) {
+    if let Some((id, text)) = prior {
+        live_tool_calls.entry(id).or_insert(text);
+    }
+    let AgentConversationPayload::Tool { item_id, output, .. } = payload else {
+        return;
+    };
+    let update = params.get("update").unwrap_or(params);
+    let Some(chunk) = update.pointer("/_meta/terminal_output_delta/data").and_then(Value::as_str) else {
+        return;
+    };
+    let joined = live_tool_calls.entry(item_id.clone()).or_default();
+    joined.push_str(chunk);
+    // Keep the newest output, at most what a tool call ever sends.
+    if let Some(excess) = joined.len().checked_sub(MAX_TOOL_OUTPUT_BYTES) {
+        joined.drain(..joined.ceil_char_boundary(excess));
+    }
+    *output = Some(joined.clone());
+}
+
+/// The output joined so far for the call this update carries a chunk for. Take it before
+/// `update_raw_liveness` runs: a finishing update drops the call, and its own last chunk
+/// must still join onto what came before. Pass it to `join_terminal_output`.
+pub(in crate::agent_conversation) fn joined_output_so_far(
+    live_tool_calls: &HashMap<String, String>,
+    params: &Value,
+) -> Option<(String, String)> {
+    let update = params.get("update").unwrap_or(params);
+    update.pointer("/_meta/terminal_output_delta/data")?;
+    let id = update.get("toolCallId").and_then(Value::as_str)?;
+    Some((id.to_string(), live_tool_calls.get(id)?.clone()))
 }
 
 /// The parts of an ACP tool call a transcript row can draw.
@@ -94,11 +142,11 @@ pub(in crate::agent_conversation) fn tool_details(update: &Value) -> ToolDetails
         None => {}
     }
 
+    // codex-acp 1.x sends a command's output whole; 2.x only in terminal chunks.
     if output.is_empty() {
-        if let Some(text) = update
-            .pointer("/rawOutput/formatted_output")
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
+        if let Some(text) = ["/rawOutput/formatted_output", "/_meta/terminal_output_delta/data"]
+            .into_iter()
+            .find_map(|pointer| update.pointer(pointer).and_then(Value::as_str).filter(|text| !text.is_empty()))
         {
             output.push(text.to_string());
         }
@@ -162,7 +210,9 @@ pub(in crate::agent_conversation) fn tool_details(update: &Value) -> ToolDetails
         name,
         summary,
         output,
-        path: (!paths.is_empty()).then(|| paths.join("\n")),
+        path: (!paths.is_empty()).then(|| {
+            paths_in_workdir(&paths.join("\n"), update.get("rawInput").unwrap_or(&Value::Null))
+        }),
         diff: (!diff.is_empty()).then(|| diff.join("\n")),
     }
 }
@@ -239,4 +289,56 @@ pub(in crate::agent_conversation) fn unified_diff(old_text: &str, new_text: &str
         .unified_diff()
         .context_radius(3)
         .to_string()
+}
+
+/// Each line of `paths`, if relative, joined onto the folder the call ran in
+/// (`workdir` or `cwd` in its input), so a file outside the session's project
+/// still resolves. Unchanged when the call recorded no absolute folder.
+pub(in crate::agent_conversation) fn paths_in_workdir(paths: &str, input: &Value) -> String {
+    let workdir = input.get("workdir").or_else(|| input.get("cwd")).and_then(Value::as_str)
+        .map(|folder| folder.trim_end_matches('/')).filter(|folder| folder.starts_with('/'));
+    let Some(workdir) = workdir else { return paths.to_string() };
+    paths.lines().map(|path| if path.starts_with('/') || path.starts_with('~') {
+        path.to_string()
+    } else {
+        format!("{workdir}/{}", path.trim_start_matches("./"))
+    }).collect::<Vec<_>>().join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_details;
+    use crate::agent_conversation::history::transcript::tool_record;
+    use serde_json::json;
+
+    #[test]
+    fn a_relative_read_carries_the_full_path_of_the_folder_the_call_ran_in() {
+        let update = json!({
+            "sessionUpdate": "tool_call", "toolCallId": "read-1", "kind": "read",
+            "title": "Read remote.rs",
+            "rawInput": { "command": "sed -n 1,80p src/remote.rs", "workdir": "/home/me/other-repo" }
+        });
+        assert_eq!(tool_details(&update).path.as_deref(), Some("/home/me/other-repo/src/remote.rs"));
+
+        let located = json!({
+            "sessionUpdate": "tool_call", "toolCallId": "read-2", "kind": "read",
+            "locations": [{ "path": "src/remote.rs" }, { "path": "/etc/hosts" }],
+            "rawInput": { "cwd": "/home/me/other-repo/" }
+        });
+        assert_eq!(
+            tool_details(&located).path.as_deref(),
+            Some("/home/me/other-repo/src/remote.rs\n/etc/hosts")
+        );
+
+        // No recorded folder: the path stays as the call gave it.
+        let bare = json!({ "sessionUpdate": "tool_call", "kind": "read", "rawInput": { "file_path": "src/main.rs" } });
+        assert_eq!(tool_details(&bare).path.as_deref(), Some("src/main.rs"));
+    }
+
+    #[test]
+    fn a_past_shell_read_carries_the_full_path_of_its_working_folder() {
+        let input = json!({ "cmd": "sed -n '1,80p' src/remote.rs", "workdir": "/home/me/other-repo" });
+        let record = tool_record("call-1", "exec_command", &input, 0);
+        assert_eq!(record.payload.get("path"), Some(&json!("/home/me/other-repo/src/remote.rs")));
+    }
 }

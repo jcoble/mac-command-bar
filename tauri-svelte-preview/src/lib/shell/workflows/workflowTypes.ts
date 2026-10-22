@@ -220,8 +220,8 @@ export interface WorkflowHistoryRow {
   findingCount: number | null;
   verdict: string | null;
   files: string[];
-  /** Only on `workflow.node.owner-answered`. */
-  answer: { step: string; decision: string; reply: string | null } | null;
+  /** Only on `workflow.node.owner-answered`; `by` and `why` say who answered and, for the main orchestrator, why. */
+  answer: { step: string; decision: string; reply: string | null; by?: 'owner' | 'orchestrator'; why?: string | null } | null;
   gateApproved: boolean | null;
 }
 
@@ -528,4 +528,18 @@ export function workflowStepFacts(node: Pick<WorkflowNodeRunRecord, 'structuredO
 /** The machine a workflow command goes to: null for this Mac, else the remote profile id. */
 export function workflowMachine(machine: string): string | null {
   return machine === 'mac' ? null : machine;
+}
+
+/** An engine refusal, which arrives as `{"kind":…,"detail":…}`, as its own sentence; other errors as they are. */
+export function workflowErrorText(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  try {
+    const { kind, detail } = JSON.parse(text) as { kind?: unknown; detail?: unknown };
+    if (typeof kind !== 'string') return text;
+    if (typeof detail === 'string') return detail;
+    const message = (detail as { message?: unknown } | null)?.message;
+    return typeof message === 'string' ? message : text;
+  } catch {
+    return text;
+  }
 }

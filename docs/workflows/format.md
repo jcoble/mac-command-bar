@@ -5,13 +5,19 @@ Read this reference through `workflow_format()` in any Assembly session.
 
 ## Files and validation
 
-Write `.assembly/workflows/<name>.yml` in the calling session's project repository
+Write `.assembly/workflows/<name>.yml` in the chosen Assembly project's repository
 on the machine that will run it. Use `.yml`, not `.yaml`. The picker lists only
 files directly in that folder. Put prompt files beside the YAML, usually under
 `.assembly/workflows/prompts/`. Prompt paths are relative to the YAML's folder.
 Files must exist. Reject absolute paths and `../`; the YAML must stay inside the
 project and prompts inside its resolved parent folder, including through symlinks.
-Pass a project-relative path to `check_workflow(path)`.
+Pass a project-relative path to `check_workflow(path, project?)` and
+`start_workflow(path, task, project?)`. The optional `project` is a project already
+added on this machine, identified by its exact root path or its unique title.
+An unknown project or a shared title is refused. Omit it to use the calling
+session's project folder. Paths stay inside the chosen project's workflows;
+a different project does not grant access to arbitrary folders. Runs still belong
+to the starting session for the three-unfinished-runs limit, messages and stop rights.
 Use one YAML document, unique mapping keys, and step IDs containing only ASCII
 letters, digits, `_` or `-`. Include at least one step. Dependencies must exist,
 must not refer to the step itself, and must not form a cycle.
@@ -33,6 +39,7 @@ provider or model is installed.
 | `name` | string | Required; no default | Display name saved with the definition. Use a nonempty descriptive name. |
 | `inputs` | mapping from input names to definitions | Optional; empty | Saves definitions with the snapshot; values are supplied when starting the run. |
 | `limits` | mapping | Optional; defaults below | Saves limits and uses session/timeout values when constructing nodes. |
+| `policy` | mapping: `commands: { allow, ask, deny }` (lists of patterns, `*` for any text) and `default` (`allow`, `ask` or `deny`) | Optional; nothing extra, default `ask` | Checked against each shell command an agent step asks permission to run, part by part (`&&`, `;`, pipes, `sh -c`, with `NAME=value` and `env` removed). The strictest match wins: deny, then ask, then allow, then `default`. Deny and allow are answered for the agent; ask goes to a person. The engine puts its own deny list first, which YAML cannot allow: `git reset --hard*`, `gh pr merge*`, `gh pr ready*`, `git push * main*`, `gh workflow run*`, `gh api *dispatches*`, `git push *assembly-*`. Unknown keys fail validation. It is a first line, not the guarantee: a command an agent runs without asking is not checked. |
 | `steps` | mapping from step IDs to step objects | Required; no default | Builds the dependency graph and saves each step. YAML order does not set execution order. |
 
 Do not write internal `version`, `roles`, `nodes`, `edges` or `concurrency` fields.

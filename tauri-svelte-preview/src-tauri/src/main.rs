@@ -3407,11 +3407,11 @@ fn main() {
                 agent_conversation::providers::ProviderRegistry::bundled_from_environment_at(Some(
                     &app_data_dir,
                 ))
-                .map_err(|error| {
-                    format!("Packaged ACP adapter configuration is invalid: {error}")
+                .map_err(|error| { format!("Packaged ACP adapter configuration is invalid: {error}")
                 })?,
                 &session_db_path,
             )?;
+            agent_runtime.start_closing_finished_helpers();
             project_folders::import_saved_project_roots(&agent_runtime)?;
             // Before any list: older local sessions join projects added since the last run.
             project_folders::backfill_local_session_projects(agent_runtime.store())?;
@@ -3483,7 +3483,7 @@ fn main() {
                     )?;
                 }
             }
-            let workflow_events = workflow_engine.clone();
+            let workflow_events = workflow_engine.clone(); usage_history::start_acp_usage(usage_history::usage_db_path(app.handle())?, agent_runtime.store_handle());
             let workflow_handle = app.handle().clone();
             agent_runtime.set_emitter(Arc::new(move |event| {
                 let is_terminal_turn = matches!(
@@ -3736,7 +3736,7 @@ fn main() {
             agent_conversation::agent_conversation_clear_session_draft,
             agent_conversation::set_main_orchestrator,
             agent_conversation::list_agent_messages,
-            agent_conversation::count_agent_messages,
+            agent_conversation::count_agent_messages, agent_conversation::messaging::board::board,
             agent_conversation::write_agent_conversation_workspace,
             agent_conversation::read_agent_conversation_workspace,
             agent_conversation::read_agent_conversation_workspace_expanded_paths,

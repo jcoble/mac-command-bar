@@ -1,6 +1,6 @@
 use crate::usage_db::{UsageEvent, UsageSourceCursor};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
@@ -162,14 +162,14 @@ pub fn parse_usage_events_for_source_with_context(
     let mut session_id = context.session_id.clone();
     let mut cwd = context.cwd.clone();
     let mut model = context.model.clone();
-    let mut seen = HashSet::new();
+    let mut positions = HashMap::new();
     let mut events = Vec::new();
 
     for (index, line) in lines.iter().enumerate() {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if provider.eq_ignore_ascii_case("codex") {
+        let event = if provider.eq_ignore_ascii_case("codex") {
             if value.get("type").and_then(Value::as_str) == Some("session_meta") {
                 session_id = value
                     .pointer("/payload/id")
@@ -190,7 +190,7 @@ pub fn parse_usage_events_for_source_with_context(
                     .map(ToString::to_string)
                     .or(model);
             }
-            if let Some(event) = parse_codex_usage_event(
+            parse_codex_usage_event(
                 &value,
                 index,
                 provider,
@@ -200,24 +200,29 @@ pub fn parse_usage_events_for_source_with_context(
                 session_id.as_deref(),
                 cwd.as_deref(),
                 model.as_deref(),
-            ) {
-                let dedupe_key = event.source_event_id.clone();
-                if seen.insert(dedupe_key) {
-                    events.push(event);
-                }
-            }
-        } else if let Some(event) = parse_claude_usage_event(
-            &value,
-            index,
-            provider,
-            provider_instance_id,
-            source_kind,
-            source_key,
-        ) {
-            let dedupe_key = event.source_event_id.clone();
-            if seen.insert(dedupe_key) {
-                events.push(event);
-            }
+            )
+        } else {
+            parse_claude_usage_event(
+                &value,
+                index,
+                provider,
+                provider_instance_id,
+                source_kind,
+                source_key,
+            )
+        };
+        let Some(event) = event else {
+            continue;
+        };
+        // Claude repeats a message's usage on each of its lines and the last
+        // carries the final count, so a repeated id replaces the earlier event.
+        let position = *positions
+            .entry(event.source_event_id.clone())
+            .or_insert(events.len());
+        if position < events.len() {
+            events[position] = event;
+        } else {
+            events.push(event);
         }
     }
     events
@@ -245,9 +250,9 @@ fn parse_claude_usage_event(
         .and_then(Value::as_str)
         .unwrap_or("local-session");
     let source_event_id = value
-        .get("uuid")
+        .pointer("/message/id")
         .and_then(Value::as_str)
-        .or_else(|| value.pointer("/message/id").and_then(Value::as_str))
+        .or_else(|| value.get("uuid").and_then(Value::as_str))
         .map(ToString::to_string)
         .unwrap_or_else(|| stable_line_id(source_kind, source_key, index, value));
     Some(UsageEvent {
@@ -306,10 +311,10 @@ fn parse_codex_usage_event(
     let usage = value
         .pointer("/payload/info/last_token_usage")?
         .as_object()?;
-    let input_tokens = value_u64(usage, "input_tokens");
     let output_tokens = value_u64(usage, "output_tokens");
     let cache_read_tokens = value_u64(usage, "cached_input_tokens");
     let cache_write_tokens = value_u64(usage, "cache_write_input_tokens");
+    let input_tokens = value_u64(usage, "input_tokens").saturating_sub(cache_read_tokens + cache_write_tokens); // Codex counts cached input inside input_tokens; rows store uncached input.
     let reasoning_tokens = value_u64(usage, "reasoning_output_tokens");
     if input_tokens == 0 && output_tokens == 0 && cache_read_tokens == 0 && reasoning_tokens == 0 {
         return None;
@@ -671,6 +676,7 @@ fn now_micros() -> i64 {
 mod tests {
     use super::*;
     use std::io::Write;
+    mod claude;
 
     #[test]
     fn usage_source_cursor_resets_after_truncation_without_replaying_same_suffix() {
@@ -700,29 +706,6 @@ mod tests {
     }
 
     #[test]
-    fn claude_jsonl_usage_records_become_non_zero_events() {
-        let lines = vec![r#"{"type":"assistant","uuid":"assistant-1","sessionId":"session-1","timestamp":"2026-08-08T12:34:56Z","cwd":"/tmp/project/workspace","message":{"id":"msg-1","model":"model-a","usage":{"input_tokens":12,"output_tokens":7,"cache_read_input_tokens":3,"cache_creation_input_tokens":2}}}"#.to_string()];
-        let events = parse_usage_events_for_source_with_context(
-            &lines,
-            "claude",
-            "local",
-            "claude-jsonl",
-            "/tmp/session.jsonl",
-            &UsageSourceContext::default(),
-        );
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].input_tokens, 12);
-        assert_eq!(events[0].output_tokens, 7);
-        assert_eq!(events[0].cache_read_tokens, 3);
-        assert_eq!(events[0].cache_write_tokens, 2);
-        assert_eq!(events[0].project_id.as_deref(), Some("workspace"));
-        assert_eq!(
-            events[0].workspace_id.as_deref(),
-            Some("/tmp/project/workspace")
-        );
-    }
-
-    #[test]
     fn codex_token_count_records_become_non_zero_events() {
         let lines = vec![
             r#"{"type":"session_meta","payload":{"id":"session-2","cwd":"/tmp/project/workspace"}}"#.to_string(),
@@ -739,7 +722,7 @@ mod tests {
         );
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].owned_id.as_deref(), Some("session-2"));
-        assert_eq!(events[0].input_tokens, 20);
+        assert_eq!(events[0].input_tokens, 15);
         assert_eq!(events[0].cache_read_tokens, 5);
         assert_eq!(events[0].output_tokens, 9);
         assert_eq!(events[0].reasoning_tokens, 4);

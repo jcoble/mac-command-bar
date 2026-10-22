@@ -34,6 +34,7 @@
 
   import {
     branchNameProblem,
+    branchWorktreeRoot,
     canCreateBranch,
     describeBranchRow,
     describeCurrentBranch,
@@ -46,8 +47,10 @@
     /** False in a browser: it can read the repository but not change it. */
     canWrite: boolean;
     readOnlyReason: string;
+    /** Moves the active session to another checkout; absent when it cannot move. */
+    onUseSessionCheckout?(root: string): void | Promise<void>;
   }
-  let { panel, service, canWrite, readOnlyReason }: Props = $props();
+  let { panel, service, canWrite, readOnlyReason, onUseSessionCheckout }: Props = $props();
 
   let open = $state(false);
   let branches = $state<GitBranchSummary[]>([]);
@@ -99,9 +102,12 @@
     }
   }
 
-  async function switchTo(name: string): Promise<void> {
+  /** A branch another worktree has moves the session there; git would refuse to check it out here. */
+  async function switchTo(branch: GitBranchSummary): Promise<void> {
     open = false;
-    await service.switchBranch(name);
+    const worktree = branchWorktreeRoot(branch);
+    if (worktree && onUseSessionCheckout) await onUseSessionCheckout(worktree);
+    else await service.switchBranch(branch.name);
   }
 
   async function create(): Promise<void> {
@@ -184,7 +190,7 @@
           <DropdownMenu.Item
             class="flex-col items-start gap-0"
             disabled={!canWrite || menuBusy || branch.isCurrent}
-            onSelect={() => void switchTo(branch.name)}
+            onSelect={() => void switchTo(branch)}
           >
             <span class="flex w-full min-w-0 items-center gap-1.5">
               {#if branch.isCurrent}
@@ -208,7 +214,7 @@
     <div class="flex flex-col gap-1 px-1 pb-1">
       <Input
         class="h-7 text-[13px]"
-        placeholder="tsk-808-git-panel"
+        placeholder="feature/my-change"
         autocomplete="off"
         spellcheck="false"
         disabled={!canWrite || menuBusy}

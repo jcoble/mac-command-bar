@@ -504,27 +504,13 @@
     white-space: nowrap;
   }
 
-  /* Live pulse dot for actively running rows. */
+  /* Still live dot for actively running rows. */
   .wcp-pulse {
     flex-shrink: 0;
     width: 6px;
     height: 6px;
     border-radius: var(--radius-pill, 999px);
     background: var(--color-live, #5ce2cf);
-    box-shadow: 0 0 0 0 var(--color-live, #5ce2cf);
-    animation: wcp-pulse 1.8s ease-out infinite;
-  }
-
-  @keyframes wcp-pulse {
-    0% {
-      box-shadow: 0 0 0 0 var(--color-live-bg, rgba(92, 226, 207, 0.12));
-    }
-    70% {
-      box-shadow: 0 0 0 5px rgba(92, 226, 207, 0);
-    }
-    100% {
-      box-shadow: 0 0 0 0 rgba(92, 226, 207, 0);
-    }
   }
 
   /* "+N more" deferral note. */
@@ -546,23 +532,6 @@
   }
 
   .wcp-state--loading {
-    animation: wcp-fade 1.4s ease-in-out infinite;
-  }
-
-  @keyframes wcp-fade {
-    0%,
-    100% {
-      opacity: 0.45;
-    }
-    50% {
-      opacity: 0.9;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .wcp-pulse,
-    .wcp-state--loading {
-      animation: none;
-    }
+    opacity: 0.7;
   }
 </style>

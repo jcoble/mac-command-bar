@@ -18,7 +18,6 @@ struct StartResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ClaimResponse {
-    status: String,
     access_token: Option<String>,
 }
 
@@ -28,13 +27,6 @@ pub struct NotionOAuthAttempt {
     authorization_url: String,
     state: String,
     verifier: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NotionOAuthClaim {
-    status: String,
-    settings: Option<NotionTaskSettings>,
 }
 
 fn random_identifier() -> String {
@@ -85,19 +77,16 @@ pub async fn claim_notion_oauth(
     manager: tauri::State<'_, AgentRuntimeManager>,
     state: String,
     verifier: String,
-) -> Result<NotionOAuthClaim, String> {
+    claim_code: String,
+) -> Result<NotionTaskSettings, String> {
+    // The claim code reaches the app only through the deep link the Notion
+    // callback page opens, so a flow started elsewhere cannot be claimed.
     let response = reqwest::Client::new()
         .post(format!("{OAUTH_SERVICE_URL}/notion/claim"))
-        .json(&json!({ "state": state, "verifier": verifier }))
+        .json(&json!({ "state": state, "verifier": verifier, "claimCode": claim_code }))
         .send()
         .await
         .map_err(|error| format!("Could not finish Notion sign-in: {error}"))?;
-    if response.status() == reqwest::StatusCode::ACCEPTED {
-        return Ok(NotionOAuthClaim {
-            status: "pending".to_string(),
-            settings: None,
-        });
-    }
     if !response.status().is_success() {
         return Err(error_message(response, "Could not finish Notion sign-in").await);
     }
@@ -109,9 +98,5 @@ pub async fn claim_notion_oauth(
         .access_token
         .filter(|token| !token.trim().is_empty())
         .ok_or_else(|| "Notion sign-in returned no access token".to_string())?;
-    let settings = save_oauth_connection(&manager, token).await?;
-    Ok(NotionOAuthClaim {
-        status: payload.status,
-        settings: Some(settings),
-    })
+    save_oauth_connection(&manager, token).await
 }

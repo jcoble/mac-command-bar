@@ -1,4 +1,4 @@
-import { sessionWorkspaceRoot, parseRemoteWorkspacePath } from '../../workspacePaths.ts';
+import { sessionCheckoutRoot, sessionWorkspaceRoot, parseRemoteWorkspacePath } from '../../workspacePaths.ts';
 import { projectRegistry } from '../projects/projectRegistry.svelte.ts';
 /**
  * Controller for session selection, filesystem projections, and workspace expansion.
@@ -46,6 +46,8 @@ export class SessionSelectionController {
 	selectionError = $state<string | null>(null);
 	connectingRemote = $state(false);
 	private remoteConnectAbort: AbortController | null = null;
+	/** The machine the selected session was opened without, because it was not connected. */
+	private openedWithoutMachine = $state<string | null>(null);
 
 	private expansionOwnedId = $state<string | null>(null);
 	private workspaceWriteQueue: Promise<void> | null = null;
@@ -93,6 +95,12 @@ export class SessionSelectionController {
 		return canonicalPath(sessionWorkspaceRoot(session, projectRegistry.projects));
 	}
 
+	/** Where the session's agent works now: a checkout change moves it, while a project keeps `durableSessionRoot` put. */
+	get sessionCheckoutRoot(): string {
+		const session = this.controlledSession ?? rail.owned.find((s) => s.ownedId === rail.activeOwnedId);
+		return session ? canonicalPath(sessionCheckoutRoot(session)) : "";
+	}
+
 	/** The tree was filled for another root than the session's, as when its project's folder changed. */
 	get treeRootMoved(): boolean {
 		const layers = this.sessionSelectionLayers;
@@ -123,6 +131,7 @@ export class SessionSelectionController {
 	async selectSession(ownedId: string): Promise<void> {
 		this.remoteConnectAbort?.abort();
 		this.selectionError = null;
+		this.openedWithoutMachine = null;
 		this.activeWorkspaceSnapshot = null;
 		this.expansionOwnedId = null;
 		this.expandedPathsByRoot = {};
@@ -154,6 +163,14 @@ export class SessionSelectionController {
 		return id && rail.remoteConnections[id] !== 'connected' ? id : null;
 	}
 
+	/** The selected session's machine once it connects, when the session was opened
+	 *  before it did, so the session can be loaded again with its saved workspace.
+	 *  A Connect started here refreshes the session itself. */
+	get reconnectedProfileId(): string | null {
+		const id = this.openedWithoutMachine;
+		return id && !this.connectingRemote && rail.remoteConnections[id] === 'connected' ? id : null;
+	}
+
 	async connectSelectedRemote(): Promise<string | null> {
 		const profileId = this.disconnectedRemoteProfileId;
 		if (!profileId || this.connectingRemote) return null;
@@ -173,6 +190,7 @@ export class SessionSelectionController {
 			const replaced = new Set([result.profile.id, result.replacedProfileId]);
 			hydrateOwned([...rail.owned.filter((session) => !replaced.has(session.remoteProfileId ?? '')),
 				...result.sessions.map(ownedSessionFromBackend)]);
+			this.openedWithoutMachine = null;
 			return result.profile.id;
 		} catch (error) {
 			if (!attempt.signal.aborted) this.selectionError = `Could not connect. ${error instanceof Error ? error.message : typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error)}`;
@@ -375,6 +393,8 @@ export class SessionSelectionController {
 		displayedChatOwnedId: string | null,
 	): Promise<void> {
 		if (!this.isCurrent(owner)) return;
+		this.openedWithoutMachine = session.executionEnvironment === 'remote'
+			&& rail.remoteConnections[session.remoteProfileId ?? ''] !== 'connected' ? session.remoteProfileId ?? null : null;
 
 		this.newSession.abandonDraftForSessionSwitch(session.ownedId);
 		if (displayedChatOwnedId && displayedChatOwnedId !== session.ownedId) {
@@ -403,6 +423,9 @@ export class SessionSelectionController {
 			owner.signal,
 		);
 		if (!this.isCurrent(owner)) return;
+		// The folder check failed, so this session's tabs were never shown; leaving
+		// it must not save the empty editor over them.
+		if (this.sessionSelectionLayers.treeCheckFailed) this.editorSessions.releaseOwnership();
 		this.activeWorkspaceSnapshot = snapshot;
 		if (snapshot?.conversation?.attachmentIds && getConversationSession(session.ownedId)) {
 			restoreConversationAttachmentIds(session.ownedId, snapshot.conversation.attachmentIds);

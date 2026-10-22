@@ -6,9 +6,9 @@
  * all of it runs in a node test with no browser.
  *
  * The split lives here rather than in the component because it is a rule, not a
- * drawing: which side a session sits on is the USER's answer (`completedAt`),
- * never the process's. An agent that stopped running is still work in progress
- * until it is marked done, and a session marked done may still have a terminal
+ * drawing: a session moves when marked done (`completedAt`). A finished helper
+ * is also marked done once by its backend after the configured quiet period
+ * (one hour by default). A session marked done may still have a terminal
  * running.
  */
 import type { AgentKind, OwnedSession, OwnedSessionState } from './ownedSessions';

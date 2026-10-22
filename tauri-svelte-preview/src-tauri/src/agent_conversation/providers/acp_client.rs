@@ -15,6 +15,7 @@ use super::super::protocol::{
     AgentConversationProvider, AgentImplementation, AgentInteractionCapabilities,
     AgentPromptCapabilities, AgentProviderManifest, AgentSessionCapabilities,
 };
+use super::descriptors::LaunchFor;
 use super::process::{
     SidecarEnvironment, SidecarProcess, SidecarProcessHandle, SidecarReadHalf, SidecarWriteHalf,
 };
@@ -562,22 +563,11 @@ impl AcpClient {
         &mut self,
         provider: AgentConversationProvider,
     ) -> Result<AgentCapabilities, AgentRuntimeError> {
+        let descriptor = provider.descriptor();
         let mut request = acp::InitializeRequest::new(ProtocolVersion::V1);
-        if provider == AgentConversationProvider::Claude {
-            request.client_capabilities.meta = Some(serde_json::Map::from_iter([(
-                "jetbrains".to_string(),
-                json!({"air": {"version": 1, "capabilities": ["asyncTasks", "nativeSubagentSessions", "backgroundSubagents"]}}),
-            )]));
-        }
-        if provider == AgentConversationProvider::Codex {
-            // Current policy advertises recommendedValue for Codex default effort; Claude ACP 0.88/0.93 also read it (l9/y3, runtime bytes 82788482/92449895).
-            request.client_capabilities.meta = Some(serde_json::Map::from_iter([(
-                "jetbrains".to_string(),
-                json!({"air": {"version": 1, "capabilities": ["recommendedValue"]}}),
-            )]));
-        }
+        request.client_capabilities.meta = descriptor.initialize_meta.clone();
         let mut request = json!(request);
-        if provider == AgentConversationProvider::Claude {
+        if descriptor.elicitation {
             request["clientCapabilities"]["elicitation"] = json!({"form": {}});
         }
         let result = self.request("initialize", &request).await?;
@@ -991,13 +981,12 @@ impl AcpClient {
         known_session_id: Option<&str>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         let mut request = serde_json::to_value(request).map_err(serialization_error)?;
-        // Claude's allowedTools is its wire spelling of Assembly-tool pre-approval; Codex gets the same
-        // through providers/process.rs (default_tools_approval_mode=approve). Antigravity's gap is
-        // TSK-1522; unattended workers must not stop for Assembly's own tools.
-        if self.provider == Some(AgentConversationProvider::Claude)
-            && request["mcpServers"].as_array().is_some_and(|servers| !servers.is_empty())
+        // Assembly-tool pre-approval in the provider's meta (descriptors.rs); env goes through process.rs.
+        let pre_approval = LaunchFor { pre_approval: true, ..LaunchFor::default() };
+        if let Some(launch) = self.provider.and_then(|provider| provider.descriptor().launch(pre_approval))
+            .filter(|launch| !launch.meta.is_empty() && request["mcpServers"].as_array().is_some_and(|servers| !servers.is_empty()))
         {
-            request["_meta"] = json!({"claudeCode": {"options": {"allowedTools": ["mcp__assembly"]}}});
+            request["_meta"] = Value::Object(launch.meta);
         }
         let result = self.request(method, &request).await?;
         // session/new must return the id; session/load and session/resume
@@ -1527,8 +1516,7 @@ fn parse_standard_conversation_config(
             .map(str::to_string)
             .collect(),
     };
-    if provider == Some(AgentConversationProvider::Codex) {
-        // Codex ACP 1.13.1/2.2.2 emit model[effort] (codex-1.13.1-isolated.jsonl:6).
+    if provider.is_some_and(|provider| provider.descriptor().effort_in_model_id) {
         for id in &config.available_models {
             if let Some((model, effort)) = id.strip_suffix(']').and_then(|id| id.rsplit_once('[')) {
                 config.model_efforts.entry(model.to_string()).or_default().push(effort.to_string());
@@ -1548,18 +1536,18 @@ fn serialization_error(error: serde_json::Error) -> AgentRuntimeError {
 fn transport_error(message: String) -> AgentRuntimeError {
     AgentRuntimeError::new("transport", message)
 }
-// Antigravity 1.2.1 server.py:3264–3268 binds restored tool permissions to realpath(cwd); use its canonical workspace spelling.
+// Providers whose descriptor sets canonical_cwd get the canonical workspace spelling (descriptors.rs).
 fn provider_session_cwd(
     provider: Option<AgentConversationProvider>,
     cwd: &Path,
 ) -> Result<std::path::PathBuf, AgentRuntimeError> {
-    if provider != Some(AgentConversationProvider::Antigravity) {
+    let Some(provider) = provider.filter(|provider| provider.descriptor().canonical_cwd) else {
         return Ok(cwd.to_path_buf());
-    }
+    };
     cwd.canonicalize().map_err(|error| {
         AgentRuntimeError::new(
             "cwd-canonicalization",
-            format!("Could not canonicalize Antigravity session cwd: {error}"),
+            format!("Could not canonicalize {} session cwd: {error}", provider.descriptor().display_name),
         )
     })
 }
@@ -1805,7 +1793,7 @@ while IFS= read -r line; do
         printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32001,"message":"fixture prompt failed"}}}}\n' "$id"
         exit 0
       elif [ "$fixture" = "permission_midturn" ]; then
-        printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"options":[{{"optionId":"allow","name":"Allow","kind":"allow_once"}},{{"optionId":"reject","name":"Reject","kind":"reject_once"}}]}}}}\n'
+        printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"toolCall":{{"rawInput":{{"command":"ALLOW_MERGE=1 gh pr merge 5 --merge"}}}},"options":[{{"optionId":"allow","name":"Allow","kind":"allow_once"}},{{"optionId":"reject","name":"Reject","kind":"reject_once"}}]}}}}\n'
         while IFS= read -r response; do
           printf '%s\n' "$response" >> "$log"
           case "$response" in
@@ -2314,8 +2302,8 @@ done"#,
         let initialize = frames.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
             .find(|frame| frame["method"] == "initialize").unwrap();
         assert_eq!(
-            initialize["params"]["clientCapabilities"]["_meta"]["jetbrains"]["air"]["capabilities"],
-            json!(["recommendedValue"])
+            initialize["params"]["clientCapabilities"]["_meta"],
+            json!({"jetbrains": {"air": {"version": 1, "capabilities": ["recommendedValue"]}}, "terminal_output_delta": true})
         );
         let configured = result.expect("model reply makes effort available in the same update");
         assert_eq!(configured.model.as_deref(), Some("sonnet"));

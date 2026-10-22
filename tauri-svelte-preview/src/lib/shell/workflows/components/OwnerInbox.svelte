@@ -10,12 +10,10 @@
   import { Chip } from '$lib/components/ui/chip/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
-  import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
-  import { adoptSession } from '$lib/shell/conversation/conversationService.ts';
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
-  import { answerWorkflowPause, approveWorkflowGate } from '$lib/shell/workflows/workflowService.ts';
-  import { workflowMachine } from '$lib/shell/workflows/workflowTypes.ts';
-  import { listOwnerInboxFromTauri, type OwnerInboxStep } from '$lib/tauriSource.ts';
+  import { answerInboxStep, openInboxSession, waitingOn, type InboxDecision } from '$lib/shell/workflows/ownerInboxActions.ts';
+  import { listenAgentMessagesChanged, listOwnerInboxFromTauri, type OwnerInboxStep } from '$lib/tauriSource.ts';
+  import { workflowErrorText } from '$lib/shell/workflows/workflowTypes.ts';
 
   interface Props {
     visible: boolean;
@@ -29,11 +27,11 @@
   let steps = $state<OwnerInboxStep[]>([]);
   let loading = $state(false);
   let busy = $state(false);
+  // An action's refusal stays until the next action; a reload clears only its own failure.
   let error = $state('');
+  let loadError = $state('');
   let loader: AbortController | null = null;
   // Lives while the inbox is shown; an action that finishes after it closes changes nothing.
-  // The owner's decision itself is not cancelled: stopping it partway on the other machine
-  // could leave a gate approved with its next step never started.
   let shown: AbortController | null = null;
   // A newer click, or the view going away, makes a slow session lookup stale.
   let opening = 0;
@@ -43,6 +41,16 @@
     shown = new AbortController();
     busy = false;
     untrack(() => start());
+    // A run change on any machine reloads the list, one load at a time.
+    const signal = shown.signal;
+    let reading = false;
+    let again = false;
+    void listenAgentMessagesChanged(async () => {
+      if (reading) { again = true; return; }
+      reading = true;
+      do { again = false; await start(); } while (again && !signal.aborted);
+      reading = false;
+    }, signal);
     return () => {
       shown?.abort();
       shown = null;
@@ -52,44 +60,38 @@
     };
   });
 
-  function start(): void {
+  async function start(): Promise<void> {
     loader?.abort();
     const controller = new AbortController();
     loader = controller;
-    void load(controller.signal);
+    await load(controller.signal);
   }
 
   function message(cause: unknown): string {
-    return cause instanceof Error ? cause.message : String(cause);
+    return workflowErrorText(cause);
   }
 
   async function load(signal: AbortSignal): Promise<void> {
     loading = true;
-    error = '';
+    loadError = '';
     try {
       const found = (await listOwnerInboxFromTauri(signal)) ?? [];
       if (signal.aborted) return;
       steps = found;
       stepCount = found.length;
     } catch (cause) {
-      if (!signal.aborted) error = `Could not load the inbox: ${message(cause)}`;
+      if (!signal.aborted) loadError = `Could not load the inbox: ${message(cause)}`;
     }
     if (!signal.aborted) loading = false;
   }
 
-  async function act(label: string, step: OwnerInboxStep, decision: 'approve' | 'another-round' | 'accept' | 'stop'): Promise<void> {
+  async function act(label: string, step: OwnerInboxStep, decision: InboxDecision): Promise<void> {
     const signal = shown?.signal;
     if (!signal) return;
-    const machine = workflowMachine(step.machine);
-    const idempotencyKey = `agents:inbox:${crypto.randomUUID()}`;
     busy = true;
     error = '';
     try {
-      if (decision === 'approve') {
-        await approveWorkflowGate({ runId: step.runId, nodeId: step.nodeId, approval: { approved: true }, idempotencyKey }, machine);
-      } else {
-        await answerWorkflowPause({ runId: step.runId, nodeId: step.nodeId, decision, reply: null, idempotencyKey }, machine);
-      }
+      await answerInboxStep(step, decision);
       if (signal.aborted) return;
       start();
     } catch (cause) {
@@ -107,19 +109,10 @@
     const signal = shown?.signal;
     if (!signal) return;
     try {
-      const adopted = await adoptSession(ownedId, signal);
-      if (attempt !== opening) return;
-      if (!adopted) throw new Error('That session is not available yet.');
-      await sessionRowJump(ownedId, 'session');
+      await openInboxSession(ownedId, signal, () => attempt === opening);
     } catch (cause) {
       if (attempt === opening) error = `Could not open session: ${message(cause)}`;
     }
-  }
-
-  function waitingOn(session: OwnedSession): string {
-    if (session.pendingPermission) return 'Waiting for permission';
-    if (session.runtimeState === 'waiting-approval') return 'Waiting for approval';
-    return 'Waiting for your answer';
   }
 </script>
 
@@ -128,7 +121,7 @@
     <p class="min-w-0 flex-1 truncate text-sm text-muted-foreground">Steps and sessions waiting for you.</p>
     <Button size="sm" variant="ghost" disabled={loading} onclick={() => start()}><RefreshCw />Refresh</Button>
   </div>
-  {#if error}<p role="alert" class="px-3 py-2 text-sm text-destructive">{error}</p>{/if}
+  {#if error || loadError}<p role="alert" class="px-3 py-2 text-sm text-destructive">{error || loadError}</p>{/if}
 
   {#if steps.length === 0 && sessions.length === 0}
     <EmptyState title={loading ? 'Loading the inbox' : 'Nothing is waiting for you.'} />

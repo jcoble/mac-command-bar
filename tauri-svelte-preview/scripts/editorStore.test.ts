@@ -226,3 +226,93 @@ console.log('editor refresh preserves drafts and reports actual disk changes');
   assert.match(store.editorFileFor(record.path)?.conflict ?? '', /changed on disk/);
 }
 console.log('a restored draft reports a conflict only when the file changed on disk');
+
+// Keystrokes typed while a save is in flight stay in the editor, still unsaved,
+// and the save's own result is not mistaken for an external change (18b1253fb).
+{
+  store.resetEditorState();
+  const record = recordFor('typing-during-save.ts');
+  const disk = { ...record, content: 'v1', lineCount: 1, revision: 'rev-1' };
+  store.openEditorFile(record);
+  store.setEditorFilePreview(record.path, disk);
+  store.setEditorFileDraft(record.path, 'v2');
+  // The save of "v2" starts; the user keeps typing before it returns.
+  store.setEditorFileDraft(record.path, 'v2 and more');
+  store.setEditorFilePreview(record.path, { ...disk, content: 'v2', revision: 'rev-2' }, 'v2');
+  const file = store.editorFileFor(record.path);
+  assert.equal(file?.draftContent, 'v2 and more');
+  assert.equal(file?.dirty, true);
+  assert.equal(file?.conflict, null);
+  assert.equal(file?.baseRevision, 'rev-2', 'the next save is checked against what was just written');
+}
+
+// A file with no unsaved edits follows an external change on disk silently.
+{
+  store.resetEditorState();
+  const record = recordFor('clean-external.ts');
+  const disk = { ...record, content: 'before', lineCount: 1, revision: 'rev-a' };
+  store.openEditorFile(record);
+  store.setEditorFilePreview(record.path, disk);
+  store.setEditorFilePreview(record.path, { ...disk, content: 'after', revision: 'rev-b' });
+  const file = store.editorFileFor(record.path);
+  assert.equal(file?.draftContent, 'after');
+  assert.equal(file?.dirty, false);
+  assert.equal(file?.conflict, null);
+}
+
+// Typing back to the saved text makes the tab clean again and clears a conflict;
+// "discard" puts the disk text back and clears the conflict too.
+{
+  store.resetEditorState();
+  const record = recordFor('back-to-saved.ts');
+  const disk = { ...record, content: 'saved', lineCount: 1, revision: 'rev-a' };
+  store.openEditorFile(record);
+  store.setEditorFilePreview(record.path, disk);
+  store.setEditorFileDraft(record.path, 'mine');
+  store.setEditorFilePreview(record.path, { ...disk, content: 'theirs', revision: 'rev-b' });
+  assert.match(store.editorFileFor(record.path)?.conflict ?? '', /changed on disk/);
+  store.setEditorFileDraft(record.path, 'theirs');
+  assert.equal(store.editorFileFor(record.path)?.dirty, false);
+  assert.equal(store.editorFileFor(record.path)?.conflict, null, 'nothing is left to conflict');
+  store.setEditorFileDraft(record.path, 'mine again');
+  store.setEditorFilePreview(record.path, { ...disk, content: 'theirs again', revision: 'rev-c' });
+  assert.match(store.editorFileFor(record.path)?.conflict ?? '', /changed on disk/);
+  store.discardEditorFileDraft(record.path);
+  assert.equal(store.editorFileFor(record.path)?.draftContent, 'theirs again');
+  assert.equal(store.editorFileFor(record.path)?.dirty, false);
+  assert.equal(store.editorFileFor(record.path)?.conflict, null);
+}
+
+// Republishing the same draft writes nothing, so the editor effect that
+// republishes it cannot loop and freeze the app (d727905c4).
+{
+  store.resetEditorState();
+  const record = recordFor('same-draft.ts');
+  store.openEditorFile(record);
+  store.setEditorFilePreview(record.path, { ...record, content: 'saved', lineCount: 1, revision: 'rev-a' });
+  store.setEditorFileDraft(record.path, 'draft');
+  const before = store.editorState.openFiles;
+  store.setEditorFileDraft(record.path, 'draft');
+  assert.equal(store.editorState.openFiles, before, 'the open-files list is not replaced');
+}
+console.log('editor saves, external changes and repeated drafts keep the right text');
+
+// A single click opens one preview tab that the next single click replaces; a
+// double click, an explicit pin, or an edit keeps the tab (2f71f2aac, e66b911e8).
+{
+  let files = upsertOpenFile([], recordFor('a.ts'), { preview: true });
+  files = upsertOpenFile(files, recordFor('b.ts'), { preview: true });
+  assert.deepEqual(files.map((file) => [file.fileName, file.previewTab]), [['b.ts', true]], 'the second click reuses the preview tab');
+  files = upsertOpenFile(files, recordFor('b.ts'), { preview: true });
+  assert.equal(findOpenFile(files, '/p/src/b.ts')?.previewTab, true, 'clicking the preview file again keeps it a preview');
+  files = upsertOpenFile(files, recordFor('b.ts'));
+  assert.equal(findOpenFile(files, '/p/src/b.ts')?.previewTab, false, 'a double click keeps it');
+  files = upsertOpenFile(files, recordFor('c.ts'), { preview: true });
+  files = upsertOpenFile(files, recordFor('d.ts'), { preview: true, pin: true });
+  assert.deepEqual(files.map((file) => [file.fileName, file.previewTab]), [['b.ts', false], ['c.ts', true], ['d.ts', false]]);
+  files = patchOpenFile(files, '/p/src/c.ts', { draftContent: 'typed' });
+  assert.equal(findOpenFile(files, '/p/src/c.ts')?.previewTab, false, 'an edit keeps the preview tab');
+  files = upsertOpenFile(files, recordFor('e.ts'), { preview: true });
+  assert.equal(files.length, 4, 'a kept tab is never replaced by the next preview');
+}
+console.log('preview tabs are replaced by the next single click until they are kept');

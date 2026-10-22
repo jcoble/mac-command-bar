@@ -40,6 +40,8 @@
     root: string;
     /** False when the active session's checkout has disappeared. */
     rootAvailable?: boolean;
+    /** The folder the session works in, which Source Control reads; `root` when unset. */
+    sourceControlRoot?: string;
     /** The active session's ownedId, or null. */
     ownedId: string | null;
     /** Optional tree-only projection while rail selection is rebuilt in layers. */
@@ -61,7 +63,7 @@
     /** Another project's folder Files and Git show instead of the session's, or null. */
     viewedRoot?: string | null;
     onViewedRootChange?(root: string | null): void;
-    onNewSessionHere?(projectId: string): void;
+    onNewSessionHere?(projectId: string, folder: string): void;
     messagesUnread: number;
     onMessagesSeen(): void;
     onShowRunMessages(runId: string, label: string): void;
@@ -71,6 +73,7 @@
     activeId,
     root,
     rootAvailable = true,
+    sourceControlRoot,
     ownedId,
     filesRoot,
     filesOwnedId,
@@ -136,13 +139,14 @@
         checkoutDiscoveryRoots={viewing ? [] : checkoutDiscoveryRoots}
         onUseSessionCheckout={viewing ? undefined : onUseSessionCheckout}
         {readOnlyReason}
+        {viewing}
       />
     </div>
     {#if visible && activeId === 'source-control'}
       <div class="panel-body showing">
         <SourceControlPanel
           visible={true}
-          root={viewing ? viewedRoot ?? '' : root}
+          root={viewing ? viewedRoot ?? '' : sourceControlRoot || root}
           {ownedId}
           rootAvailable={viewing || rootAvailable}
           inspectionRoot={viewing ? undefined : sourceControlInspectionRoot}
@@ -151,6 +155,7 @@
           onWorkspaceStateChange={onSourceControlWorkspaceChange}
           onUseSessionCheckout={viewing ? undefined : onUseSessionCheckout}
           {readOnlyReason}
+          {viewing}
         />
       </div>
     {:else if visible && activeId === 'worktrees'}

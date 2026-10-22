@@ -68,13 +68,21 @@ export function conversationMessageDisplayItem(message: UIMessage): Conversation
   }, Number(metadata.startedAtMs ?? 0));
 }
 
+// Messages are replaced, never changed in place, so an unchanged message keeps
+// its display item instead of rebuilding the whole history on every chunk.
+const displayItemsByMessage = new WeakMap<UIMessage, ConversationDisplayItem>();
+
 export function conversationDisplayItems(
   messages: readonly UIMessage[],
   previous: readonly ConversationDisplayItem[] = [],
   sentAttachments: Readonly<Record<string, readonly ConversationAttachment[]>> = {}
 ): ConversationDisplayItem[] {
   const rows = messages.map((message) => {
-    const item = conversationMessageDisplayItem(message);
+    let item = displayItemsByMessage.get(message);
+    if (!item) {
+      item = conversationMessageDisplayItem(message);
+      displayItemsByMessage.set(message, item);
+    }
     // A message still on its way carries its own screenshots until the backend's copy claims them.
     const attachments = item.kind === 'user'
       ? sentAttachments[item.itemId] ?? message.metadata?.attachments as readonly ConversationAttachment[] | undefined
@@ -87,6 +95,16 @@ export function conversationDisplayItems(
 export function conversationHasRunningTool(messages: readonly UIMessage[]): boolean {
   return messages.some((message) => message.parts.some((part) => part.type === 'tool-call'
     && part.state !== 'complete' && part.state !== 'error'));
+}
+
+function sameMetadataExceptSequence(
+  left: Readonly<Record<string, AgentConfigValue>>,
+  right: Readonly<Record<string, AgentConfigValue>>
+): boolean {
+  const keys = Object.keys(right);
+  return keys.length === Object.keys(left).length && keys.every((key) => key === 'lastSequence'
+    || Object.is(left[key], right[key])
+    || (typeof right[key] === 'object' && JSON.stringify(left[key]) === JSON.stringify(right[key])));
 }
 
 function nativeCustomChunk(name: string, value: unknown): StreamChunk {
@@ -138,14 +156,18 @@ export function conversationChunksFromEvent(
   const text = item.content.map((part) => part.text).join('');
   const append = conversationEventAppendsItemContent(event);
   const display = displayItemFromAgentItem(item, event.timestampMs);
-  const chunks: StreamChunk[] = existing
-    ? [nativeCustomChunk('assembly:message-metadata', { itemId: item.id, metadata })]
-    : [{
+  // A streamed chunk usually moves only the sequence, which nothing reads from a
+  // message; sending it anyway updated the whole message list a second time.
+  const chunks: StreamChunk[] = !existing
+    ? [{
         type: EventType.TEXT_MESSAGE_START,
         messageId: item.id,
         role: item.type === 'user-message' ? 'user' : 'assistant',
         metadata
-      }];
+      }]
+    : sameMetadataExceptSequence(prior, metadata)
+      ? []
+      : [nativeCustomChunk('assembly:message-metadata', { itemId: item.id, metadata })];
   if (display.kind === 'tool') {
     const previousCall = existing?.parts.find((part) => part.type === 'tool-call');
     const previousOutput = previousCall?.output && typeof previousCall.output === 'object' ? previousCall.output as Record<string, AgentConfigValue> : {};
@@ -268,6 +290,48 @@ export function conversationMessagesAfterCustom(
     });
   }
   return [...messages];
+}
+
+type TextDelta = AgentConversationEvent & { payload: { kind: 'assistantDelta'; itemId: string; delta: string } };
+
+function textDeltaOf(item: object | undefined): TextDelta | null {
+  const event = item && 'nativeEvent' in item ? (item as { nativeEvent: AgentConversationEvent }).nativeEvent : null;
+  return event?.payload.kind === 'assistantDelta' ? event as TextDelta : null;
+}
+
+/** Waits for the next frame, or 50 ms when the window draws no frames (hidden), or abort. */
+async function nextFrame(signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const done = (): void => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    const frame = requestAnimationFrame(done);
+    const timer = setTimeout(done, 50);
+    signal.addEventListener('abort', done, { once: true });
+  });
+}
+
+/** Takes the next queued item for the chat. Streamed text waits for the next frame,
+ * and the text that reached one message meanwhile comes out as one delta, so the
+ * chat updates once per frame and the text still streams in. Anything else keeps
+ * its place in the queue and goes out at once. */
+export async function takeStreamItem<T extends object>(items: T[], signal: AbortSignal): Promise<T | undefined> {
+  const first = textDeltaOf(items[0]);
+  if (!first) return items.shift();
+  await nextFrame(signal);
+  let text = '';
+  let last = first;
+  for (let next = textDeltaOf(items[0]); next && next.payload.itemId === first.payload.itemId
+    && next.turnId === first.turnId && next.generation === first.generation; next = textDeltaOf(items[0])) {
+    text += next.payload.delta;
+    last = next;
+    items.shift();
+  }
+  // The joined text runs to the last delta, so it carries that delta's sequence and time.
+  return { nativeEvent: { ...first, sequence: last.sequence, timestampMs: last.timestampMs, payload: { ...first.payload, delta: text } } } as T;
 }
 
 /** Bounded history replay uses the same native-to-TanStack mapping as live events. */

@@ -5,6 +5,7 @@ mod packaged;
 pub mod process;
 pub mod updates;
 pub mod cli_updates;
+pub mod descriptors;
 
 pub use acp::{AcpRuntimeAdapter, StructuredRuntimeHandle};
 pub use acp_client::AcpClient;
@@ -225,52 +226,24 @@ impl ProviderRegistry {
         claude: Option<packaged::AdapterPackage>,
         antigravity: Option<packaged::AdapterPackage>,
     ) -> Result<Self, String> {
-        let mut manifests = Vec::new();
-        if let Some(codex) = codex {
-            manifests.push((
-                AgentConversationProvider::Codex,
-                AgentProviderManifest {
-                    id: "codex-acp".into(),
-                    display_name: "Codex".into(),
-                    transport: ProviderTransport::AcpStdio,
-                    executable: codex.executable,
-                    args: Vec::new(),
-                    version: package_version(&codex.version, CODEX_ACP_VERSION),
-                    content_hash: codex.content_hash,
-                    trusted_source: ProviderSource::Bundled,
-                },
-            ));
-        }
-        if let Some(claude) = claude {
-            manifests.push((
-                AgentConversationProvider::Claude,
-                AgentProviderManifest {
-                    id: "claude-agent-acp".into(),
-                    display_name: "Claude".into(),
-                    transport: ProviderTransport::AcpStdio,
-                    executable: claude.executable,
-                    args: Vec::new(),
-                    version: package_version(&claude.version, CLAUDE_AGENT_ACP_VERSION),
-                    content_hash: claude.content_hash,
-                    trusted_source: ProviderSource::Bundled,
-                },
-            ));
-        }
-        if let Some(antigravity) = antigravity {
-            manifests.push((
-                AgentConversationProvider::Antigravity,
-                AgentProviderManifest {
-                    id: "agy-acp".into(),
-                    display_name: "Antigravity".into(),
-                    transport: ProviderTransport::AcpStdio,
-                    executable: antigravity.executable,
-                    args: Vec::new(),
-                    version: package_version(&antigravity.version, AGY_ACP_VERSION),
-                    content_hash: antigravity.content_hash,
-                    trusted_source: ProviderSource::Bundled,
-                },
-            ));
-        }
+        let packages = [
+            (AgentConversationProvider::Codex, codex, CODEX_ACP_VERSION),
+            (AgentConversationProvider::Claude, claude, CLAUDE_AGENT_ACP_VERSION),
+            (AgentConversationProvider::Antigravity, antigravity, AGY_ACP_VERSION),
+        ];
+        let manifests = packages.into_iter().filter_map(|(provider, package, bundled_version)| {
+            let (package, descriptor) = (package?, provider.descriptor());
+            Some((provider, AgentProviderManifest {
+                id: descriptor.adapter_id.clone(),
+                display_name: descriptor.display_name.clone(),
+                transport: ProviderTransport::AcpStdio,
+                executable: package.executable,
+                args: Vec::new(),
+                version: package_version(&package.version, bundled_version),
+                content_hash: package.content_hash,
+                trusted_source: ProviderSource::Bundled,
+            }))
+        });
         Self::new(manifests)
     }
 

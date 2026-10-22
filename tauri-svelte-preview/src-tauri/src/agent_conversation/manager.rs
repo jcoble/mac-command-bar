@@ -1,4 +1,4 @@
-#[path = "session_project.rs"] pub mod session_project;
+#[path = "session_project.rs"] pub mod session_project; mod helper_close; pub mod turn_usage;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ use super::handoff::{
 };
 use super::normalization::{
     is_replay_session_update, is_session_state_update, payload_from_session_update_for_turn,
-    session_update_kind, text_from_value,
+    session_update_kind, text_from_value, tools,
 };
 use super::protocol::{
     AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities,
@@ -201,6 +201,8 @@ pub struct ManagedAgentSession {
     /// The session that started this one with `start_session`; each turn this
     /// session finishes is reported back to it as a message.
     helper_of: Option<String>,
+    /// A workflow step's guard policy, checked against each command the agent asks to run.
+    guard_policy: Option<crate::workflow::policy::GuardPolicy>,
     pub owner: AgentExecutionOwner,
     pub state: AgentRuntimeState,
     pub capabilities: AgentCapabilities,
@@ -228,7 +230,7 @@ pub struct ManagedAgentSession {
     store: Arc<SessionStore>,
     created_at_ms: u128,
     last_activity_ms: u128,
-    live_tool_calls: HashSet<String>,
+    live_tool_calls: HashMap<String, String>, // with each command's joined terminal output
     /// The reply the agent is streaming: its message id, the text of the
     /// deltas stored for it so far, and the autonomous turn it belongs to.
     streaming_reply: Option<(String, String, Option<String>)>,
@@ -250,6 +252,7 @@ pub struct ManagedAgentSession {
     /// recorded carries none, and counts as the first prompt.
     title_source: Option<String>,
     suspending: bool,
+    turn_usage: turn_usage::TurnUsageState, // When the prompt went out and the latest reported cost total.
 }
 
 #[derive(Clone, Debug)]
@@ -273,7 +276,7 @@ struct SessionEventCandidate {
     connection: AgentConversationConnection,
     writer_owner: AgentWriterLeaseOwner,
     last_activity_ms: u128,
-    live_tool_calls: HashSet<String>,
+    live_tool_calls: HashMap<String, String>,
 }
 
 #[derive(Clone, Copy)]
@@ -1203,34 +1206,33 @@ impl AgentRuntimeManager {
         Ok(())
     }
 
-    /// Starts a helper session for `parent` in the parent's folder and project,
+    /// Starts a helper in `folder` or the parent's folder, filed under that folder's project,
     /// lists it among the parent's agents, and sends it `prompt` as its first
     /// turn. Returns the helper's owned id.
     pub(super) async fn start_helper(
-        &self,
-        parent: &str,
-        provider: AgentConversationProvider,
-        model: Option<String>,
-        name: &str,
-        prompt: &str,
+        &self, parent: &str, provider: AgentConversationProvider,
+        model: Option<String>, name: &str, prompt: &str, folder: Option<&str>,
     ) -> Result<String, String> {
         let parent_row = self.store.get_session(parent).map_err(|error| error.to_string())?
             .ok_or_else(|| "The calling session was not found".to_string())?;
+        let cwd = folder.unwrap_or(&parent_row.cwd);
+        let project_id = if let Some(folder) = folder {
+            if !std::path::Path::new(folder).is_absolute() || !std::path::Path::new(folder).is_dir() {
+                return Err("folder must be an existing folder on this machine".into());
+            }
+            crate::project_folders::match_local_folders(&self.store, &[folder.to_string()])?
+                .into_iter().next().map(|(_, id)| id).or(parent_row.project_id.clone())
+        } else { parent_row.project_id.clone() };
         // The helper hears its instructions as its parent's message, never as the owner's.
         let sender = self.store.directory_name(parent).map_err(|error| error.to_string())?
             .map_or_else(|| parent.to_string(), |(handle, title)| format!("{handle} · {title}"));
         self.providers.manifest(provider)?;
         let owned_id = uuid::Uuid::new_v4().to_string();
         let connection = self.ensure_async(EnsureAgentConversationRequest {
-            owned_id: owned_id.clone(),
-            provider,
-            cwd: parent_row.cwd.clone(),
-            native_session_id: None,
-            execution_environment: ExecutionEnvironment::Local,
-            remote_profile_id: None,
-            native_session_mode: AgentNativeSessionMode::Resume,
-            reasoning_effort: None,
-            project_id: parent_row.project_id.clone(),
+            owned_id: owned_id.clone(), provider, cwd: cwd.to_string(), native_session_id: None,
+            execution_environment: ExecutionEnvironment::Local, remote_profile_id: None,
+            native_session_mode: AgentNativeSessionMode::Resume, reasoning_effort: None,
+            project_id: project_id.clone(),
         }).await?;
         self.hydrate_overlay_from_store(&owned_id)?;
         {
@@ -1238,7 +1240,8 @@ impl AgentRuntimeManager {
             let session = current_session_mut(&mut sessions, &owned_id, connection.generation)?;
             session.helper_of = Some(parent.to_string());
             session.rail_meta.title = Some(name.to_string());
-            session.rail_meta.project = parent_row.project.clone();
+            session.rail_meta.project = if project_id == parent_row.project_id { parent_row.project.clone() }
+                else { None };
             session.title_source = Some(TITLE_SOURCE_USER.to_string());
             persist_session(session)?;
         }
@@ -1249,12 +1252,8 @@ impl AgentRuntimeManager {
         }
         self.show_helper_to_parent(parent, &owned_id, name, "running")?;
         let prompt = AgentPrompt { text: format!("[message from {sender}]\n{prompt}"), images: Vec::new(), attachment_ids: Vec::new() };
-        // A helper works at its parent's permission level, on either provider.
-        let approval_policy = {
-            let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            sessions.get(parent).and_then(|session|
-                helper_mode(session.config.approval_policy.as_deref(), session.provider, provider))
-        };
+        // A helper works unattended, so it starts in Auto whatever mode its parent is in.
+        let approval_policy = crate::workflow::worker_permission(provider, None);
         if let Err(error) = self.send_message(&owned_id, connection.generation, prompt, model, approval_policy).await {
             if let Err(show_error) = self.show_helper_to_parent(parent, &owned_id, name, "failed") {
                 crate::debug_log::stderr_log!("Could not mark the helper failed: {show_error}");
@@ -1302,15 +1301,16 @@ impl AgentRuntimeManager {
         Ok(())
     }
 
-    /// Sends a newly queued message at once when its target is between turns.
-    /// A busy target receives it when its turn ends.
+    /// Delivers queued messages between turns, or steers an authorized message into a busy helper.
     /// Boxed because activation hands this to the messaging endpoint, and the
     /// send below activates again.
     pub(crate) fn deliver_if_idle<'a>(&'a self, owned_id: &'a str)
         -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
         let generation = match self.hydrate_overlay_from_store(owned_id) {
-            Ok(true) => self.idle_generation(owned_id),
+            Ok(true) => self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(owned_id).filter(|session| session.state != AgentRuntimeState::Closed)
+                .map(|session| session.generation),
             Ok(false) => None,
             Err(error) => {
                 crate::debug_log::stderr_log!("Could not load message target {owned_id}: {error}");
@@ -1357,13 +1357,15 @@ impl AgentRuntimeManager {
             }
             delivering.insert(owned_id.to_string(), false);
         }
+        let mut delivered_any = false;
         loop {
             let delivered = self.drain_next_message(owned_id, generation, now_ms).await;
+            delivered_any |= matches!(delivered, Ok(true));
             let mut delivering = self.delivering.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            // A sent prompt starts a turn, and that turn's end reads the queue.
-            if matches!(delivered, Ok(true)) || delivering.get(owned_id) != Some(&true) {
+            // Steering can leave more messages ready in the same active turn.
+            if !matches!(delivered, Ok(true)) && delivering.get(owned_id) != Some(&true) {
                 delivering.remove(owned_id);
-                return delivered;
+                return delivered.map(|_| delivered_any);
             }
             delivering.insert(owned_id.to_string(), false);
         }
@@ -1375,11 +1377,17 @@ impl AgentRuntimeManager {
         generation: u64,
         now_ms: i64,
     ) -> Result<bool, String> {
+        let steering_parent = {
+            let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            sessions.get(owned_id).filter(|session| session.active_turn_id.is_some()
+                && session.capabilities.session.steering).and_then(|session| session.helper_of.clone())
+        };
+        // An unrelated sender must not hold back the helper's parent or siblings.
         // Expired messages fail in order, so the first live one is sent.
         let message = loop {
             let Some(message) = self
                 .store
-                .pending_for(owned_id)
+                .pending_for_sender(owned_id, steering_parent.as_deref())
                 .map_err(|error| error.to_string())?
             else {
                 return Ok(false);
@@ -1392,9 +1400,17 @@ impl AgentRuntimeManager {
                 .map_err(|error| error.to_string())?;
         };
 
-        // A turn the person started since the caller looked takes the message
-        // when it ends, not as a steer in the middle of it.
-        if self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(owned_id)
+        let sibling_parent = self.store.sibling_parent(&message.from_agent, owned_id)
+            .map_err(|error| error.to_string())?;
+        let steering = {
+            let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            sessions.get(owned_id).is_some_and(|session| session.active_turn_id.is_some()
+                && session.capabilities.session.steering
+                && session.helper_of.is_some()
+                && (session.helper_of.as_deref() == Some(message.from_agent.as_str())
+                    || session.helper_of == sibling_parent))
+        };
+        if !steering && self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(owned_id)
             && self.idle_generation(owned_id).is_none()
         {
             return Ok(false);
@@ -1414,7 +1430,7 @@ impl AgentRuntimeManager {
         // stays queued for that turn's end instead of failing.
         let busy = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(owned_id) && self.idle_generation(owned_id).is_none();
-        if result.is_err() && busy {
+        if result.is_err() && (steering || busy) {
             return Ok(false);
         }
         self.store
@@ -1886,7 +1902,7 @@ impl AgentRuntimeManager {
             state: ConversationConnectionState::Connecting,
             config: AgentConversationConfigState { reasoning_effort: reasoning_effort.clone(), ..Default::default() },
         };
-        let provider_instance_id = format!("{}-{generation}", provider_id(request.provider));
+        let provider_instance_id = format!("{}-{generation}", request.provider.id());
         let created_at_ms = timestamp_millis();
         sessions.insert(
             owned_id.clone(),
@@ -1902,6 +1918,7 @@ impl AgentRuntimeManager {
                     .and_then(|session| session.project_id.clone())
                     .or(request.project_id.clone()),
                 helper_of: prior.as_ref().and_then(|session| session.helper_of.clone()),
+                guard_policy: prior.as_ref().and_then(|session| session.guard_policy.clone()),
                 owner: AgentExecutionOwner::Stopped,
                 state: AgentRuntimeState::Starting,
                 capabilities: empty_capabilities(request.provider),
@@ -1930,7 +1947,7 @@ impl AgentRuntimeManager {
                 store: Arc::clone(&self.store),
                 created_at_ms,
                 last_activity_ms: created_at_ms,
-                live_tool_calls: HashSet::new(),
+                live_tool_calls: HashMap::new(),
                 streaming_reply: None,
                 background_work: HashMap::new(),
                 autonomous_turn_id: None,
@@ -1953,7 +1970,7 @@ impl AgentRuntimeManager {
                 title_source: prior
                     .as_ref()
                     .and_then(|session| session.title_source.clone()),
-                suspending: false,
+                suspending: false, turn_usage: Default::default(),
             },
         );
         let session = sessions
@@ -2097,7 +2114,7 @@ impl AgentRuntimeManager {
                 let environment = session_spawn_environment(provider);
                 let mut adapter = AcpRuntimeAdapter::with_environment(
                     manifest,
-                    format!("provider:{}", provider_id(provider)),
+                    format!("provider:{}", provider.id()),
                     cwd.clone(),
                     environment,
                 );
@@ -2263,9 +2280,8 @@ impl AgentRuntimeManager {
         }
         // An adapter that named an effort control owns the effort from now on.
         let adapter_offers_effort = !started.config.available_efforts.is_empty();
-        let started_new = expected_native_session_id.is_none();
-        if let Some(expected_native_session_id) = expected_native_session_id {
-            if started.native_session_id != expected_native_session_id {
+        if let Some(expected_native_session_id) = &expected_native_session_id {
+            if started.native_session_id != *expected_native_session_id {
                 let _ = self
                     .release_pool_scope(&pool_key, owned_id, Some(&started.native_session_id), true)
                     .await;
@@ -2290,6 +2306,7 @@ impl AgentRuntimeManager {
         }
         session.native_session_id = Some(started.native_session_id.clone());
         session.connection.native_session_id = Some(started.native_session_id);
+        session.turn_usage.resumed = expected_native_session_id.is_some();
         session.adapter_offers_effort = adapter_offers_effort;
         session.config = started.config;
         session.connection.config = session.config.clone();
@@ -2329,7 +2346,7 @@ impl AgentRuntimeManager {
         )?;
         let connection = session.connection.clone();
         drop(sessions);
-        if started_new {
+        if expected_native_session_id.is_none() {
             let transcript = super::history::transcript::discover(provider, connection.native_session_id.as_deref().unwrap_or_default()).ok().flatten();
             if let Err(error) = super::history::track_new_transcript(&self.store, owned_id, transcript.as_ref().map(|location| location.canonical_path.as_path())) { crate::debug_log::stderr_log!("Could not track the new transcript: {error}"); }
         }
@@ -2539,7 +2556,7 @@ impl AgentRuntimeManager {
                 super::protocol::TurnState::Completed,
                 AgentRuntimeState::Ready,
             );
-            session.active_turn_id = Some(turn_id.clone());
+            session.active_turn_id = Some(turn_id.clone()); turn_usage::turn_started(session);
             if session_title_is_empty(session.rail_meta.title.as_deref()) {
                 let is_first_user_prompt = session
                     .store
@@ -3872,6 +3889,13 @@ impl AgentRuntimeManager {
             .ok_or_else(|| "Conversation session was not found after metadata update".to_string())
     }
 
+    /// Puts a workflow step's guard policy on its session.
+    pub(crate) fn set_guard_policy(&self, owned_id: &str, policy: crate::workflow::policy::GuardPolicy) -> Result<(), String> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        sessions.get_mut(owned_id).ok_or_else(|| format!("No session {owned_id}"))?.guard_policy = Some(policy);
+        Ok(())
+    }
+
     pub fn set_workflow_session_title(&self, owned_id: &str, title: &str) -> Result<(), String> {
         let set_title = |session: &mut ManagedAgentSession| {
             if !session_title_is_empty(session.rail_meta.title.as_deref()) {
@@ -5087,12 +5111,13 @@ fn recovered_session_from_row(
     let session = ManagedAgentSession {
         owned_id: row.owned_id.clone(),
         provider,
-        provider_instance_id: format!("{}-{}", provider_id(provider), stored.generation),
+        provider_instance_id: format!("{}-{}", provider.id(), stored.generation),
         native_session_id: row.native_session_id,
         native_session_mode: stored.native_session_mode,
         generation: stored.generation,
         project_id: row.project_id,
         helper_of: stored.helper_of.clone(),
+        guard_policy: None,
         owner: stored.owner,
         state,
         capabilities: stored.capabilities,
@@ -5121,7 +5146,7 @@ fn recovered_session_from_row(
         store: Arc::clone(store),
         created_at_ms: row.created_at_ms.max(0) as u128,
         last_activity_ms: row.last_activity_at_ms.max(0) as u128,
-        live_tool_calls: HashSet::new(),
+        live_tool_calls: HashMap::new(),
         streaming_reply: None,
         background_work: HashMap::new(),
         autonomous_turn_id: None,
@@ -5133,7 +5158,7 @@ fn recovered_session_from_row(
         claude_children: stored.claude_children,
         rail_meta: stored.rail_meta,
         title_source: row.title_source,
-        suspending: false,
+        suspending: false, turn_usage: Default::default(),
     };
     Ok(session)
 }
@@ -5355,7 +5380,7 @@ fn record_payload_for_session_with_lifecycle(
     match &payload {
         AgentConversationPayload::Tool { item_id, state, .. } => match state {
             ToolState::Started | ToolState::Updated => {
-                candidate.live_tool_calls.insert(item_id.clone());
+                candidate.live_tool_calls.entry(item_id.clone()).or_default();
             }
             ToolState::Completed | ToolState::Failed => {
                 candidate.live_tool_calls.remove(item_id);
@@ -5971,7 +5996,8 @@ async fn pump_inbound(
                         }
                         break 'update session_is_quiescent(session);
                     }
-                    let mut reached_quiescence = update_raw_liveness(session, &params);
+                    let prior_output = tools::joined_output_so_far(&session.live_tool_calls, &params);
+                    let mut reached_quiescence = update_raw_liveness(session, &params); turn_usage::note_reported_cost(session, &params);
                     if let Some(payload) = stopped_background_task_payload(&mut session.background_work, &params) {
                         expect_claude_wake(session);
                         reached_quiescence |= session_is_quiescent(session);
@@ -6058,14 +6084,11 @@ async fn pump_inbound(
                             .get_or_insert_with(|| format!("turn-{}", uuid::Uuid::new_v4()))
                             .clone()
                     });
-                    let Some(payload) = payload_from_session_update_for_turn(
-                        &params,
-                        autonomous_turn_id
-                            .as_deref()
-                            .or(session.active_turn_id.as_deref()),
-                    ) else {
+                    let turn_id = autonomous_turn_id.as_deref().or(session.active_turn_id.as_deref());
+                    let Some(mut payload) = payload_from_session_update_for_turn(&params, turn_id) else {
                         break 'update reached_quiescence;
                     };
+                    tools::join_terminal_output(&mut session.live_tool_calls, prior_output, &params, &mut payload);
                     // A delta for another message means the agent finished the
                     // one it was streaming.
                     if let AgentConversationPayload::AssistantDelta { item_id, .. } = &payload {
@@ -6234,6 +6257,28 @@ async fn pump_inbound(
                 let options = permission_options(&params);
                 let command = params.pointer("/toolCall/rawInput/command").and_then(|command| command.as_str().map(str::to_owned)
                     .or_else(|| command.as_array().map(|parts| parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))));
+                // The descriptor's permission-handler pre-approval answers the agent's Assembly tools here (TSK-1522).
+                let answer = sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&owned_id).filter(|session| session.generation == generation
+                    && session.writer_lease.owner == AgentWriterLeaseOwner::Structured).and_then(|session| super::providers::descriptors::handler_answer(session.provider, &params));
+                if let Some(answer) = answer {
+                    if let Err(error) = transport_runtime.respond(wire_id, answer).await { crate::debug_log::stderr_log!("Could not pre-approve an Assembly tool: {error}"); }
+                    continue;
+                }
+                // A workflow step's policy answers what it names; `ask`, or an allow with no allow-once option, reaches a person.
+                let decided = sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&owned_id)
+                    .and_then(|session| Some(session.guard_policy.as_ref()?.decide(command.as_deref()?)))
+                    .and_then(|decision| Some((decision, policy_answer(decision, &options)?)));
+                if let Some((decision, response)) = decided {
+                    let allowed = decision == crate::workflow::policy::Decision::Allow;
+                    if let Err(error) = transport_runtime.respond(wire_id, response).await {
+                        crate::debug_log::stderr_log!("Could not answer a permission request from the policy: {error}");
+                    }
+                    if let Ok(session) = current_session_mut(&mut sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner), &owned_id, generation) {
+                        let (state, summary) = if allowed { (ApprovalState::Accepted, summary) } else { (ApprovalState::Declined, format!("Blocked by the workflow policy: {summary}")) };
+                        let _ = record_payload_for_session_and_dispatch(session, &emitter, AgentConversationPayload::Approval { request_id: format!("perm-{}", uuid::Uuid::new_v4()), state, summary });
+                    }
+                    continue;
+                }
                 let mut sessions = sessions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -6830,7 +6875,7 @@ fn update_raw_liveness(session: &mut ManagedAgentSession, params: &Value) -> boo
         if terminal {
             session.live_tool_calls.remove(&identifier);
         } else {
-            session.live_tool_calls.insert(identifier);
+            session.live_tool_calls.entry(identifier).or_default();
         }
         return session_is_quiescent(session);
     }
@@ -7280,7 +7325,7 @@ async fn handle_ordered_session_event(
                         return false;
                     }
                 }
-                record_finished_reply(session, &emitter);
+                record_finished_reply(session, &emitter); turn_usage::report_turn_usage(session, &turn_id, result.as_ref().unwrap_or(&Value::Null));
                 let payload = match result {
                     Ok(_) if cancelled => AgentConversationPayload::Turn {
                         turn_id: turn_id.clone(),
@@ -7478,6 +7523,19 @@ fn permission_response(
     }
 }
 
+/// What a workflow policy answers for the agent. Allow picks the allow-once
+/// option, never one that allows for good; with none offered, or on ask, a
+/// person is asked instead.
+fn policy_answer(decision: crate::workflow::policy::Decision, options: &[PermissionOption]) -> Option<Value> {
+    use crate::workflow::policy::Decision;
+    let selected = |option: &PermissionOption| serde_json::json!({ "outcome": { "outcome": "selected", "optionId": option.option_id } });
+    match decision {
+        Decision::Allow => options.iter().find(|option| option.kind == "allow_once").map(selected),
+        Decision::Deny => Some(options.iter().find(|option| is_reject_kind(&option.kind)).map_or_else(|| serde_json::json!({ "outcome": { "outcome": "cancelled" } }), selected)),
+        Decision::Ask => None,
+    }
+}
+
 fn permission_response_for_selection(
     options: &[PermissionOption],
     selection: &PermissionSelection,
@@ -7600,7 +7658,7 @@ fn canonical_event(
             state: ConversationConnectionState::Closed,
             ..
         } => AgentEventType::SessionClosed,
-        AgentConversationPayload::Connection { .. } => AgentEventType::SessionStateChanged,
+        AgentConversationPayload::Connection { .. } | AgentConversationPayload::SessionCompleted { .. } => AgentEventType::SessionStateChanged,
         AgentConversationPayload::UserMessage { .. } => AgentEventType::ItemCompleted,
         AgentConversationPayload::AssistantDelta { .. } => AgentEventType::ContentDelta,
         AgentConversationPayload::AssistantMessage { .. } => AgentEventType::ItemCompleted,
@@ -7612,8 +7670,7 @@ fn canonical_event(
         AgentConversationPayload::Plan { .. } => AgentEventType::PlanUpdated,
         AgentConversationPayload::AvailableCommandsUpdate { .. } => AgentEventType::CommandsUpdated,
         AgentConversationPayload::Turn {
-            state: super::protocol::TurnState::Started,
-            ..
+            state: super::protocol::TurnState::Started, ..
         } => AgentEventType::TurnStarted,
         AgentConversationPayload::Turn {
             state: super::protocol::TurnState::Interrupted,
@@ -7715,13 +7772,6 @@ fn provider_is_multi_session_safe(capabilities: &AgentCapabilities) -> bool {
     capabilities.session.multi_session
 }
 
-fn provider_id(provider: AgentConversationProvider) -> &'static str {
-    match provider {
-        AgentConversationProvider::Codex => "codex",
-        AgentConversationProvider::Claude => "claude",
-        AgentConversationProvider::Antigravity => "antigravity",
-    }
-}
 fn timestamp_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -7810,24 +7860,6 @@ fn projected_background_work(session: &ManagedAgentSession) -> Vec<BackgroundWor
             .then_with(|| left.id.cmp(&right.id))
     });
     work
-}
-
-/// Helpers keep same-provider modes. Claude auto = Codex agent (auto_review);
-/// bypassPermissions = agent-full-access (full_access): matching mode kinds in
-/// Claude ACP 0.88.0/0.93.0 and Codex 1.13.1/2.2.2 session/new; other modes ask.
-fn helper_mode(mode: Option<&str>, from: AgentConversationProvider, to: AgentConversationProvider) -> Option<String> {
-    let mode = mode?;
-    if from == to { return Some(mode.to_string()); }
-    let matched = match (to, mode) {
-        (AgentConversationProvider::Codex, "auto") => "agent",
-        (AgentConversationProvider::Codex, "bypassPermissions") => "agent-full-access",
-        (AgentConversationProvider::Codex, _) => "read-only",
-        (AgentConversationProvider::Claude, "agent") => "auto",
-        (AgentConversationProvider::Claude, "agent-full-access") => "bypassPermissions",
-        (AgentConversationProvider::Claude, _) => "default",
-        _ => return None,
-    };
-    Some(matched.to_string())
 }
 
 /// Claude Code wakes the agent that owned finished background work — a shell,
@@ -7938,7 +7970,7 @@ fn normalize_codex_composite_config_update(
     current: &AgentConversationConfigState,
     update: &mut AgentConversationConfigUpdate,
 ) {
-    if provider != AgentConversationProvider::Codex || current.available_efforts.is_empty() {
+    if !provider.descriptor().effort_in_model_id || current.available_efforts.is_empty() {
         return;
     }
     let Some(model) = update.model.as_deref() else {
@@ -7969,9 +8001,10 @@ mod tests {
         tool_details, unified_diff, unwrap_console_block,
     };
     use crate::agent_conversation::protocol::AgentCommandDescriptor;
+    mod helper_messages;
     mod checkout;
-    mod model_effort;
-    mod codex_resume; mod import_length;
+    mod model_effort; mod permissions;
+    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close; mod terminal_output;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
@@ -8570,6 +8603,7 @@ mod tests {
             AgentConversationPayload::Usage { .. } => "usage",
             AgentConversationPayload::ContextCompaction { .. } => "contextCompaction",
             AgentConversationPayload::CheckoutChanged { .. } => "checkoutChanged",
+            AgentConversationPayload::SessionCompleted { .. } => "sessionCompleted",
             AgentConversationPayload::TerminalProjection(_) => "terminalProjection",
             AgentConversationPayload::Error { .. } => "error",
         }
@@ -10112,148 +10146,6 @@ mod tests {
             .await
             .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_message_during_an_active_turn_uses_session_steering() {
-        let fixture = fixture_manager_with_acp_session("steering").await;
-        {
-            let mut sessions = fixture.manager.sessions.lock().unwrap();
-            let session = sessions.get_mut(&fixture.owned_id).unwrap();
-            session.active_turn_id = Some("turn-running".into());
-            session.state = AgentRuntimeState::Working;
-        }
-
-        let receipt = fixture
-            .manager
-            .prompt(
-                &fixture.owned_id,
-                fixture.generation,
-                test_prompt("change direction"),
-            )
-            .await
-            .expect("steer active turn");
-
-        let events = fixture.manager.list_events(&fixture.owned_id, 0).unwrap();
-        assert_eq!(receipt.owned_id, fixture.owned_id);
-        assert_eq!(receipt.generation, fixture.generation);
-        assert_eq!(receipt.turn_id, "turn-running");
-        assert!(receipt.user_item_id.starts_with("user-steer-"));
-        let admitted = events.iter().find(|event| event.sequence == receipt.admitted_sequence).unwrap();
-        assert_eq!(admitted.turn_id.as_deref(), Some(receipt.turn_id.as_str()));
-        assert!(matches!(&admitted.payload,
-            AgentConversationPayload::UserMessage { item_id, text, .. }
-                if item_id == &receipt.user_item_id && text == "change direction"));
-        assert!(!events
-            .iter()
-            .any(|event| matches!(event.payload, AgentConversationPayload::Turn { .. })));
-        let log = fs::read_to_string(fixture.root.join("steering.jsonl")).unwrap();
-        assert!(log.contains("\"method\":\"_session/steering\""));
-        assert!(log.contains("\"idleBehavior\":\"promptRequired\""));
-
-        fixture
-            .manager
-            .close(&fixture.owned_id, fixture.generation)
-            .await
-            .unwrap();
-        fs::remove_dir_all(fixture.root).unwrap();
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn steering_receipt_keeps_the_original_turn_after_completion() {
-        let root = temp_root();
-        let log = root.join("steering.jsonl");
-        let mut manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&log, "steering");
-        manifest.args[1] = manifest.args[1].replace("outcome=injected",
-            "outcome=injected\n      while [ ! -f \"$log.steer-ack\" ]; do sleep 0.01; done");
-        let manager = AgentRuntimeManager::new(ProviderRegistry::new([
-            (AgentConversationProvider::Codex, manifest),
-        ]).unwrap());
-        let owned_id = "owned-steering-completed";
-        let generation = manager.ensure_inner(request(root.to_str().unwrap(), owned_id,
-            AgentConversationProvider::Codex)).unwrap().0.generation;
-        manager.activate(owned_id, generation).await.unwrap();
-        {
-            let mut sessions = manager.sessions.lock().unwrap();
-            let session = sessions.get_mut(owned_id).unwrap();
-            session.active_turn_id = Some("turn-original".into());
-            session.state = AgentRuntimeState::Working;
-        }
-        let sender = manager.clone();
-        let pending = tokio::spawn(async move {
-            sender.prompt(owned_id, generation, test_prompt("late steering ack")).await
-        });
-        wait_until(|| fs::read_to_string(&log).unwrap_or_default().contains("_session/steering")).await;
-        {
-            let mut sessions = manager.sessions.lock().unwrap();
-            let session = sessions.get_mut(owned_id).unwrap();
-            record_payload_for_session_and_dispatch(session, &manager.emitter,
-                AgentConversationPayload::Turn {
-                    turn_id: "turn-original".into(),
-                    state: super::super::protocol::TurnState::Completed,
-                }).unwrap();
-            session.active_turn_id = None;
-            session.state = AgentRuntimeState::Ready;
-        }
-        fs::write(root.join("steering.jsonl.steer-ack"), "release").unwrap();
-        let receipt = tokio::time::timeout(Duration::from_secs(5), pending).await.unwrap().unwrap().unwrap();
-        assert_eq!(receipt.turn_id, "turn-original");
-        let stored = manager.list_events(owned_id, receipt.admitted_sequence).unwrap();
-        let admitted = stored.first().unwrap();
-        assert_eq!(admitted.turn_id.as_deref(), Some("turn-original"));
-        assert!(matches!(&admitted.payload, AgentConversationPayload::UserMessage { item_id, .. }
-            if item_id == &receipt.user_item_id));
-        assert_eq!(manager.sessions.lock().unwrap().get(owned_id).unwrap().active_turn_id, None);
-        manager.close(owned_id, generation).await.unwrap();
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn steering_not_consumed_preserves_the_existing_turn_and_journal() {
-        for kind in ["steering_idle", "steering_failed"] {
-            let fixture = fixture_manager_with_acp_session(kind).await;
-            {
-                let mut sessions = fixture.manager.sessions.lock().unwrap();
-                let session = sessions.get_mut(&fixture.owned_id).unwrap();
-                session.active_turn_id = Some("turn-running".into());
-                session.state = AgentRuntimeState::Working;
-            }
-            let result = fixture
-                .manager
-                .prompt(
-                    &fixture.owned_id,
-                    fixture.generation,
-                    test_prompt("keep my correction"),
-                )
-                .await;
-            assert!(
-                result.is_err(),
-                "unconsumed input must return to draft recovery"
-            );
-            let events = fixture.manager.list_events(&fixture.owned_id, 0).unwrap();
-            assert!(!events.iter().any(|event| matches!(&event.payload, AgentConversationPayload::UserMessage { text, .. } if text == "keep my correction")));
-            assert_eq!(
-                fixture
-                    .manager
-                    .sessions
-                    .lock()
-                    .unwrap()
-                    .get(&fixture.owned_id)
-                    .unwrap()
-                    .active_turn_id
-                    .as_deref(),
-                Some("turn-running")
-            );
-            let wire = fs::read_to_string(fixture.root.join(format!("{kind}.jsonl"))).unwrap();
-            assert!(wire.contains("_session/steering"));
-            assert!(!wire.contains("\"method\":\"session/prompt\""));
-            fixture
-                .manager
-                .close(&fixture.owned_id, fixture.generation)
-                .await
-                .unwrap();
-            fs::remove_dir_all(fixture.root).unwrap();
-        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -12003,63 +11895,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn queued_message_delivers_when_session_goes_quiescent() {
-        let fixture = fixture_manager_with_acp_session("queued_message_feed").await;
-        let message = fixture
-            .manager
-            .store
-            .append_message(
-                "",
-                "worker-a",
-                &fixture.owned_id,
-                mcb_core::broker::MessageKind::Message,
-                "Review the patch",
-            )
-            .expect("queue message");
-        let prompts = || {
-            fs::read_to_string(fixture.root.join("queued_message_feed.jsonl"))
-                .unwrap()
-                .matches(r#""method":"session/prompt""#)
-                .count()
-        };
-        let receipt = || {
-            fixture.manager.store.pending_for(&fixture.owned_id).unwrap().map(|pending| pending.id)
-        };
-
-        fixture
-            .manager
-            .prompt(&fixture.owned_id, fixture.generation, test_prompt("finish current turn"))
-            .await
-            .expect("prompt starts");
-        let end_first_turn = prompt_result(&fixture).await;
-        fixture.manager.deliver_if_idle(&fixture.owned_id).await;
-        assert_eq!(receipt(), Some(message.id.clone()), "a busy session keeps the message queued");
-        assert_eq!(prompts(), 1);
-
-        feed(&fixture, &[end_first_turn]);
-        wait_until(|| prompts() == 2).await;
-        wait_until(|| receipt().is_none()).await;
-        assert_eq!(fixture.manager.store.message_status(&message.id, "worker-a").unwrap(), "delivered");
-        let expected = "[message from worker-a]\nReview the patch";
-        let snapshot = fixture
-            .manager
-            .snapshot(&fixture.owned_id)
-            .expect("read snapshot")
-            .expect("session exists");
-        assert_eq!(snapshot.events.iter().filter(|event| matches!(
-            &event.payload,
-            AgentConversationPayload::UserMessage { text, .. } if text == expected
-        )).count(), 1);
-
-        fixture
-            .manager
-            .close(&fixture.owned_id, fixture.generation)
-            .await
-            .unwrap();
-        fs::remove_dir_all(fixture.root).unwrap();
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn workflow_step_session_joins_its_project_and_is_announced() {
         let fixture = fixture_manager_with_acp_session("multiplex").await;
         let store = Arc::clone(&fixture.manager.store);
@@ -12080,7 +11915,7 @@ mod tests {
             owned_id: "owned-step".into(), provider: "codex".into(),
             cwd: worktree.to_string_lossy().into_owned(), title: "Build · build".into(),
             prompt: "Build it".into(), role_id: "build".into(), model: None, effort: None,
-            permission: None, starter: None,
+            permission: None, starter: None, policy: Default::default(),
         }).await.expect("dispatch");
         let row = store.get_session("owned-step").unwrap().unwrap();
         assert_eq!(row.project_id.as_deref(), Some("project-demo"));
@@ -12145,26 +11980,48 @@ mod tests {
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
-    #[test]
-    fn a_helper_on_another_provider_gets_its_parents_level() {
-        use AgentConversationProvider::{Claude, Codex};
-        let mode = |parent, from, to| helper_mode(Some(parent), from, to);
-        assert_eq!(mode("auto", Claude, Codex).as_deref(), Some("agent"));
-        assert_eq!(mode("bypassPermissions", Claude, Codex).as_deref(), Some("agent-full-access"));
-        assert_eq!(mode("plan", Claude, Codex).as_deref(), Some("read-only"));
-        assert_eq!(mode("agent", Codex, Claude).as_deref(), Some("auto"));
-        assert_eq!(mode("agent-full-access", Codex, Claude).as_deref(), Some("bypassPermissions"));
-        assert_eq!(mode("read-only", Codex, Claude).as_deref(), Some("default"));
-        // The same provider keeps the parent's own mode; a parent with none sets none.
-        assert_eq!(mode("acceptEdits", Claude, Claude).as_deref(), Some("acceptEdits"));
-        assert_eq!(helper_mode(None, Claude, Codex), None);
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_helper_starts_in_auto_even_when_its_parent_is_in_default() {
+        #[allow(non_snake_case)] let (Claude, Codex) = (AgentConversationProvider::Claude, AgentConversationProvider::Codex);
+        for (parent_provider, parent_mode, helper_provider, log, asked) in [
+            (Claude, Some("default"), "claude", "config_options", r#""modeId":"auto""#),
+            (Claude, None, "codex", "multiplex", r#""approvalPolicy":"agent""#),
+            (Codex, Some("read-only"), "claude", "config_options", r#""modeId":"auto""#),
+        ] {
+            let root = temp_root();
+            let manifest = |fixture: &str| super::super::providers::acp_client::tests::fixture_manifest_named(
+                &root.join(format!("{fixture}.jsonl")), fixture);
+            let manager = AgentRuntimeManager::new(ProviderRegistry::new([
+                (Codex, manifest("multiplex")), (Claude, manifest("config_options"))]).unwrap());
+            let parent = "owned-parent".to_string();
+            let generation = manager.ensure_inner(request(root.to_str().unwrap(), &parent, parent_provider))
+                .unwrap().0.generation;
+            manager.activate(&parent, generation).await.unwrap();
+            manager.sessions.lock().unwrap().get_mut(&parent).unwrap()
+                .config.approval_policy = parent_mode.map(str::to_string);
+            let store = Arc::clone(&manager.store);
+            let endpoint = super::super::messaging::MessagingEndpoint::start().unwrap();
+            let caller = endpoint.issue(&parent);
+            endpoint.bind_store(&caller.token, &store, Some(manager.clone()));
+            let result = endpoint.handle(&caller.token, json!({"name":"start_session","arguments":{
+                "provider":helper_provider,"name":"Helper","prompt":"Go"}})).await.expect("start helper");
+            let started: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+            let helper = started["owned_id"].as_str().unwrap().to_string();
+            let frames = fs::read_to_string(root.join(format!("{log}.jsonl"))).unwrap();
+            assert!(frames.contains(asked), "{parent_provider:?} in {parent_mode:?} starting a {helper_provider} helper: {frames}");
+            let helper_generation = manager.sessions.lock().unwrap().get(&helper).map(|session| session.generation);
+            if let Some(helper_generation) = helper_generation { manager.close(&helper, helper_generation).await.unwrap(); }
+            endpoint.revoke(&parent);
+            manager.close(&parent, generation).await.unwrap();
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn helper_first_prompt_is_labelled_with_parent_and_takes_its_mode() {
+    async fn helper_first_prompt_is_labelled_with_parent_and_starts_in_auto() {
         let fixture = fixture_manager_with_acp_session("multiplex").await;
         let store = Arc::clone(&fixture.manager.store);
-        // A mode the parent is on that no request has asked the adapter for yet.
+        // The parent's own mode does not carry over: the helper asks for Auto.
         fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
             .config.approval_policy = Some("untrusted".into());
         let endpoint = super::super::messaging::MessagingEndpoint::start().unwrap();
@@ -12183,7 +12040,7 @@ mod tests {
         assert!(helper_events.iter().any(|event| matches!(&event.payload,
             AgentConversationPayload::UserMessage { text, .. } if *text == expected)), "{expected}");
         let log = fs::read_to_string(fixture.root.join("multiplex.jsonl")).unwrap();
-        assert!(log.contains(r#""approvalPolicy":"untrusted""#), "{log}");
+        assert!(log.contains(r#""approvalPolicy":"agent""#), "{log}");
         let helper_generation = fixture.manager.sessions.lock().unwrap()
             .get(&helper).map(|session| session.generation);
         if let Some(generation) = helper_generation {
@@ -12422,7 +12279,7 @@ mod tests {
             let session = sessions.get_mut(&fixture.owned_id).unwrap();
             session.state = AgentRuntimeState::Working;
             session.active_turn_id = Some("turn-live".into());
-            session.live_tool_calls.insert("tool-live".into());
+            session.live_tool_calls.insert("tool-live".into(), String::new());
         }
         assert!(!fixture
             .manager
@@ -12791,7 +12648,6 @@ mod tests {
             .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
-
 
     // Claude keeps a transcript this side can read. When it holds no turn — the
     // process was stopped before it wrote one — there is nothing on Claude's
@@ -13278,94 +13134,6 @@ mod tests {
                 ..
             }
         ));
-        fs::remove_dir_all(fixture.root).unwrap();
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn respond_agent_conversation_permission_round_trips_through_fake_agent() {
-        let fixture = fixture_manager_with_acp_session("permission_midturn").await;
-        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
-        let sink = Arc::clone(&seen);
-        fixture
-            .manager
-            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
-        fixture
-            .manager
-            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
-            .await
-            .expect("prompt starts");
-        wait_until(|| {
-            seen.lock().unwrap().iter().any(|event| {
-                matches!(
-                    event.payload,
-                    AgentConversationPayload::Approval {
-                        state: super::super::protocol::ApprovalState::Requested,
-                        ..
-                    }
-                )
-            })
-        })
-        .await;
-        let request_id = seen
-            .lock()
-            .unwrap()
-            .iter()
-            .find_map(|event| match &event.payload {
-                AgentConversationPayload::Approval { request_id, .. } => Some(request_id.clone()),
-                _ => None,
-            })
-            .unwrap();
-        fixture
-            .manager
-            .respond_legacy_approval(
-                &fixture.owned_id,
-                fixture.generation,
-                request_id,
-                super::super::protocol::ApprovalDecision::Accept,
-            )
-            .await
-            .expect("permission response");
-        wait_until(|| {
-            seen.lock().unwrap().iter().any(|event| {
-                matches!(
-                    event.payload,
-                    AgentConversationPayload::Turn {
-                        state: super::super::protocol::TurnState::Completed,
-                        ..
-                    }
-                )
-            })
-        })
-        .await;
-
-        assert!(seen.lock().unwrap().iter().any(|event| {
-            matches!(
-                event.payload,
-                AgentConversationPayload::Approval {
-                    state: ApprovalState::Accepted,
-                    ..
-                }
-            )
-        }));
-        assert!(seen.lock().unwrap().iter().any(|event| {
-            matches!(
-                &event.payload,
-                AgentConversationPayload::AssistantDelta { delta, .. }
-                    if delta == "continued after approval"
-            )
-        }));
-        let fixture_log = fs::read_to_string(fixture.root.join("permission_midturn.jsonl"))
-            .expect("permission fixture log");
-        assert!(
-            fixture_log.contains(r#""outcome":{"outcome":"selected","optionId":"allow""#),
-            "permission response must select a valid allow option: {fixture_log}"
-        );
-
-        fixture
-            .manager
-            .close(&fixture.owned_id, fixture.generation)
-            .await
-            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -15402,7 +15170,7 @@ mod tests {
         let emitted = seen.lock().unwrap();
         let completion = emitted.last().unwrap();
         assert_eq!(completion.sequence + 1, session.next_sequence);
-        assert!(!session.live_tool_calls.contains("edit-1"));
+        assert!(!session.live_tool_calls.contains_key("edit-1"));
         match &completion.payload {
             AgentConversationPayload::Tool { state, path, diff, .. } => {
                 assert_eq!(*state, ToolState::Completed);
