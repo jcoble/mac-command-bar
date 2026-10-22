@@ -1,6 +1,8 @@
+use crate::agent_conversation::agui_projection::AguiProjector;
 use crate::agent_conversation::protocol::AgentConversationEvent;
 use crate::terminal::TerminalOutputEvent;
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -74,8 +76,8 @@ impl<T> Default for StreamState<T> {
     }
 }
 
-/// Small bounded queue shared by the agent and terminal roots. It is private
-/// on purpose: the app has two concrete streams, not a public stream registry.
+/// Small bounded queue shared by the agent, AG-UI and terminal roots. It is
+/// private on purpose: the app has three concrete streams, not a registry.
 struct BoundedProjectionStream<T: Serialize + Send + 'static> {
     kind: &'static str,
     state: Mutex<StreamState<T>>,
@@ -390,6 +392,10 @@ impl<T: Serialize + Send + 'static> BoundedProjectionStream<T> {
 pub struct ProjectionStreams {
     agent_conversation: Arc<BoundedProjectionStream<AgentConversationEvent>>,
     terminal_output: Arc<BoundedProjectionStream<TerminalOutputEvent>>,
+    /// The AG-UI chat stream: one envelope per native event, holding its chunks
+    /// for the views that are open (`agent_conversation::agui_projection`).
+    agui: Arc<BoundedProjectionStream<Vec<Value>>>,
+    agui_views: Arc<Mutex<AguiProjector>>,
     /// Set on a remote server, which has no Tauri window: output goes to its sockets.
     terminal_tap: Option<tokio::sync::broadcast::Sender<crate::terminal::TerminalOutputFrame>>,
 }
@@ -399,6 +405,8 @@ impl Default for ProjectionStreams {
         Self {
             agent_conversation: BoundedProjectionStream::new("agent-conversation-event"),
             terminal_output: BoundedProjectionStream::new("terminal_output"),
+            agui: BoundedProjectionStream::new("agui"),
+            agui_views: Arc::default(),
             terminal_tap: None,
         }
     }
@@ -412,6 +420,14 @@ impl ProjectionStreams {
     }
 
     pub fn publish_agent_event(&self, event: AgentConversationEvent) {
+        if self.agui.current_channel_registration().is_some() {
+            self.with_agui_views(|views| {
+                let chunks = views.project(&event);
+                if !chunks.is_empty() {
+                    self.send_agui(event.owned_id.clone(), event.generation, event.sequence, chunks);
+                }
+            });
+        }
         let session = event.owned_id.clone();
         let generation = event.generation;
         let sequence = event.sequence;
@@ -435,14 +451,37 @@ impl ProjectionStreams {
     }
 
     pub fn diagnostics(&self) -> ProjectionStreamDiagnostics {
-        let agent = self.agent_conversation.diagnostics();
-        let terminal = self.terminal_output.diagnostics();
+        let [agent, terminal, agui] = [self.agent_conversation.diagnostics(), self.terminal_output.diagnostics(), self.agui.diagnostics()];
         ProjectionStreamDiagnostics {
-            workers: agent.workers + terminal.workers,
-            channels: agent.channels + terminal.channels,
-            queued_frames: agent.queued_frames + terminal.queued_frames,
-            queued_bytes: agent.queued_bytes.saturating_add(terminal.queued_bytes),
+            workers: agent.workers + terminal.workers + agui.workers,
+            channels: agent.channels + terminal.channels + agui.channels,
+            queued_frames: agent.queued_frames + terminal.queued_frames + agui.queued_frames,
+            queued_bytes: agent.queued_bytes.saturating_add(terminal.queued_bytes).saturating_add(agui.queued_bytes),
         }
+    }
+
+    /// Runs `apply` on the open AG-UI views. Chunks sent from inside it keep
+    /// their order against live events.
+    pub fn with_agui_views<R>(&self, apply: impl FnOnce(&mut AguiProjector) -> R) -> R {
+        apply(&mut self.agui_views.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
+    pub fn send_agui(&self, session: String, generation: u64, sequence: i64, chunks: Vec<Value>) {
+        self.agui.enqueue_nonblocking(session, generation, sequence, chunks);
+    }
+
+    /// A new AG-UI channel is a new view: nothing it showed before carries over.
+    pub fn register_agui(&self, registration_id: String, channel: Channel<StreamEnvelope<Vec<Value>>>) {
+        self.with_agui_views(|views| *views = AguiProjector::default());
+        self.agui.replace(registration_id, channel);
+    }
+
+    pub fn acknowledge_agui(&self, registration_id: &str, frames: usize, bytes: u64) {
+        self.agui.acknowledge(registration_id, frames, bytes);
+    }
+
+    pub fn unregister_agui(&self, registration_id: &str) {
+        self.agui.unregister(registration_id);
     }
 
     pub fn register_agent_conversation(

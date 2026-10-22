@@ -4259,7 +4259,7 @@ mod connection_tests {
         manager.replace_cached_profile_sessions("workbox", &[listed]).unwrap();
         let mut requested = history_event(90);
         requested.payload = AgentConversationPayload::Approval {
-            request_id: "permission".into(), state: ApprovalState::Requested, summary: "Run command".into(),
+            request_id: "permission".into(), state: ApprovalState::Requested, summary: "Run command".into(), options: Vec::new(),
         };
         let mut replay = history_snapshot(vec![requested.clone()], 90);
         replay.suspended = false;
@@ -4268,7 +4268,7 @@ mod connection_tests {
         manager.complete_replay("workbox", replay, Some(requested), None).unwrap();
         let mut accepted = history_event(91);
         accepted.payload = AgentConversationPayload::Approval {
-            request_id: "permission".into(), state: ApprovalState::Accepted, summary: "Run command".into(),
+            request_id: "permission".into(), state: ApprovalState::Accepted, summary: "Run command".into(), options: Vec::new(),
         };
         let mut completed = history_event(92);
         completed.timestamp_ms = 100;
