@@ -43,6 +43,8 @@
   import WorkflowBoard from './components/WorkflowBoard.svelte';
   import WorkflowCost from './components/WorkflowCost.svelte';
   import WorkflowMap from './components/WorkflowMap.svelte';
+  import WorkflowProject from './components/WorkflowProject.svelte';
+  import { projectProgress } from './workflowProject.ts';
   import WorkflowStepPanel from './components/WorkflowStepPanel.svelte';
 
   interface Props {
@@ -68,6 +70,8 @@
   /** The open run's usage rows for its Cost tab; null while reading. */
   let runUsage = $state<WorkflowUsageRow[] | null>(null);
   const openRun = $derived(runs.find((run) => run.id === openRunId) ?? null);
+  /** The open run's slices, when it is a project with child runs. */
+  const openProject = $derived(openRun ? projectProgress(openRun, runs) : null);
   /** The step whose details show: the one chosen on the Map, else where the run is. */
   const shownStep = $derived(openRun
     ? openRun.nodes.find((node) => node.nodeId === chosenStepId) ?? currentStep(openRun) : null);
@@ -263,6 +267,7 @@
       <Tabs.Root bind:value={runTab} class="ml-auto">
         <Tabs.List>
           <Tabs.Trigger value="map">Map</Tabs.Trigger>
+          {#if openProject}<Tabs.Trigger value="project">Project</Tabs.Trigger>{/if}
           <Tabs.Trigger value="cost">Cost</Tabs.Trigger>
         </Tabs.List>
       </Tabs.Root>
@@ -310,6 +315,8 @@
           onOpenChat={() => void openChat(step.ownedId)}
         />
       {/if}
+    {:else if runTab === 'project' && openProject}
+      <WorkflowProject {run} progress={openProject} {costOf} onOpen={openRunPage} />
     {:else}
       <WorkflowCost {run} rows={runUsage} {now} />
     {/if}
