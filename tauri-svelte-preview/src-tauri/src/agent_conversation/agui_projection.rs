@@ -6,7 +6,7 @@
 //! starts, and the whole reply a provider re-sends when it finishes one
 //! (`record_finished_reply` in `manager.rs`). Remote sessions reach the desktop
 //! as the same native events, so they are projected here the same way.
-use super::agui::{self, ResumeStatus, RunAgentInput};
+use super::{agui::{self, ResumeStatus, RunAgentInput}, manager::tool_call};
 use super::protocol::{
     AgentConversationEvent, AgentConversationPayload as Payload, AgentUserInputAction,
     AgentUserInputField, AgentUserInputKind, ApprovalState, ConversationConnectionState, ToolState, TurnState,
@@ -450,15 +450,11 @@ impl View {
         }
     }
 
-    /// Starts a call once, as a message of its own; streams its arguments once
-    /// they are known (later updates carry them), and ends it with the latest
-    /// ones, then its result: the native call, which the client draws from,
-    /// with the output and diff an earlier update may have carried alone.
+    /// Starts a call once, as a message of its own, with its arguments once known; ends it with the
+    /// latest ones and the native call as its result, which the client draws the row from.
     fn tool(&mut self, out: &mut Vec<Value>, event: &AgentConversationEvent, id: &str, name: &str, state: ToolState, fields: [&Option<String>; 4]) {
         let [summary, path, output, diff] = fields;
-        if self.ended.contains(id) {
-            return;
-        }
+        if self.ended.contains(id) { return; }
         let call = self.tools.entry(id.to_string()).or_insert_with(|| {
             out.push(agui::tool_start(id, name, Some(id), facts(event, "mcp-tool")));
             OpenCall::default()
@@ -474,18 +470,21 @@ impl View {
         if first && !call.args.is_empty() {
             out.push(agui::tool_args(id, &Value::Object(call.args.clone())));
         }
-        if matches!(state, ToolState::Completed | ToolState::Failed) {
-            let call = self.tools.remove(id).unwrap_or_default();
-            out.push(agui::tool_end(id, &Value::Object(call.args)));
-            let mut payload = serde_json::to_value(&event.payload).unwrap_or_default();
-            for (key, value) in [("output", call.output), ("diff", call.diff)] {
-                if let Some(value) = value {
-                    payload[key] = json!(value);
-                }
+        if !matches!(state, ToolState::Completed | ToolState::Failed) {
+            // A running call's output so far reaches an open row; each result replaces the one before.
+            if output.as_deref().is_some_and(|text| !text.is_empty()) {
+                out.push(agui::tool_result(id, &serde_json::to_string(&event.payload).unwrap_or_default(), false));
             }
-            out.push(agui::tool_result(id, &payload.to_string(), state == ToolState::Failed));
-            self.ended.insert(id.to_string());
+            return;
         }
+        let call = self.tools.remove(id).unwrap_or_default();
+        out.push(agui::tool_end(id, &Value::Object(call.args)));
+        // The finished row keeps what it shows closed; opening it reads the output and diff by id.
+        let mut finished = event.clone();
+        if let Payload::Tool { output, diff, .. } = &mut finished.payload { (*output, *diff) = (call.output, call.diff); }
+        let payload = serde_json::to_string(&tool_call::without_details(finished).payload).unwrap_or_default();
+        out.push(agui::tool_result(id, &payload, state == ToolState::Failed));
+        self.ended.insert(id.to_string());
     }
 
     fn child(&mut self, out: &mut Vec<Value>, id: &str, parent_tool_call_id: &str, label: Option<&str>, state: &str) {

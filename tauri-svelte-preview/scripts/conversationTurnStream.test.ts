@@ -16,6 +16,7 @@ import {
   shouldClearConversationSending
 } from '../src/lib/shell/conversation/conversationReducer.ts';
 import { conversationDisplayItems, conversationHasRunningTool } from '../src/lib/shell/conversation/conversationMessages.ts';
+import { foldFileEdits, turnFileChanges } from '../src/lib/shell/conversation/conversationTimeline.ts';
 import type { AgentConversationEvent } from '../src/lib/shell/conversation/conversationTypes.ts';
 
 // The store reads `import.meta.env` and a runes module, so it is compiled the
@@ -145,6 +146,40 @@ test('a tool call runs until its result, and the row shows the state and output 
     assert.deepEqual(conversationDisplayItems(processor.getMessages()).map((item) => [item.kind, item.state, item.output, item.timestampMs]),
       [['tool', end, 'one\ntwo\nend', 10]]);
   }
+});
+
+// TSK-1574: while a call runs its result carries the output so far; the finished result keeps only
+// what the closed row shows, and opening the row reads the output and diff by id.
+test('a running call shows its streamed output and the finished row keeps no output', () => {
+  const processor = new StreamProcessor();
+  const send = (chunks: object[]) => chunks.forEach((chunk) => processor.processChunk(chunk as never));
+  const result = (call: object) => ({ type: EventType.TOOL_CALL_RESULT, toolCallId: 'run', messageId: 'run-result', role: 'tool',
+    content: JSON.stringify({ kind: 'tool', itemId: 'run', name: 'Bash', summary: 'seq 3', ...call }) });
+  send([
+    { type: EventType.RUN_STARTED, threadId: 'owned-lazy-tool', runId: 'run-1' },
+    { type: EventType.TOOL_CALL_START, toolCallId: 'run', toolCallName: 'Bash', parentMessageId: 'run', metadata: { startedAtMs: 10 } },
+    { type: EventType.TOOL_CALL_ARGS, toolCallId: 'run', delta: '{"summary":"seq 3"}' },
+    result({ state: 'updated', output: '1\n2\n' })
+  ]);
+  assert.equal(conversationHasRunningTool(processor.getMessages()), true);
+  assert.deepEqual(conversationDisplayItems(processor.getMessages()).map((item) => [item.state, item.output]), [['running', '1\n2\n']]);
+  send([{ type: EventType.TOOL_CALL_END, toolCallId: 'run', input: { summary: 'seq 3' } }, result({ state: 'completed', hasDetail: true })]);
+  assert.equal(conversationHasRunningTool(processor.getMessages()), false);
+  assert.deepEqual(conversationDisplayItems(processor.getMessages()).map((item) => item.kind === 'tool' && [item.state, item.output, item.hasDetail, item.summary]),
+    [['completed', undefined, true, 'seq 3']]);
+});
+
+test('file edits count lines from added and removed when the diff is not loaded', () => {
+  const processor = new StreamProcessor();
+  // What a history page sends for an edit: the path and the counts, no diff.
+  [{ type: EventType.TOOL_CALL_START, toolCallId: 'edit', toolCallName: 'apply_patch', parentMessageId: 'edit' },
+    { type: EventType.TOOL_CALL_END, toolCallId: 'edit', input: { path: 'notes.txt' } },
+    { type: EventType.TOOL_CALL_RESULT, toolCallId: 'edit', messageId: 'edit-result', role: 'tool', content: JSON.stringify(
+      { kind: 'tool', itemId: 'edit', name: 'apply_patch', state: 'completed', path: 'notes.txt', hasDetail: true, added: 2, removed: 1 }) }
+  ].forEach((chunk) => processor.processChunk(chunk as never));
+  const items = conversationDisplayItems(processor.getMessages());
+  assert.deepEqual(turnFileChanges(items), { files: 1, added: 2, removed: 1 });
+  assert.deepEqual(foldFileEdits(items).flatMap((item) => item.kind === 'fileEdits' ? item.edits : []), [{ itemId: 'edit', path: 'notes.txt', added: 2, removed: 1 }]);
 });
 
 // Protects 882f6c3b7 (ACP steering): a correction sent into a running turn

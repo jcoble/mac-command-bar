@@ -100,9 +100,10 @@ export function conversationDisplayItems(
   return reuseConversationDisplayItems(withoutRepeatedPlans(rows), previous);
 }
 
+/** A running call's result carries its output so far and its native state, so a result alone does not end it. */
 export function conversationHasRunningTool(messages: readonly UIMessage[]): boolean {
-  return messages.some((message) => message.parts.some((part) => part.type === 'tool-call'
-    && part.state !== 'complete' && part.state !== 'error'));
+  return messages.some((message) => message.parts.some((part) => part.type === 'tool-call' && part.state !== 'error'
+    && (part.state !== 'complete' || ['started', 'updated'].includes((part.output as { state?: string } | undefined)?.state ?? ''))));
 }
 
 type TextContent = Extract<StreamChunk, { type: EventType.TEXT_MESSAGE_CONTENT }>;
