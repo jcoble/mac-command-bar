@@ -905,7 +905,7 @@ pub struct WorkflowHistoryRow {
     pub finding_count: Option<i64>,
     pub verdict: Option<String>,
     pub files: Vec<String>,
-    /// The owner's latest answer `{step, decision, reply}`, only on `workflow.node.owner-answered`.
+    /// The latest answer `{step, decision, reply, by, why}`, only on `workflow.node.owner-answered`.
     pub answer: Option<serde_json::Value>,
     pub gate_approved: Option<bool>,
 }

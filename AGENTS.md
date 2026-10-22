@@ -207,6 +207,9 @@ one next to it doesn't. Before calling work done, name which of these you covere
   can't post; they tell their orchestrator.
 - Start agent lanes as Assembly helper sessions (`start_session`), never hidden `codex exec`. Send
   review-bot findings back to the lane that built the PR until the bot is clean.
+- The main orchestrator decides a paused workflow step itself (`decide_step`, with its why) when the
+  findings and the spec give enough to decide. A gate, or a pause that needs Jesse's judgment (scope,
+  a product choice, risk), goes on the Build Board with a phone notification instead.
 
 ## Tasks, plans and docs
 

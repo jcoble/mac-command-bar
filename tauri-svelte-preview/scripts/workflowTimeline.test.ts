@@ -150,4 +150,15 @@ function node(nodeId: string, structuredOutput: unknown, finishedAtMs: number) {
     [[1, 'fail', 'bad', 'pnpm test'], [2, 'fail', 'bad', 'pnpm test']]);
 }
 
+{ // an answer by the main orchestrator says so and shows its why
+  const history: WorkflowHistoryRow[] = [
+    row(1, 1, 'workflow.node.owner-answered', 'review', {
+      answer: { step: 'review', decision: 'accept', reply: null, by: 'orchestrator', why: 'Both findings are wording nits the spec allows.' }
+    })
+  ];
+  const run = { id: RUN, definition: { nodes: [{ id: 'review', title: 'review' }] }, inputSnapshot: {}, nodes: [] } as unknown as WorkflowRunRecord;
+  const [item] = buildWorkflowTimeline(history, [], run);
+  assert.deepEqual([item.title, item.detail], ['Orchestrator answered review: accept', 'Both findings are wording nits the spec allows.']);
+}
+
 console.log('workflowTimeline tests passed');

@@ -120,8 +120,9 @@ export function buildWorkflowTimeline(
         break;
       case 'workflow.node.owner-answered': {
         const decision = entry.answer?.decision ?? '';
-        add({ ...base, kind: 'owner', title: `You answered ${step}: ${DECISIONS[decision] ?? decision}`,
-          detail: entry.answer?.reply ? `“${entry.answer.reply}”` : '' });
+        const orchestrator = entry.answer?.by === 'orchestrator';
+        add({ ...base, kind: 'owner', title: `${orchestrator ? 'Orchestrator' : 'You'} answered ${step}: ${DECISIONS[decision] ?? decision}`,
+          detail: orchestrator ? entry.answer?.why ?? '' : entry.answer?.reply ? `“${entry.answer.reply}”` : '' });
         break;
       }
       case 'workflow.gate.decided':

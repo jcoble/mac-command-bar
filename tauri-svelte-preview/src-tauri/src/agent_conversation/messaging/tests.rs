@@ -530,11 +530,11 @@ async fn messaging_endpoint_answers_mcp_initialize_and_tools_list() {
     assert_eq!(init["result"]["protocolVersion"], "2024-11-05");
     assert_eq!(init["result"]["capabilities"], json!({"tools":{}}));
     let list: Value = call(&c, Some(&c.token), "tools/list", json!({})).await.json().await.unwrap();
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 12);
+    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 13);
     assert_eq!(list["result"]["tools"][0]["name"], "list_sessions");
     assert_eq!(list["result"]["tools"][1]["name"], "send_message");
     assert_eq!(list["result"]["tools"][2]["name"], "start_session");
-    assert_eq!(list["result"]["tools"][10]["name"], "message_status");
+    assert_eq!(list["result"]["tools"][11]["name"], "message_status");
     assert_eq!(call(&c, Some(&c.token), "notifications/initialized", json!({})).await.status(), 202);
 }
 
