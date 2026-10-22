@@ -49,13 +49,16 @@
   }
   $effect(() => {
     details = null;
+    // A call that finishes while its row is open is read again: what was read before may be a partial result.
+    void item.state;
     if (!readId) return;
     const controller = new AbortController();
     void readDetails(readId, controller.signal);
     return () => controller.abort();
   });
   const liveOutput = $derived.by(() => (streamed = detailsOpen ? item.output || streamed : undefined));
-  const shownOutput = $derived(details ? details.output ?? '' : liveOutput ?? '');
+  /* A running call that streams output shows that stream; the read output may be a partial result. */
+  const shownOutput = $derived(details && !(item.state === 'running' && liveOutput) ? details.output ?? '' : liveOutput ?? '');
   const shownDiff = $derived(details ? details.diff ?? undefined : item.diff);
   const output = $derived(detailsOpen && shownOutput !== shownDiff && /\S/.test(shownOutput) ? shownOutput.trimEnd() : '');
   const filePath = $derived(toolFilePath(item));
