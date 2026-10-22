@@ -115,4 +115,33 @@ assert.equal(snapshot, null, 'the saved workspace read fails quietly');
   assert.equal(workspaces['saved-remote'], saved, 'switching away keeps the saved tabs');
 }
 
+// TSK-1545: a remote session opened before its machine connects. The page's
+// Connect (from the row or from Settings) calls refreshRemoteConnection and
+// shows the snapshot it returns, or keeps the default view when it returns
+// false; leaving the session saves whatever view is on screen.
+{
+  const { SessionSelectionController } = await import('../src/lib/shell/controllers/sessionSelectionController.svelte.ts');
+  const later = { ...(session as object), ownedId: 'later-remote', remoteProfileId: 'later-box' } as never;
+  const local = { ownedId: 'local-other', agent: 'claude', cwd: '/home/me/other', projectId: null, executionEnvironment: 'local' } as never;
+  rail.owned = [later, local];
+  rail.remoteConnections['later-box'] = 'disconnected';
+  workspaces['later-remote'] = { openPaths: [], activePath: null, rightTab: 'source-control' };
+  workspaces['local-other'] = null;
+  const controller = new SessionSelectionController();
+  await controller.selectSession('later-remote');
+  assert.equal(controller.activeWorkspaceSnapshot, null, 'offline, the saved view is not read yet');
+
+  rail.remoteConnections['later-box'] = 'connected';
+  const refreshed = await controller.refreshRemoteConnection('later-box');
+  assert.equal(refreshed, true, 'the connect hands the page a saved view to show');
+  assert.equal(controller.activeWorkspaceSnapshot?.rightTab, 'source-control', 'the saved side panel is shown after the connect');
+
+  const onScreen = refreshed ? controller.activeWorkspaceSnapshot?.rightTab : 'files';
+  controller.rememberWorkspaceState({ rightTab: onScreen });
+  await controller.selectSession('local-other');
+  assert.equal((workspaces['later-remote'] as { rightTab?: string }).rightTab, 'source-control', 'leaving keeps the saved view');
+  await controller.selectSession('later-remote');
+  assert.equal(controller.activeWorkspaceSnapshot?.rightTab, 'source-control', 'coming back shows it again');
+}
+
 console.log('offlineRemoteSelection: ok');
