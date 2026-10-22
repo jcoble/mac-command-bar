@@ -205,3 +205,12 @@ export function moveSlashMenuIndex(current: number, length: number, key: string)
 export function draftAfterSlashCommand(_draft: string, command: ConversationCommand): string {
   return `/${command.name} `;
 }
+
+/**
+ * The composer waits while any request is open, for steers and new turns alike:
+ * a native approval or input, or an interrupt the chat client holds. The stock
+ * client guards only its own `sendMessage`, not the steer path, so the lock is ours.
+ */
+export function composerLocked(open: { approval: unknown; inputs: number; interrupts: number }): boolean {
+  return Boolean(open.approval || open.inputs || open.interrupts);
+}
