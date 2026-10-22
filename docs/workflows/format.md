@@ -39,6 +39,7 @@ provider or model is installed.
 | `name` | string | Required; no default | Display name saved with the definition. Use a nonempty descriptive name. |
 | `inputs` | mapping from input names to definitions | Optional; empty | Saves definitions with the snapshot; values are supplied when starting the run. |
 | `limits` | mapping | Optional; defaults below | Saves limits and uses session/timeout values when constructing nodes. |
+| `policy` | mapping: `commands: { allow, ask, deny }` (lists of patterns, `*` for any text) and `default` (`allow`, `ask` or `deny`) | Optional; nothing extra, default `ask` | Checked against each shell command an agent step asks permission to run, part by part (`&&`, `;`, pipes, `sh -c`, with `NAME=value` and `env` removed). The strictest match wins: deny, then ask, then allow, then `default`. Deny and allow are answered for the agent; ask goes to a person. The engine puts its own deny list first, which YAML cannot allow: `git reset --hard*`, `gh pr merge*`, `gh pr ready*`, `git push * main*`, `gh workflow run*`, `gh api *dispatches*`, `git push *assembly-*`. Unknown keys fail validation. It is a first line, not the guarantee: a command an agent runs without asking is not checked. |
 | `steps` | mapping from step IDs to step objects | Required; no default | Builds the dependency graph and saves each step. YAML order does not set execution order. |
 
 Do not write internal `version`, `roles`, `nodes`, `edges` or `concurrency` fields.

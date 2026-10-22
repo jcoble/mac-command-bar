@@ -87,10 +87,14 @@ export class EditorSessionController {
 		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
 		const offline = session?.executionEnvironment === 'remote'
 			&& rail.remoteConnections[session.remoteProfileId ?? ''] !== 'connected';
+		// Its saved workspace can't be read until its machine connects. Owning it
+		// now would keep the default view after the connect and save it over the
+		// stored one, so the session is read in full when it is selected again.
+		if (offline) return null;
 		const remote = parseRemoteWorkspacePath(projectRoot);
 		let stored: SessionWorkspaceSnapshot | null;
 		try {
-			stored = offline ? null : await readAgentConversationWorkspaceFromTauri(ownedId);
+			stored = await readAgentConversationWorkspaceFromTauri(ownedId);
 		} catch (error) {
 			if (stopSignal.aborted) return null;
 			// A remote machine that stopped answering has no folder to show; its
