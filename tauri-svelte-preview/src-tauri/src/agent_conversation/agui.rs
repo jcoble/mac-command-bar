@@ -257,8 +257,9 @@ pub struct AguiSnapshot {
     #[serde(flatten)]
     pub snapshot: AgentConversationSelectionSnapshot,
     pub chunks: Vec<Value>,
-    /// One `RUN_FINISHED` carrying every request still waiting, to queue right after the snapshot.
-    pub open_requests: Option<Value>,
+    /// Run chunks to queue right after the snapshot: the client's runs that
+    /// ended meanwhile, then one `RUN_FINISHED` carrying every request still waiting.
+    pub runs: Vec<Value>,
 }
 
 /// A page of a chat for scrolling: the native page, its events as chunks.
@@ -331,7 +332,7 @@ pub async fn run_agui(
 
 #[tauri::command]
 /// Opens a chat view on the AG-UI channel: the snapshot as chunks, then the
-/// open requests to re-emit. From here the channel carries this session.
+/// run chunks to queue after it. From here the channel carries this session.
 pub async fn read_agui_snapshot(
     streams: State<'_, ProjectionStreams>,
     manager: State<'_, AgentRuntimeManager>,
@@ -362,7 +363,7 @@ pub async fn read_agui_snapshot(
     });
     let Some(mut snapshot) = read? else { return Ok(None) };
     snapshot.page.events = Vec::new();
-    Ok(Some(AguiSnapshot { snapshot, chunks: opened.events, open_requests: opened.open_requests }))
+    Ok(Some(AguiSnapshot { snapshot, chunks: opened.events, runs: opened.runs }))
 }
 
 #[tauri::command]

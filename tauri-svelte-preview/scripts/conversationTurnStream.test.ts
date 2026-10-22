@@ -9,18 +9,13 @@ import { stripTypeScriptTypes } from 'node:module';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { compileModule } from 'svelte/compiler';
+import { EventType, StreamProcessor } from '@tanstack/ai/client';
 import {
   createConversationState,
   reduceConversationEvent,
-  shouldClearConversationSending,
-  usageDropIsCompaction
+  shouldClearConversationSending
 } from '../src/lib/shell/conversation/conversationReducer.ts';
-import {
-  conversationDisplayItems,
-  conversationHasRunningTool,
-  conversationMessagesFromEvents,
-  displayItemsFromConversationEvents
-} from '../src/lib/shell/conversation/conversationMessages.ts';
+import { conversationDisplayItems, conversationHasRunningTool } from '../src/lib/shell/conversation/conversationMessages.ts';
 import type { AgentConversationEvent } from '../src/lib/shell/conversation/conversationTypes.ts';
 
 // The store reads `import.meta.env` and a runes module, so it is compiled the
@@ -53,12 +48,6 @@ function stream(ownedId: string, provider: Provider) {
     payload: payload as AgentConversationEvent['payload'], ...extra
   });
 }
-
-// A canonical provider event, the shape stored terminal projections unwrap to.
-const canonical = (sequence: number, payload: Record<string, unknown>) => ({
-  type: 'content.delta', ownedId: 'canonical', provider: 'claude', providerInstanceId: 'fixture',
-  generation: 1, sequence, timestampMs: sequence, itemId: String(payload.messageId), payload
-}) as never;
 
 // Protects 50ca299a7 (app-minted turns): the composer's Working state ends on
 // the turn's end or an error, and on nothing else.
@@ -132,64 +121,30 @@ test('a usage report that carries only some numbers keeps the others', () => {
   assert.deepEqual(state.usage, { inputTokens: undefined, outputTokens: undefined, usedTokens: 2_400, contextWindow: 200_000, totalTokens: undefined });
 });
 
-// Protects 424aae767: Claude says nothing when it compacts; a cliff in the
-// reported occupancy is the only sign, and an ordinary decline is not one.
-test('only a steep fall in a full context window reads as a compaction', () => {
-  assert.equal(usageDropIsCompaction(100_000, 60_000), true);
-  assert.equal(usageDropIsCompaction(100_000, 60_001), false);
-  assert.equal(usageDropIsCompaction(31_999, 1_000), false, 'a nearly empty window says nothing');
-  assert.equal(usageDropIsCompaction(undefined, 1_000), false);
-  const event = stream('owned-compaction', 'claude');
-  const kinds = conversationDisplayItems(conversationMessagesFromEvents([
-    event({ kind: 'usage', usedTokens: 100_000 }),
-    event({ kind: 'usage', usedTokens: 90_000 }),
-    event({ kind: 'usage', usedTokens: 95_000 })
-  ])).map((item) => item.kind);
-  assert.equal(kinds.includes('compaction'), false);
-});
-
-test('streamed deltas build one reply and the finished message has the last word', () => {
-  for (const provider of PROVIDERS) {
-    const event = stream(`owned-reply-${provider}`, provider);
-    const items = conversationDisplayItems(conversationMessagesFromEvents([
-      event({ kind: 'assistantDelta', itemId: 'answer', delta: 'Helo ' }),
-      event({ kind: 'assistantDelta', itemId: 'answer', delta: 'wrld' }),
-      event({ kind: 'assistantMessage', itemId: 'answer', text: 'Hello world', completed: true })
-    ]));
-    assert.deepEqual(items.map((item) => [item.kind, item.text, item.completed]), [['assistant', 'Hello world', true]], provider);
+// The backend sends a call as a message of its own, then the native call as its result.
+test('a tool call runs until its result, and the row shows the state and output it ended with', () => {
+  for (const end of ['completed', 'failed']) {
+    const processor = new StreamProcessor();
+    const send = (chunks: object[]) => chunks.forEach((chunk) => processor.processChunk(chunk as never));
+    send([
+      { type: EventType.RUN_STARTED, threadId: 'owned-tool', runId: 'run-1' },
+      { type: EventType.TOOL_CALL_START, toolCallId: 'tool-1', toolCallName: 'Run tests', parentMessageId: 'tool-1',
+        metadata: { itemType: 'mcp-tool', turnId: 'turn-1', startedAtMs: 10, firstSequence: 1 } },
+      { type: EventType.TOOL_CALL_ARGS, toolCallId: 'tool-1', delta: '{"summary":"npm test"}' }
+    ]);
+    assert.equal(conversationHasRunningTool(processor.getMessages()), true);
+    assert.deepEqual(conversationDisplayItems(processor.getMessages()).map((item) => [item.kind, item.state, item.summary]),
+      [['tool', 'running', 'npm test']]);
+    const call = { kind: 'tool', itemId: 'tool-1', name: 'Run tests', state: end, summary: 'npm test', output: 'one\ntwo\nend' };
+    send([
+      { type: EventType.TOOL_CALL_END, toolCallId: 'tool-1', input: { summary: 'npm test' } },
+      { type: EventType.TOOL_CALL_RESULT, toolCallId: 'tool-1', messageId: 'tool-1-result', role: 'tool', content: JSON.stringify(call),
+        ...(end === 'failed' ? { metadata: { tanstack: { state: 'output-error' } } } : {}) }
+    ]);
+    assert.equal(conversationHasRunningTool(processor.getMessages()), false, end);
+    assert.deepEqual(conversationDisplayItems(processor.getMessages()).map((item) => [item.kind, item.state, item.output, item.timestampMs]),
+      [['tool', end, 'one\ntwo\nend', 10]]);
   }
-});
-
-test('a tool call runs until it completes or fails, keeping the output it last reported', () => {
-  for (const provider of PROVIDERS) {
-    for (const end of ['completed', 'failed']) {
-      const event = stream(`owned-tool-${provider}`, provider);
-      const running = [
-        event({ kind: 'turn', turnId: 'turn-1', state: 'started' }),
-        event({ kind: 'tool', itemId: 'tool-1', name: 'Run tests', state: 'started', output: 'one\n' }),
-        event({ kind: 'tool', itemId: 'tool-1', name: 'Run tests', state: 'updated', output: 'one\ntwo\n' })
-      ];
-      const live = conversationMessagesFromEvents(running);
-      assert.equal(conversationHasRunningTool(live), true);
-      assert.deepEqual(conversationDisplayItems(live).map((item) => [item.kind, item.state, item.output]), [['tool', 'running', 'one\ntwo\n']]);
-      const done = conversationMessagesFromEvents([...running,
-        event({ kind: 'tool', itemId: 'tool-1', name: 'Run tests', state: end, output: 'one\ntwo\nend' })]);
-      assert.equal(conversationHasRunningTool(done), false, `${provider} ${end}`);
-      assert.deepEqual(conversationDisplayItems(done).map((item) => [item.kind, item.state, item.output]), [['tool', end, 'one\ntwo\nend']]);
-    }
-  }
-});
-
-// Protects dda06a519: the Thinking row closes when the reply starts or its own
-// turn ends, and not when some other turn ends.
-test('reasoning stops streaming when the reply starts or its own turn ends', () => {
-  const thought = canonical(1, { kind: 'agentThoughtChunk', turnId: 'turn-1', messageId: 'thought', content: { type: 'text', text: 'Checking' } });
-  const reasoning = (events: never[]) => displayItemsFromConversationEvents(events)
-    .filter((item) => item.kind === 'reasoning').map((item) => item.completed);
-  assert.deepEqual(reasoning([thought]), [false]);
-  assert.deepEqual(reasoning([thought, canonical(2, { kind: 'agentMessageChunk', turnId: 'turn-1', messageId: 'answer', content: { type: 'text', text: 'Done' } })]), [true]);
-  assert.deepEqual(reasoning([thought, canonical(2, { kind: 'turn', turnId: 'turn-1', state: 'completed', messageId: 'end' })]), [true]);
-  assert.deepEqual(reasoning([thought, canonical(2, { kind: 'turn', turnId: 'turn-2', state: 'completed', messageId: 'end' })]), [false]);
 });
 
 // Protects 882f6c3b7 (ACP steering): a correction sent into a running turn

@@ -24,7 +24,37 @@ import {
 import type { AgentConversationEvent, AgentItem } from '../src/lib/shell/conversation/conversationTypes.ts';
 import { sendTurnRunning } from '../src/lib/shell/conversation/conversationScrollAnchor.ts';
 import { conversationItemHasVisibleContent } from '../src/lib/shell/conversation/conversationItemVisibility.ts';
-import { conversationDisplayItems, conversationMessagesFromEvents, displayItemsFromConversationEvents } from '../src/lib/shell/conversation/conversationMessages.ts';
+import { conversationDisplayItems } from '../src/lib/shell/conversation/conversationMessages.ts';
+import { EventType, StreamProcessor, type StreamChunk } from '@tanstack/ai/client';
+// The backend's projection in brief: a call message whose result is its last payload,
+// text messages with their row facts, and an activity holding any other row's native event.
+const conversationMessagesFromEvents = (events: AgentConversationEvent[]) => {
+  const processor = new StreamProcessor();
+  const send = (...chunks: Record<string, unknown>[]) => chunks.forEach((chunk) => processor.processChunk(chunk as StreamChunk));
+  const started = new Set<string>();
+  for (const event of events) {
+    const payload = event.payload as Record<string, any>;
+    const facts = { turnId: event.turnId, startedAtMs: event.timestampMs, firstSequence: event.sequence };
+    const toolCallId = payload.itemId;
+    if (payload.kind === 'tool') {
+      if (!started.has(toolCallId)) send({ type: EventType.TOOL_CALL_START, toolCallId, toolCallName: payload.name, parentMessageId: toolCallId,
+        metadata: { ...facts, itemType: 'mcp-tool' } }, ...(payload.summary ? [{ type: EventType.TOOL_CALL_ARGS, toolCallId, delta: JSON.stringify({ summary: payload.summary }) }] : []));
+      started.add(toolCallId);
+      if (payload.state === 'completed' || payload.state === 'failed') send({ type: EventType.TOOL_CALL_END, toolCallId },
+        { type: EventType.TOOL_CALL_RESULT, toolCallId, messageId: `${toolCallId}:result`, content: JSON.stringify(payload) });
+    } else if (payload.kind === 'userMessage' || payload.kind === 'assistantMessage') {
+      const [role, itemType] = payload.kind === 'userMessage' ? ['user', 'user-message'] : ['assistant', 'assistant-message'];
+      send({ type: EventType.TEXT_MESSAGE_START, messageId: toolCallId, role, metadata: { ...facts, itemType } },
+        { type: EventType.TEXT_MESSAGE_CONTENT, messageId: toolCallId, delta: payload.text },
+        { type: EventType.TEXT_MESSAGE_END, messageId: toolCallId, metadata: { completed: true } });
+    } else {
+      const item = agentItemFromEvent(event);
+      if (item) send({ type: EventType.ACTIVITY_SNAPSHOT, messageId: item.id, activityType: 'assembly.row', content: { event } });
+    }
+  }
+  return processor.getMessages();
+};
+const displayItemsFromConversationEvents = (events: AgentConversationEvent[]) => conversationDisplayItems(conversationMessagesFromEvents(events));
 
 const displayAgentItems = (items: AgentItem[]) => displayItemsFromConversationEvents(items.map((item, index) => ({
   type: 'item.completed', ownedId: 'fixtures', provider: 'codex', providerInstanceId: 'fixtures',
@@ -105,34 +135,6 @@ const editWithoutDiff = displayItemsFromConversationEvents([
 ])[0];
 assert.equal(editWithoutDiff.diff, undefined, 'an edit without a diff does not show output as a patch');
 assert.equal(editWithoutDiff.output, undefined, 'an edit without a diff has no dumped body');
-
-const reasoning = displayItemsFromConversationEvents([
-  event(1, { kind: 'agentThoughtChunk', turnId: 'turn-1', messageId: 'reasoning-1', content: { type: 'text', text: 'Inspecting ' } }),
-  event(2, { kind: 'agentThoughtChunk', turnId: 'turn-1', messageId: 'reasoning-1', content: { type: 'text', text: 'the files.' } }),
-  event(3, { kind: 'assistantMessage', itemId: 'assistant-rich', text: 'Done', completed: true })
-]);
-const reasoningItems = reasoning.filter((item) => item.kind === 'reasoning');
-assert.equal(reasoningItems.length, 1, 'thought chunks aggregate into one reasoning row');
-assert.equal(reasoningItems[0].text, 'Inspecting the files.');
-
-const permission = displayItemsFromConversationEvents([
-  event(1, {
-    kind: 'permissionRequest',
-    requestId: 'permission-1',
-    title: 'Approval needed',
-    toolTitle: 'pnpm test',
-    description: 'Run the focused test',
-    options: [
-      { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
-      { optionId: 'allow_always', name: 'Always allow', kind: 'allow_always' },
-      { optionId: 'reject_once', name: 'Reject', kind: 'reject_once' }
-    ]
-  })
-]);
-assert.equal(permission.length, 1, 'permission request creates one inline approval row');
-assert.equal(permission[0].kind, 'approval');
-assert.equal(permission[0].toolTitle, 'pnpm test');
-assert.deepEqual(permission[0].options.map((option) => option.optionId), ['allow_once', 'allow_always', 'reject_once']);
 
 const replayed = displayItemsFromConversationEvents([
   event(1, { kind: 'toolCall', toolCallId: 'replayed-tool', title: 'Read file', toolKind: 'fetch', status: 'in_progress', _meta: { replay: true } }),
@@ -419,10 +421,10 @@ console.log('conversationTimeline.test.ts passed');
 // draw a bare left border, so a turn that ran sub-agents opened onto a column
 // of blank bars.
 const childProgress = displayItemsFromConversationEvents([
-  event(1, { kind: 'assistantDelta', itemId: 'msg-1', delta: 'Splitting the work.' }),
+  event(1, { kind: 'assistantMessage', itemId: 'msg-1', text: 'Splitting the work.' }),
   event(2, { kind: 'childUpdate', childId: 'child-a', parentToolCallId: 'tool-1', label: 'rust_acp_lifecycle', state: 'running', latestActivity: 'Running' }),
   event(3, { kind: 'childUpdate', childId: 'child-b', parentToolCallId: 'tool-1', label: 'svelte_message_flow', state: 'running', latestActivity: 'Running' }),
-  event(4, { kind: 'assistantDelta', itemId: 'msg-2', delta: 'Both are back.' })
+  event(4, { kind: 'assistantMessage', itemId: 'msg-2', text: 'Both are back.' })
 ]);
 assert.deepEqual(childProgress.map((item) => item.kind), ['assistant', 'assistant'], 'child updates draw no row of their own');
 assert.equal(
@@ -435,7 +437,7 @@ assert.equal(
 // providers can say so, and the reply after it reads as though it forgot what
 // came before unless the transcript marks the boundary.
 const compaction = displayItemsFromConversationEvents([
-  event(1, { kind: 'assistantDelta', itemId: 'msg-1', delta: 'Working.' }),
+  event(1, { kind: 'assistantMessage', itemId: 'msg-1', text: 'Working.' }),
   event(2, { kind: 'contextCompaction', trigger: 'auto', preTokens: 351238, postTokens: 22202 })
 ]);
 assert.deepEqual(compaction.map((item) => item.kind), ['assistant', 'compaction']);
@@ -503,7 +505,7 @@ const readWithPath = displayItemFromAgentItem({
 if (readWithPath.kind !== 'tool') throw new Error('expected tool');
 assert.equal(toolFilePath(readWithPath), 'logs/slot4-api.log', 'the call\'s own path is what the row opens');
 
-// Output-only completion preserves identity and full input during live processing and replay.
+// An output-only completion keeps the call's name and full input.
 for (const [name, summary, output, toolKind] of [
   ['Bash', "printf 'first\\n'\nprintf 'second\\n'", 'first\nsecond', 'command'],
   ['mcp__notion__search', 'show running shell tasks', '{"results":[]}', 'tool']
@@ -512,9 +514,7 @@ for (const [name, summary, output, toolKind] of [
     event(1, { kind: 'tool', itemId: 'identity', name, summary, state: 'started' }),
     event(2, { kind: 'tool', itemId: 'identity', name: '', output, state: 'completed' })
   ];
-  const live = conversationMessagesFromEvents(events);
   const replay = displayItemsFromConversationEvents(events);
-  assert.deepEqual(conversationDisplayItems(live), replay, 'live and replay agree');
   for (const item of replay) {
     assert.equal(item.kind, 'tool');
     if (item.kind !== 'tool') throw new Error('expected tool');

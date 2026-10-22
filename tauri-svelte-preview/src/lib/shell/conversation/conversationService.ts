@@ -12,6 +12,7 @@ import {
   readHistoryDownloadProgressFromTauri,
   readRemoteAssemblyEnvironmentFromTauri,
   registerAgentConversationStream,
+  registerAguiStream,
   stopAgentConversationChildHistoryFromTauri,
   writeTerminalSessionFromTauri,
   type AgentConversationSessionRecord,
@@ -21,6 +22,8 @@ import {
   type ProjectionStreamRegistration,
   type StreamEnvelope
 } from '$lib/tauriSource';
+import type { StreamChunk } from '@tanstack/ai/client';
+import type { RunAgentInputContext } from '@tanstack/ai-client';
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { get } from 'svelte/store';
@@ -80,10 +83,10 @@ import type {
   AgentConversationHandoffPhase,
   AgentConversationHandoffReceipt,
   AgentConversationHandoffRequest,
-  AgentConversationItemPage,
   AgentConversationProvider,
-  AgentConversationSelectionSnapshot,
   AgentConversationSendReceipt,
+  AguiPage,
+  AguiSnapshot,
   AgentWriterLeaseOwner,
   AgentWriterLeaseTransition,
   ConversationAttachment
@@ -121,15 +124,21 @@ type SelectedConversationRead = {
   pageWatermark: number;
   pendingSequence: number;
   events: AgentConversationEvent[];
+  /** AG-UI envelopes that arrived during a snapshot read. */
+  chunks: StreamEnvelope<StreamChunk[]>[];
   bytes: number;
   overflow: boolean;
   reading: boolean;
   reloadRequested: boolean;
   abortController: AbortController;
-  onSnapshot: (snapshot: AgentConversationSelectionSnapshot) => void;
+  onSnapshot: (snapshot: AguiSnapshot) => void;
   onEvent: (event: AgentConversationEvent) => void;
+  onChunks: (chunks: StreamChunk[]) => void;
   onError: (error: unknown) => void;
 };
+
+/** A run of the stock chat client, for `run_agui`: answers on `resume`, and the id the chat gave the message it sends. */
+export type AguiRun = Pick<RunAgentInputContext, 'threadId' | 'runId' | 'parentRunId' | 'resume'> & { messageId?: string };
 
 const ensuring = new Map<string, ConversationEnsure>();
 const terminalProjections = new Map<string, string>();
@@ -776,6 +785,14 @@ function admitSelectedConversationEvent(event: AgentConversationEvent): boolean 
   return true;
 }
 
+/** The chat's chunks for the selected session; during a snapshot read they wait for it. */
+function admitSelectedConversationChunks(envelope: StreamEnvelope<StreamChunk[]>): void {
+  const read = selectedConversationRead?.ownedId === envelope.sessionId ? selectedConversationRead : childConversationRead;
+  if (!read || read.ownedId !== envelope.sessionId || read.abortController.signal.aborted) return;
+  if (read.reading) read.chunks.push(envelope);
+  else read.onChunks(envelope.chunk);
+}
+
 async function attachHistoryDownload(workspaceOwnedId: string, ownedId: string, childSessionId: string | null, childId: string | null, signal: AbortSignal): Promise<void> {
   const receive = (progress: HistoryDownloadProgress): void => {
     if (signal.aborted || progress.workspaceOwnedId !== workspaceOwnedId || progress.childSessionId !== childSessionId) return;
@@ -802,6 +819,7 @@ async function reloadSelectedConversation(read: SelectedConversationRead): Promi
     for (let attempt = 0; attempt < 2; attempt += 1) {
       read.reloadRequested = false;
       read.events.length = 0;
+      read.chunks.length = 0;
       read.bytes = 0;
       read.overflow = false;
       const snapshot = await readAgentConversationSelectionFromTauri(
@@ -827,6 +845,9 @@ async function reloadSelectedConversation(read: SelectedConversationRead): Promi
       const replay = [...read.events].sort((left, right) => left.sequence - right.sequence);
       read.events.length = 0;
       for (const event of replay) deliverSelectedConversationEvent(read, event);
+      // The snapshot covers everything up to its head; the view sent only what came after.
+      const chunks = read.chunks.splice(0).filter((envelope) => envelope.sequence > snapshot.pendingSequence);
+      for (const envelope of chunks) read.onChunks(envelope.chunk);
       if (!read.reloadRequested) return;
     }
     throw new Error('Conversation changed too quickly to open its selected history');
@@ -846,8 +867,9 @@ export async function subscribeSelectedConversation(input: {
   ownedId: string;
   maxBytes: number;
   signal?: AbortSignal;
-  onSnapshot: (snapshot: AgentConversationSelectionSnapshot) => void;
+  onSnapshot: (snapshot: AguiSnapshot) => void;
   onEvent: (event: AgentConversationEvent) => void;
+  onChunks: (chunks: StreamChunk[]) => void;
   onError: (error: unknown) => void;
 }): Promise<() => void> {
   if (input.signal?.aborted) return () => {};
@@ -863,6 +885,7 @@ export async function subscribeSelectedConversation(input: {
     pageWatermark: Number.MIN_SAFE_INTEGER,
     pendingSequence: Number.MIN_SAFE_INTEGER,
     events: [],
+    chunks: [],
     bytes: 0,
     overflow: false,
     // Buffer any event delivered while the shared listener is registering.
@@ -872,6 +895,7 @@ export async function subscribeSelectedConversation(input: {
     abortController,
     onSnapshot: input.onSnapshot,
     onEvent: input.onEvent,
+    onChunks: input.onChunks,
     onError: input.onError
   };
   if (child) childConversationRead = read;
@@ -881,6 +905,7 @@ export async function subscribeSelectedConversation(input: {
     abortController.signal.removeEventListener('abort', dispose);
     abortController.abort();
     read.events.length = 0;
+    read.chunks.length = 0;
     read.bytes = 0;
     if ((child ? childConversationRead : selectedConversationRead) === read) clearConversationHistoryDownload(input.workspaceOwnedId, child);
     if (selectedConversationRead === read) selectedConversationRead = null;
@@ -907,7 +932,7 @@ export async function readOlderSelectedConversationItems(
   beforeSequence: number,
   maxBytes: number,
   signal?: AbortSignal
-): Promise<AgentConversationItemPage | null> {
+): Promise<AguiPage | null> {
   return await listAgentConversationItemsBeforeFromTauri(
     ownedId, beforeSequence, maxBytes, signal
   );
@@ -918,7 +943,7 @@ export async function readNewerSelectedConversationItems(
   afterSequence: number,
   maxBytes: number,
   signal?: AbortSignal
-): Promise<AgentConversationItemPage | null> {
+): Promise<AguiPage | null> {
   return await listAgentConversationItemsAfterFromTauri(
     ownedId, afterSequence, maxBytes, signal
   );
@@ -955,6 +980,7 @@ export async function startConversationEvents(): Promise<void> {
 
 async function setupConversationEvents(streamGeneration: number, signal: AbortSignal): Promise<void> {
   let registration: ProjectionStreamRegistration | null = null;
+  let chunkRegistration: ProjectionStreamRegistration | null = null;
   let stopTitles: (() => void) | null = null;
   let stopRemoteConnections: (() => void) | null = null;
   const dispose = (): void => {
@@ -966,6 +992,8 @@ async function setupConversationEvents(streamGeneration: number, signal: AbortSi
     // unregister deactivates delivery immediately and handles native cleanup errors.
     void registration?.unregister();
     registration = null;
+    void chunkRegistration?.unregister();
+    chunkRegistration = null;
   };
   signal.addEventListener('abort', dispose, { once: true });
   const remoteConnectionEventsSeen = new Set<string>();
@@ -975,6 +1003,13 @@ async function setupConversationEvents(streamGeneration: number, signal: AbortSi
       () => handleConversationStreamResync(streamGeneration)
     );
     if (signal.aborted || !registration) { dispose(); return; }
+    chunkRegistration = await registerAguiStream(
+      (envelope) => {
+        if (!conversationEventsDisposed && streamGeneration === conversationEventsGeneration) admitSelectedConversationChunks(envelope);
+      },
+      () => handleConversationStreamResync(streamGeneration)
+    );
+    if (signal.aborted) { dispose(); return; }
     stopTitles = trackTauriListener(await listen<{ ownedId: string; title: string }>(
       'session-title-changed', ({ payload }) => {
         if (registration && !signal.aborted) showNamedSession(payload.ownedId, payload.title, streamGeneration);
@@ -1461,12 +1496,18 @@ async function waitFor(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/** A run of the chat that only answers its interrupts. */
+export async function resumeConversationRun(run: AguiRun): Promise<void> {
+  await invoke('run_agui', { input: run });
+}
+
 /** Sends one message through the current writer while preserving attachment recovery; `withAttachments` false leaves the composer's screenshots. */
 export async function sendStructuredMessage(
   ownedId: string,
   text: string,
   startConfig?: { reasoningEffort?: string | null; model?: string | null; approvalPolicy?: string | null },
-  withAttachments = true
+  withAttachments = true,
+  run?: AguiRun
 ): Promise<AgentConversationSendReceipt | undefined> {
   let state = getConversationSession(ownedId);
   if (!state) return;
@@ -1629,8 +1670,7 @@ export async function sendStructuredMessage(
     if (preparingSends.get(ownedId) === preparation) preparingSends.delete(ownedId);
     const requestedModel = startConfig?.model ?? null;
     const requestedApprovalPolicy = startConfig?.approvalPolicy ?? null;
-    const receipt: AgentConversationSendReceipt = await invoke('send_agent_conversation_message', {
-      request: {
+    const request = {
         ownedId,
         generation: validatedGeneration,
         text: prompt.text,
@@ -1644,9 +1684,11 @@ export async function sendStructuredMessage(
           && state.agentConfig.availableApprovalPolicies.includes(requestedApprovalPolicy)
             ? requestedApprovalPolicy
             : null
-      }
-    });
-    return receipt;
+    };
+    // The chat's own run sends it, so the reply streams back under that run.
+    return run
+      ? await invoke<AgentConversationSendReceipt | null>('run_agui', { input: { ...run, message: request } }) ?? undefined
+      : await invoke<AgentConversationSendReceipt>('send_agent_conversation_message', { request });
   } catch (error) {
     // A send that never went out puts its screenshots back in the composer, so
     // nothing is left waiting to be hung on a later message.

@@ -401,8 +401,7 @@ fn a_legacy_approval_offers_allow_and_deny_and_is_answered_with_a_decision() {
         Answer::Approval { request_id: "approval-1".into(), generation: 2, accept: true });
 }
 
-/// Every start carries what the timeline draws its row from; a call is a
-/// message of its own, its result the native call; the chat's ids are kept.
+/// Starts carry what a row is drawn from; a call is its own message; the chat's ids are kept.
 #[test]
 fn every_start_carries_the_row_facts_and_a_call_is_its_own_message() {
     let mut script = Script::open();
@@ -432,8 +431,8 @@ fn every_start_carries_the_row_facts_and_a_call_is_its_own_message() {
     assert_eq!(script.send(user("user-2", "From the phone"))[1]["messageId"], "user-2");
 }
 
-/// Rows AG-UI has no event for are activity messages carrying the native
-/// event, and none opens a run.
+/// Rows AG-UI has no event for, a compaction the used tokens give away among them,
+/// are activity messages carrying the native event, and none opens a run.
 #[test]
 fn rows_without_an_agui_event_are_activity_messages_outside_runs() {
     let mut script = Script::open();
@@ -448,21 +447,15 @@ fn rows_without_an_agui_event_are_activity_messages_outside_runs() {
         terminal,
     ].into_iter().flat_map(|payload| script.send(payload)).collect();
     assert_eq!(types(&rows), ["ACTIVITY_SNAPSHOT"; 5]);
-    let ids: Vec<&str> = rows.iter().map(|row| row["messageId"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["plan:1", "compaction:2", "checkout:3", "error:2:4", "item-7"]);
+    assert_eq!(rows.iter().map(|row| row["messageId"].as_str().unwrap()).collect::<Vec<_>>(), ["plan:1", "compaction:2", "checkout:3", "error:2:4", "item-7"]);
     assert_eq!((&rows[0]["activityType"], &rows[4]["activityType"]), (&json!("assembly.plan"), &json!("assembly.terminalProjection")));
     assert_eq!(rows[0]["content"]["event"]["payload"]["items"][0]["text"], "Write");
     assert_well_formed(&rows);
-}
-
-#[test]
-fn a_large_drop_in_used_tokens_marks_a_compaction() {
-    let mut script = Script::open();
     let usage = |used| Payload::Usage { input_tokens: None, output_tokens: None, used_tokens: Some(used), context_window: None, total_tokens: None };
     assert_eq!(types(&script.send(usage(100_000))), ["CUSTOM"]);
     assert_eq!(types(&script.send(usage(90_000))), ["CUSTOM"], "a small drop is not one");
     let dropped = script.send(usage(20_000));
-    assert_eq!((types(&dropped), &dropped[0]["messageId"]), (vec!["ACTIVITY_SNAPSHOT", "CUSTOM"], &json!("compaction:3")));
+    assert_eq!((types(&dropped), &dropped[0]["messageId"]), (vec!["ACTIVITY_SNAPSHOT", "CUSTOM"], &json!("compaction:8")));
     assert_eq!(dropped[0]["content"]["event"]["payload"], json!({ "kind": "contextCompaction", "preTokens": 90_000, "postTokens": 20_000 }));
     assert_eq!(types(&script.send(usage(10_000))), ["CUSTOM"], "below the floor a drop is not one");
 }
@@ -505,7 +498,7 @@ fn a_turn_that_ends_mid_reply_ends_the_reply_before_the_run() {
 }
 
 #[test]
-fn child_agents_start_and_finish_once_and_a_plan_is_its_own_row() {
+fn child_agents_start_and_finish_once() {
     let mut script = Script::open();
     script.send(turn(TurnState::Started));
     let child = |state: &str| Payload::ChildUpdate { child_id: "child-1".into(), parent_tool_call_id: "tool-9".into(), parent_id: None,
@@ -513,8 +506,6 @@ fn child_agents_start_and_finish_once_and_a_plan_is_its_own_row() {
     assert_eq!(types(&script.send(child("running"))), ["SUBAGENT_STARTED", "CUSTOM"]);
     assert_eq!(types(&script.send(child("finished"))), ["SUBAGENT_FINISHED", "CUSTOM"]);
     assert_eq!(types(&script.send(child("finished"))), ["CUSTOM"]);
-    let plan = script.send(Payload::Plan { items: vec![PlanItem { text: "Write".into(), status: "pending".into() }] });
-    assert_eq!(plan[0]["activityType"], "assembly.plan");
 }
 
 #[test]
@@ -534,7 +525,7 @@ fn reopening_replays_the_snapshot_then_the_open_request_then_live_events() {
     let opened = views.finish_open(THREAD, Some((&snapshot, &pending, 14)));
     assert!(!types(&opened.events).iter().any(|kind| kind.starts_with("RUN_")), "history leaves runs out");
     assert_eq!(opened.events[1]["delta"], "Let me check.", "history joins a reply's pieces");
-    let reopened = opened.open_requests.unwrap();
+    let reopened = &opened.runs[0];
     let interrupts = reopened["outcome"]["interrupts"].as_array().unwrap();
     assert_eq!(interrupts.len(), 1, "a request the session no longer waits on is not shown again");
     assert_eq!(interrupts[0]["id"], "perm-1");
@@ -544,6 +535,31 @@ fn reopening_replays_the_snapshot_then_the_open_request_then_live_events() {
     // The whole reply re-sent at the end adds nothing to what the view shows.
     let tail = views.project(&event(16, reply("msg-1", "Let me check. Done")));
     assert_eq!(types(&tail), ["TEXT_MESSAGE_END"]);
+}
+
+/// A reopened view goes on in the client's run, or ends it once the snapshot shows its turn over.
+#[test]
+fn a_reopen_keeps_the_clients_run_while_its_turn_goes_on_and_ends_it_after() {
+    // The live view saw the first `seen` events; the snapshot holds them all.
+    let reopen = |seen: usize, history: Vec<Payload>, pending: &[&str]| {
+        let mut script = Script::open();
+        script.run("run-client-1", None, Vec::new()).unwrap();
+        history.iter().take(seen).for_each(|payload| { script.send(payload.clone()); });
+        script.sequence = history.len() as i64;
+        script.views.begin_open(THREAD);
+        let events: Vec<_> = history.into_iter().enumerate().map(|(index, payload)| event(index as i64 + 1, payload)).collect();
+        let pending = pending.iter().map(|id| id.to_string()).collect();
+        let runs = script.views.finish_open(THREAD, Some((&events, &pending, events.len() as i64))).runs;
+        (script, runs)
+    };
+    let (mut script, runs) = reopen(1, vec![turn(TurnState::Started)], &[]);
+    assert!(runs.is_empty());
+    assert_eq!(types(&script.send(delta("msg-1", "Hi"))), ["TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT"], "the run goes on");
+    assert_eq!(script.send(turn(TurnState::Completed)).last().unwrap()["runId"], "run-client-1");
+    let (_, runs) = reopen(1, vec![turn(TurnState::Started), turn(TurnState::Completed)], &[]);
+    assert_eq!((types(&runs), &runs[0]["runId"], runs[0].get("outcome")), (vec!["RUN_FINISHED"], &json!("run-client-1"), None));
+    let (_, runs) = reopen(2, vec![turn(TurnState::Started), permission("perm-1", ApprovalState::Requested)], &["perm-1"]);
+    assert_eq!((runs.len(), &runs[0]["runId"]), (1, &json!("run-client-1")), "the request is shown again on the client's run");
 }
 
 #[test]
@@ -592,7 +608,7 @@ fn contract_scenarios_are_well_formed() {
     let mut views = AguiProjector::default();
     views.begin_open(THREAD);
     let opened = views.finish_open(THREAD, Some((&snapshot, &HashSet::from(["perm-3".to_string()]), 12)));
-    extra.extend(opened.events.iter().chain(opened.open_requests.iter()).map(|chunk| line("reopened-view", chunk)));
+    extra.extend(opened.events.iter().chain(&opened.runs).map(|chunk| line("reopened-view", chunk)));
     let Some(folder) = std::env::var_os("AGUI_FIXTURE_OUT") else { return };
     let folder = std::path::PathBuf::from(folder);
     std::fs::write(folder.join("rust-chunks.jsonl"), runs.join("\n") + "\n").unwrap();

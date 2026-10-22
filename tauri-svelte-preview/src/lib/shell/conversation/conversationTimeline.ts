@@ -5,12 +5,9 @@ import type {
   AgentEvent,
   AgentItem,
   AgentItemType,
-  AgentApprovalRequest,
   AgentConversationEvent,
   AgentConversationTurnFacts,
   AgentPermissionOption,
-  AgentPermissionRequest,
-  AgentUserInputRequest,
   AgentUserInputField,
   ConversationAttachment
 } from './conversationTypes.ts';
@@ -846,27 +843,6 @@ function toolStateOf(value: unknown): ConversationToolState {
   return 'pending';
 }
 
-function permissionOptionsOf(value: unknown): AgentPermissionOption[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (typeof entry === 'string') {
-      const labels: Record<string, string> = { accept: 'Allow', decline: 'Deny', cancel: 'Deny' };
-      return [{ optionId: entry, name: labels[entry] ?? entry }];
-    }
-    const row = recordOf(entry);
-    const optionId = stringOf(row?.optionId, stringOf(row?.id));
-    if (!row || !optionId) return [];
-    return [{ optionId, name: stringOf(row.name, stringOf(row.label, optionId)), kind: stringOf(row.kind) || undefined }];
-  });
-}
-
-function defaultPermissionOptions(): AgentPermissionOption[] {
-  return [
-    { optionId: 'accept', name: 'Allow', kind: 'allow_once', synthetic: true },
-    { optionId: 'decline', name: 'Deny', kind: 'reject_once', synthetic: true }
-  ];
-}
-
 function displayTimestamp(item: AgentItem, fallback: number): number {
   return numberOf(item.providerMetadata?.startedAtMs, fallback);
 }
@@ -950,42 +926,6 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
     timestampMs: startedAt,
     metadata
   } as ConversationDisplayItem;
-}
-
-export function displayItemFromApproval(
-  request: AgentPermissionRequest | (AgentApprovalRequest & { state: string }),
-  timestampMs = Date.now()
-): Extract<ConversationDisplayItem, { kind: 'approval' }> {
-  const options = permissionOptionsOf(request.options);
-  const toolTitle = 'toolTitle' in request ? request.toolTitle : request.title;
-  return {
-    kind: 'approval',
-    itemId: `approval:${request.requestId}`,
-    turnId: request.turnId ?? null,
-    requestId: request.requestId,
-    title: request.title || 'Approval requested',
-    toolTitle,
-    summary: request.description ?? toolTitle,
-    state: request.state,
-    options: options.length ? options : defaultPermissionOptions(),
-    timestampMs
-  };
-}
-
-export function displayItemFromInput(
-  request: AgentUserInputRequest,
-  timestampMs = Date.now()
-): ConversationDisplayItem {
-  return {
-    kind: 'input',
-    itemId: `input:${request.requestId}`,
-    turnId: request.turnId ?? null,
-    requestId: request.requestId,
-    title: request.title,
-    description: request.description,
-    fields: request.fields,
-    timestampMs
-  };
 }
 
 /**
@@ -1345,39 +1285,6 @@ export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
       streaming: !completed,
       blocks: Array.isArray(payload.blocks) ? (payload.blocks as unknown as AgentConfigValue) : undefined
     })
-  };
-}
-
-export function conversationEventAppendsItemContent(event: ConversationEvent): boolean {
-  const kind = normalizedPayloadKind(event.payload as unknown as StringRecord);
-  return kind === 'assistantDelta'
-    || kind === 'agentMessageChunk'
-    || kind === 'agentThoughtChunk'
-    || kind === 'toolCallUpdate'
-    || kind === 'turnDiff'
-    || ('type' in event && event.type === 'content.delta');
-}
-
-export function permissionRequestFromEvent(event: ConversationEvent): AgentPermissionRequest | null {
-  const payload = event.payload as unknown as StringRecord;
-  const kind = normalizedPayloadKind(payload);
-  if (kind !== 'permissionRequest' && kind !== 'approval') return null;
-  const requestId = ('requestId' in event ? event.requestId : undefined) ?? stringOf(payload.requestId);
-  if (!requestId) return null;
-  const tool = recordOf(payload.toolCall);
-  const toolTitle = stringOf(payload.toolTitle, stringOf(tool?.title, stringOf(payload.title, stringOf(payload.summary, 'Permission requested'))));
-  const options = permissionOptionsOf(payload.options);
-  return {
-    ownedId: event.ownedId,
-    generation: event.generation,
-    requestId,
-    turnId: (('turnId' in event ? event.turnId : undefined) || stringOf(payload.turnId)) || undefined,
-    itemId: (('itemId' in event ? event.itemId : undefined) || stringOf(payload.itemId) || stringOf(payload.toolCallId)) || undefined,
-    title: stringOf(payload.title, 'Approval needed'),
-    toolTitle,
-    description: stringOf(payload.description, stringOf(payload.summary)) || undefined,
-    options: options.length ? options : defaultPermissionOptions(),
-    state: stringOf(payload.state, 'requested')
   };
 }
 

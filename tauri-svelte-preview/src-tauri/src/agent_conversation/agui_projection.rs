@@ -18,8 +18,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// a decision, as the approval card answers it.
 const DECISIONS: [(&str, &str, &str); 2] = [("accept", "Allow", "allow_once"), ("decline", "Deny", "reject_once")];
 
-/// Used tokens falling this far from at least this many means the agent
-/// compacted its context without saying so.
+/// Claude says nothing when it throws the older part of a conversation away;
+/// the used tokens dropping off a cliff is the only sign. Below the floor the
+/// window is not full enough for a fall to mean one, and a modest fall is an
+/// agent reporting its last request rather than the whole session.
 const COMPACTION_FLOOR_TOKENS: u64 = 32_000;
 const COMPACTION_DROP_RATIO: f64 = 0.6;
 
@@ -45,12 +47,14 @@ pub enum Answer {
     Input { request_id: String, generation: u64, action: AgentUserInputAction, content: BTreeMap<String, Value> },
 }
 
-/// What opening a view produced: its history as chunks, the open requests to
-/// re-emit right after it, and chunks for events that arrived while it was read.
+/// What opening a view produced: its history as chunks, the run chunks to
+/// queue right after it (the client's runs that ended meanwhile, then one
+/// carrying every open request), and chunks for events that arrived while it
+/// was read.
 #[derive(Default)]
 pub struct Opened {
     pub events: Vec<Value>,
-    pub open_requests: Option<Value>,
+    pub runs: Vec<Value>,
     pub live: Vec<(u64, i64, Vec<Value>)>,
 }
 
@@ -125,9 +129,19 @@ impl AguiProjector {
             if fresh.requests.is_empty() {
                 fresh.paused_run = None;
             }
+            // The client is in the runs this view started: the fresh view goes
+            // on in them while their turn does, and ends them once it is over.
+            for (old, new) in [(view.open_run.take(), &mut fresh.open_run), (view.paused_run.take(), &mut fresh.paused_run)] {
+                let Some(old) = old else { continue };
+                if new.is_some() {
+                    *new = Some(old);
+                } else {
+                    opened.runs.push(agui::run_finished(owned_id, &old, None, None));
+                }
+            }
             fresh.last_sequence = Some(fresh.last_sequence.map_or(head, |last| last.max(head)));
             opened.events = history(chunks);
-            opened.open_requests = fresh.pause_chunk(owned_id);
+            opened.runs.extend(fresh.pause_chunk(owned_id));
             *view = fresh;
         }
         for event in held {

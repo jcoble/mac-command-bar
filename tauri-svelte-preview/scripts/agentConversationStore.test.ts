@@ -10,20 +10,9 @@ import { get } from 'svelte/store';
 import { normalizeProvider } from '../src/lib/shell/ownedSessions.ts';
 import { EventType, StreamProcessor, type StreamChunk } from '@tanstack/ai/client';
 import { shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
-import { conversationChunksFromEvent, conversationDisplayItems, conversationMessagesAfterCustom, conversationMessagesFromEvents, conversationSnapshotChunks } from '../src/lib/shell/conversation/conversationMessages.ts';
+import { conversationDisplayItems } from '../src/lib/shell/conversation/conversationMessages.ts';
 import { agentItemFromEvent, displayItemFromAgentItem } from '../src/lib/shell/conversation/conversationTimeline.ts';
 
-function applyNativeChunks(processor: StreamProcessor, event: any): StreamChunk[] {
-  const chunks = conversationChunksFromEvent(processor.getMessages(), event);
-  for (const chunk of chunks) {
-    if (chunk.type === EventType.CUSTOM) {
-      processor.setMessages(conversationMessagesAfterCustom(
-        processor.getMessages(), chunk.name, chunk.value
-      ));
-    } else processor.processChunk(chunk);
-  }
-  return chunks;
-}
 import { sessionPresenceHistory, sessionPresenceEventFromConversation, synchronizeSessionPresenceWork, deriveSessionPresence, EMPTY_SESSION_PRESENCE_HISTORY } from '../src/lib/shell/conversation/sessionPresence.ts';
 
 type ProviderName = 'codex' | 'claude';
@@ -81,122 +70,6 @@ try {
 const a = store.ensureConversationSession('owned-a', 'codex');
 const b = store.ensureConversationSession('owned-b', 'claude');
 assert.notEqual(a, b);
-
-// Live native text and tools enter TanStack through standard chunks. CUSTOM is
-// reserved for the two targeted patches the standard protocol cannot express.
-{
-  const processor = new StreamProcessor();
-  const base = {
-    type: 'item.completed', ownedId: 'chunk-owner', provider: 'codex',
-    providerInstanceId: 'fixture', generation: 1, sequence: 1,
-    timestampMs: 10, nativeSessionId: 'native', rawFrameReference: { id: 'raw', redacted: true }
-  };
-  const authority = {
-    ...base,
-    itemId: 'assistant-1',
-    payload: {
-      kind: 'assistantMessage', itemId: 'assistant-1', text: 'Hello', completed: true,
-      blocks: [{ type: 'paragraph', text: 'Hello' }]
-    },
-    providerMetadata: {}
-  };
-  const authorityChunks = applyNativeChunks(processor, authority);
-  assert.deepEqual(authorityChunks.map((chunk) => chunk.type), [
-    EventType.TEXT_MESSAGE_START, EventType.TEXT_MESSAGE_CONTENT, EventType.TEXT_MESSAGE_END
-  ]);
-  assert.equal(processor.getMessages()[0].metadata?.blocks?.[0]?.text, 'Hello');
-
-  const deltaChunks = applyNativeChunks(processor, {
-    ...base, type: 'content.delta', sequence: 2, timestampMs: 20, itemId: 'assistant-1',
-    payload: { kind: 'assistantDelta', itemId: 'assistant-1', text: ' again' },
-    providerMetadata: {}
-  });
-  assert.equal(deltaChunks.some((chunk) => chunk.type === EventType.CUSTOM
-    && chunk.name === 'assembly:stale-markdown'), true);
-  assert.equal(processor.getMessages()[0].parts[0].content, 'Hello again');
-  assert.equal('blocks' in (processor.getMessages()[0].metadata ?? {}), false);
-
-  applyNativeChunks(processor, {
-    ...base, type: 'item.started', sequence: 3, timestampMs: 30, itemId: 'tool-1',
-    payload: { kind: 'tool', itemId: 'tool-1', name: 'Read file', state: 'started', rawInput: { path: 'a.ts' }, output: 'one' },
-    providerMetadata: {}
-  });
-  const terminalChunks = applyNativeChunks(processor, {
-    ...base, sequence: 4, timestampMs: 40, itemId: 'tool-1',
-    payload: { kind: 'tool', itemId: 'tool-1', name: 'Tool', state: 'completed' },
-    providerMetadata: {}
-  });
-  assert.equal(terminalChunks.some((chunk) => chunk.type === EventType.TOOL_CALL_RESULT), true);
-  const call = processor.getMessages().find((message) => message.id === 'tool-1')?.parts
-    .find((part) => part.type === 'tool-call');
-  assert.equal(call?.name, 'Read file');
-  assert.equal(call?.arguments, JSON.stringify({ path: 'a.ts' }));
-  assert.equal((call?.output as { output?: string })?.output, 'one');
-
-  const correctionChunks = applyNativeChunks(processor, {
-    ...base, sequence: 5, timestampMs: 50, itemId: 'assistant-1',
-    payload: { kind: 'assistantMessage', itemId: 'assistant-1', text: 'Corrected', completed: true },
-    providerMetadata: {}
-  });
-  assert.equal(correctionChunks[0]?.type, EventType.MESSAGES_SNAPSHOT);
-  const afterCorrection = applyNativeChunks(processor, {
-    ...base, type: 'content.delta', sequence: 6, timestampMs: 60, itemId: 'assistant-1',
-    payload: { kind: 'assistantDelta', itemId: 'assistant-1', text: ' plus' },
-    providerMetadata: {}
-  });
-  assert.equal(afterCorrection.some((chunk) => chunk.type === EventType.TEXT_MESSAGE_START), false);
-  assert.equal(processor.getMessages().find((message) => message.id === 'assistant-1')?.parts[0].content, 'Corrected plus');
-
-  const authoritative = processor.getMessages().map((message) => message.id === 'tool-1'
-    ? { ...message, metadata: { ...message.metadata, lastSequence: 7 }, parts: message.parts.flatMap((part) =>
-        part.type === 'tool-result' ? [] : part.type === 'tool-call'
-          ? [{ ...part, state: 'input-complete' as const, input: { path: 'a.ts' }, output: { output: 'live' }, metadata: { native: true } }]
-          : [part]) }
-    : message);
-  for (const chunk of conversationSnapshotChunks(authoritative)) {
-    if (chunk.type === EventType.CUSTOM) processor.setMessages(conversationMessagesAfterCustom(processor.getMessages(), chunk.name, chunk.value));
-    else processor.processChunk(chunk);
-  }
-  const running = processor.getMessages().find((message) => message.id === 'tool-1');
-  const runningCall = running?.parts.find((part) => part.type === 'tool-call');
-  assert.equal(runningCall?.state, 'input-complete');
-  assert.deepEqual(runningCall?.input, { path: 'a.ts' });
-  assert.deepEqual(runningCall?.output, { output: 'live' });
-  assert.equal(running?.parts.some((part) => part.type === 'tool-result'), false);
-  assert.equal(running?.metadata?.lastSequence, 7);
-
-  // A page with many unfinished historical tools must publish a constant number
-  // of message arrays, while keeping each native tool's state and output.
-  assert.ok(runningCall?.type === 'tool-call');
-  const retained = Array.from({ length: 200 }, (_, index) => ({
-    id: 'running-' + index, role: 'assistant' as const, metadata: running?.metadata,
-    parts: [{ ...runningCall, id: 'running-' + index }]
-  }));
-  const pageChunks = conversationSnapshotChunks(retained);
-  assert.equal(pageChunks.length, 2, 'one snapshot and one restoration batch regardless of tool count');
-  let publications = 0;
-  const paged = new StreamProcessor({ events: { onMessagesChange: () => { publications++; } } });
-  for (const chunk of pageChunks) {
-    if (chunk.type === EventType.CUSTOM) paged.setMessages(conversationMessagesAfterCustom(paged.getMessages(), chunk.name, chunk.value));
-    else paged.processChunk(chunk);
-  }
-  assert.equal(publications, 2, 'history admission must not republish once per running tool');
-  assert.deepEqual(paged.getMessages(), retained);
-
-  const optimistic = new StreamProcessor();
-  optimistic.addUserMessage('Hello', 'optimistic');
-  for (const chunk of conversationSnapshotChunks(optimistic.getMessages().map((message) => ({ ...message, id: 'native-user' })))) {
-    if (chunk.type === EventType.CUSTOM) optimistic.setMessages(conversationMessagesAfterCustom(optimistic.getMessages(), chunk.name, chunk.value));
-    else optimistic.processChunk(chunk);
-  }
-  applyNativeChunks(optimistic, {
-    ...base, sequence: 8, timestampMs: 80, itemId: 'native-user',
-    payload: { kind: 'userMessage', itemId: 'native-user', text: 'Hello', completed: true },
-    providerMetadata: {}
-  });
-  assert.equal(optimistic.getMessages().length, 1);
-  assert.equal(optimistic.getMessages()[0].metadata?.startedAtMs, 80);
-}
 
 store.setConversationDraft('owned-a', 'Message A');
 store.setConversationDraft('owned-b', 'Message B');
@@ -546,24 +419,20 @@ test('history gaps withhold live content and admitted messages stay retained', a
   );
   const emitBlock = source.slice(
     source.indexOf('function emitEvent('),
-    source.indexOf('function createConnection(')
+    source.indexOf('function rejectPendingAdmission(')
   );
   const state = { selectedHasAfter: true, usage: undefined };
   let stateUpdates = 0;
-  const emit = Function(
+  const { emitEvent: emit, emitChunks } = Function(
     'getConversationSession', 'applySelectedConversationEventState',
-    'applySelectedConversationHistoryEventState',
-    'usageDropIsCompaction', 'encoder', 'isTerminal', 'EventType',
-    `${stripTypeScriptTypes(emitBlock, { mode: 'strip' })}\nreturn emitEvent;`
+    'applySelectedConversationHistoryEventState', 'failChildConversationTranscript', 'setConversationSendError',
+    `${stripTypeScriptTypes(emitBlock, { mode: 'strip' })}\nreturn { emitEvent, emitChunks };`
   )(
     () => state,
     () => { stateUpdates += 1; },
     () => { stateUpdates += 1; },
-    () => false,
-    new TextEncoder(),
-    (candidate: AgentConversationEvent, turnId: string) => candidate.payload.turnId === turnId
-      && candidate.payload.kind === 'turn' && candidate.payload.state !== 'started',
-    EventType
+    () => undefined,
+    () => undefined
   );
   const pushed: unknown[] = [];
   const event: AgentConversationEvent = {
@@ -571,16 +440,15 @@ test('history gaps withhold live content and admitted messages stay retained', a
     sequence: 2, timestampMs: 2,
     payload: { kind: 'assistantDelta', itemId: 'answer', delta: 'new' }
   };
-  emit({ workspaceOwnedId: 'owned-window', pendingSend: null }, event, (item: unknown) => pushed.push(item));
+  const selectionShown = { workspaceOwnedId: 'owned-window', historyOwnedId: 'owned-window', contentAdmitted: true };
+  emit(selectionShown, event);
   assert.equal(stateUpdates, 1, 'native controls still advance');
-  assert.deepEqual(pushed, [], 'older content is not appended to the retained window');
-
-  const terminalPushed: any[] = [];
-  const pending = { receipt: { turnId: 'turn-1' }, runId: 'run-1' };
-  emit({ workspaceOwnedId: 'owned-window', historyOwnedId: 'owned-window', pendingSend: pending }, {
-    ...event, sequence: 3, payload: { kind: 'turn', turnId: 'turn-1', state: 'completed' }
-  }, (item: unknown) => terminalPushed.push(item));
-  assert.equal(terminalPushed[0]?.type, EventType.RUN_FINISHED, 'terminal settles while older content is shown');
+  emitChunks(selectionShown, [
+    { type: EventType.TEXT_MESSAGE_CONTENT, messageId: 'answer', delta: 'new' },
+    { type: EventType.RUN_FINISHED, threadId: 'owned-window', runId: 'run-1' }
+  ], (item: unknown) => pushed.push(item));
+  assert.deepEqual(pushed.map((chunk: any) => chunk.type), [EventType.RUN_FINISHED],
+    'older content is not appended to the retained window, but the run still settles');
 
   const merge = Function(`${stripTypeScriptTypes(source.slice(
     source.indexOf('function mergeMessages('), source.indexOf('function recordLiveMessages(')
@@ -601,7 +469,7 @@ test('history gaps withhold live content and admitted messages stay retained', a
   const recordLive = Function(
     'messageBytes', 'applySelectedConversationLiveWindow', 'historyPosition', 'resetMessageBytes',
     `${stripTypeScriptTypes(source.slice(source.indexOf('function recordLiveMessages('),
-      source.indexOf('function isTerminal(')), { mode: 'strip' })}\nreturn recordLiveMessages;`
+      source.indexOf('function optimisticUserId(')), { mode: 'strip' })}\nreturn recordLiveMessages;`
   )(bytes, () => undefined, (message: any) => message?.metadata?.firstSequence, () => undefined);
   const sizes = new Map(large.map((row) => [row.id, bytes(row)]));
   const liveSelection = {
@@ -631,9 +499,9 @@ test('history gaps withhold live content and admitted messages stay retained', a
     (_workspace: string, _history: string, snapshot: any, _controls: boolean, window: unknown) => {
       snapshotWindow = window; snapshotTurns = snapshot.page.turns;
     }, (_selection: unknown, rows: unknown) => { snapshotMessages = rows; }, EventType, () => undefined, () => []);
-  const snapshotSelection: any = { historyOwnedId: 'owned-window', pendingSend: null, chat: { messages: large } };
+  const snapshotSelection: any = { historyOwnedId: 'owned-window', chat: { messages: large } };
   admitSnapshot(snapshotSelection, { page: { items: large.slice(250), beforeCursor: 251, afterCursor: 300,
-    hasBefore: true, hasAfter: false, events: [], turns: [finishedTurn] }, connection: { generation: 1 } }, () => undefined, false);
+    hasBefore: true, hasAfter: false, events: [], turns: [finishedTurn] }, chunks: [], runs: [], connection: { generation: 1 } }, () => undefined, false);
   assert.deepEqual(snapshotMessages, large, 'overlapping latest refresh retains all earlier pages');
   assert.deepEqual(snapshotTurns, [oldTurn, finishedTurn], 'earlier facts survive; incoming turn facts win');
   assert.equal(snapshotWindow.beforeCursor, 1);
@@ -645,21 +513,13 @@ test('history gaps withhold live content and admitted messages stay retained', a
     source.indexOf('function enqueueFactory('), source.indexOf('function resetReady(')
   );
   const enqueueFactory = Function(
-    'conversationChunksFromEvent', 'recordLiveMessages', 'EventType', 'takeStreamItem',
+    'recordLiveMessages', 'takeStreamItem',
     `${stripTypeScriptTypes(enqueueBlock, { mode: 'strip' })}\nreturn enqueueFactory;`
-  )(
-    (_messages: unknown[], nativeEvent: AgentConversationEvent) => [{
-      type: EventType.TEXT_MESSAGE_CONTENT,
-      messageId: nativeEvent.payload.itemId,
-      delta: nativeEvent.payload.delta
-    }],
-    () => undefined,
-    EventType, (items: unknown[]) => items.shift()
-  );
+  )(() => undefined, (items: unknown[]) => items.shift());
   const controller = new AbortController();
-  const queued = enqueueFactory(controller.signal, { chat: { messages: [] }, pendingSend: null });
-  queued.push({ nativeEvent: { ...event, payload: { kind: 'assistantDelta', itemId: 'first', delta: 'one' } } });
-  queued.push({ nativeEvent: { ...event, sequence: 3, payload: { kind: 'assistantDelta', itemId: 'second', delta: 'two' } } });
+  const queued = enqueueFactory(controller.signal, { chat: { messages: [] } });
+  queued.push({ type: EventType.TEXT_MESSAGE_CONTENT, messageId: 'first', delta: 'one' });
+  queued.push({ type: EventType.TEXT_MESSAGE_CONTENT, messageId: 'second', delta: 'two' });
   const iterator = queued.stream()[Symbol.asyncIterator]();
   assert.deepEqual((await iterator.next()).value, { type: EventType.TEXT_MESSAGE_CONTENT, messageId: 'first', delta: 'one' });
   assert.deepEqual((await iterator.next()).value, { type: EventType.TEXT_MESSAGE_CONTENT, messageId: 'second', delta: 'two' });
@@ -1040,19 +900,6 @@ test('parent and child readers deliver concurrently without sharing cursors', ()
   assert.equal(child.pageWatermark, 1);
 });
 
-test('snapshot projection preserves implicit Claude compaction markers', () => {
-  const ownedId = 'owned-compaction';
-  const messages = conversationMessagesFromEvents([{
-    ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 1,
-    payload: { kind: 'usage', usedTokens: 100_000 }
-  }, {
-    ownedId, provider: 'claude', generation: 1, sequence: 2, timestampMs: 2,
-    payload: { kind: 'usage', usedTokens: 30_000 }
-  }]);
-  assert.equal(conversationDisplayItems(messages)[0].kind, 'compaction');
-});
-
-
 await test('start-up registers the event stream before it opens the remembered session', async () => {
   // A remote open shows the Mac's copy at once and its background top-up is
   // published moments later; a stream registered after the open would miss it.
@@ -1092,7 +939,7 @@ await test('ensure refresh requires the confirmed generation before admitting ca
     const read = {
       ownedId, workspaceOwnedId: ownedId, maxBytes: 512 * 1024,
       minimumGeneration: priorMinimum, reading: false, reloadRequested: false,
-      events: [], bytes: 0, overflow: false, abortController: new AbortController(),
+      events: [], chunks: [], bytes: 0, overflow: false, abortController: new AbortController(),
       onSnapshot: (snapshot: { connection: { generation: number } }) => { state.generation = snapshot.connection.generation; }
     };
     const dependencies = {
@@ -1710,7 +1557,7 @@ await test('selected refresh reports failure and releases buffered terminal even
     let rejectRead: (error: Error) => void = () => {};
     const read = {
       ownedId: 'refresh-failure', generation: 1, pageWatermark: 10, pendingSequence: 15,
-      reading: false, reloadRequested: false, events: [] as AgentConversationEvent[],
+      reading: false, reloadRequested: false, events: [] as AgentConversationEvent[], chunks: [],
       bytes: 0, overflow: false, maxBytes: 1024, abortController: new AbortController(),
       onSnapshot: () => assert.fail('failed refresh must preserve the displayed snapshot'),
       onEvent: (event: AgentConversationEvent) => delivered.push(event.sequence),
@@ -1791,10 +1638,8 @@ await test('a sent message draws below the history it was sent after', () => {
   const block = source.slice(source.indexOf('export async function sendSelectedConversationMessage('), source.indexOf('export async function refreshSelectedConversationChat('))
     .replace('export ', '');
   const processor = new StreamProcessor();
-  processor.setMessages(conversationMessagesFromEvents([{
-    ownedId: 'owned-sent', provider: 'claude', generation: 1, sequence: 1, timestampMs: Date.now() - 60_000,
-    payload: { kind: 'userMessage', itemId: 'user-earlier', text: 'Earlier', completed: true }
-  }] as any));
+  processor.setMessages([{ id: 'user-earlier', role: 'user', parts: [{ type: 'text', content: 'Earlier' }],
+    metadata: { itemType: 'user-message', completed: true, startedAtMs: Date.now() - 60_000 } }]);
   const active = {
     workspaceOwnedId: 'owned-sent',
     pendingAdmission: null,
@@ -1916,7 +1761,7 @@ await test('leaving a session ends every wait on its stream and readiness and wr
   let connection: any;
   const session = { provider: 'claude', generation: 1, selectedHasAfter: true, selectedChildHistoryOwnedId: null };
   const dependencies = {
-    conversationChunksFromEvent: () => [], takeStreamItem: (items: unknown[]) => items.shift(),
+    takeStreamItem: (items: unknown[]) => items.shift(),
     recordLiveMessages: write('live messages'),
     EventType,
     PAGE_BYTES: 1024,
@@ -1935,7 +1780,6 @@ await test('leaving a session ends every wait on its stream and readiness and wr
     sendStructuredMessage: async () => { writesAfterLeave.push('native send'); return null; },
     setConversationSendError: write('send error'),
     failChildConversationTranscript: write('child error'),
-    conversationMessagesAfterCustom: (messages: unknown) => messages,
     attachmentDisplayMetadata: (attachment: unknown) => attachment,
     createChat: (options: { connection: any }) => {
       connection = options.connection;
