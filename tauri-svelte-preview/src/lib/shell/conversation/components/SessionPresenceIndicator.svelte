@@ -101,7 +101,6 @@
   .presence-spinner {
     display: inline-flex;
     color: var(--color-live);
-    animation: presence-spin 1.2s linear infinite;
   }
 
   .presence-time {
@@ -121,13 +120,5 @@
     display: inline-flex;
     color: var(--color-good);
     fill: color-mix(in srgb, var(--color-good) 32%, transparent);
-  }
-
-  @keyframes presence-spin {
-    to { transform: rotate(360deg); }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .presence-spinner { animation: none; }
   }
 </style>

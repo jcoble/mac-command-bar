@@ -75,14 +75,14 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
   /** The most recent app-owned ACP start failure, retained for an in-rail retry. */
   lastError?: string | null;
   /**
-   * When the user marked this session done, as an ISO stamp; `null` while it is
+   * When this session was marked done, as an ISO stamp; `null` while it is
    * still being worked on.
    *
    * Deliberately NOT touched by anything that happens to the terminal. A process
    * exiting says the terminal is over, not that the work is; a session whose
-   * agent has finished is still on the list until the user says otherwise, and a
-   * session marked done can still be running. Only the user's "Mark done" and
-   * "Reopen" write this field.
+   * agent has finished stays open until marked done. The user's "Mark done" and
+   * "Reopen" write this field; a helper's backend may also mark it done once,
+   * after the configured quiet period (one hour by default).
    */
   completedAt: string | null;
   /**

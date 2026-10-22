@@ -54,7 +54,7 @@ fn git_text(dir: &Path, args: &[&str]) -> Option<String> {
 /// its main checkout and every worktree. Read from git's own files, so no git
 /// process starts. `None` outside git, for a folder that is gone, and for a
 /// relative path (which would resolve against our own folder).
-fn git_common_dir(dir: &str) -> Option<String> {
+pub(crate) fn git_common_dir(dir: &str) -> Option<String> {
     let dir = Path::new(dir);
     if !dir.is_absolute() {
         return None;
@@ -92,30 +92,23 @@ fn to_json(value: &impl Serialize) -> Result<String, String> {
 /// unmatched then join a project whose root shares their git common directory,
 /// again in SQL, after reading git's files for each such folder and local root.
 pub(crate) fn match_local_folders(store: &SessionStore, folders: &[String]) -> Result<Vec<(String, String)>, String> {
-    let mut matches = store.match_folders_by_path(&to_json(&folders)?, "local").map_err(|error| error.to_string())?;
+    match_folders(store, "local", folders, git_common_dir)
+}
+
+fn match_folders(store: &SessionStore, machine: &str, folders: &[String], common_dir: impl Fn(&str) -> Option<String>) -> Result<Vec<(String, String)>, String> {
+    let mut matches = store.match_folders_by_path(&to_json(&folders)?, machine).map_err(|error| error.to_string())?;
     let matched: HashSet<&str> = matches.iter().map(|(folder, _)| folder.as_str()).collect();
-    let leftovers: Vec<(&str, String)> = folders
-        .iter()
-        .map(String::as_str)
+    let leftovers: Vec<(&str, String)> = folders.iter().map(String::as_str)
         .filter(|folder| !matched.contains(folder))
-        .filter_map(|folder| Some((folder, git_common_dir(folder)?)))
-        .collect();
-    if leftovers.is_empty() {
-        return Ok(matches);
-    }
-    let roots: Vec<(String, String)> = store
-        .local_project_roots()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter_map(|root| {
-            let common = git_common_dir(&root)?;
+        .filter_map(|folder| Some((folder, common_dir(folder)?))).collect();
+    if leftovers.is_empty() { return Ok(matches); }
+    let roots: Vec<(String, String)> = store.project_roots(machine).map_err(|error| error.to_string())?
+        .into_iter().filter_map(|root| {
+            let common = common_dir(&root)?;
             Some((root, common))
-        })
-        .collect();
-    let by_common_dir = store
-        .match_folders_by_common_dir(&to_json(&leftovers)?, &to_json(&roots)?)
-        .map_err(|error| error.to_string())?;
-    matches.extend(by_common_dir);
+        }).collect();
+    matches.extend(store.match_folders_by_common_dir(&to_json(&leftovers)?, &to_json(&roots)?, machine)
+        .map_err(|error| error.to_string())?);
     Ok(matches)
 }
 
@@ -142,9 +135,9 @@ pub(crate) fn backfill_local_session_projects(store: &SessionStore) -> Result<()
 }
 
 /// Puts each scanned session's project group on it: its folder matched as the back-fill does on
-/// this Mac, and by path only on another machine, whose git files cannot be read from here; then
+/// its owning machine, with reported git common directories for remote folders; then
 /// the group from one SQL statement over the distinct folders. No folder gets no project.
-pub(crate) fn attach_scanned_project_groups(store: &SessionStore, machine: &str, sessions: &mut [AgentSessionRecord]) -> Result<(), String> {
+pub(crate) fn attach_scanned_project_groups(store: &SessionStore, machine: &str, sessions: &mut [AgentSessionRecord], common_dir: impl Fn(&str) -> Option<String>) -> Result<(), String> {
     let folders: Vec<String> = sessions
         .iter()
         .filter_map(|session| session.project_path.clone())
@@ -152,7 +145,7 @@ pub(crate) fn attach_scanned_project_groups(store: &SessionStore, machine: &str,
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
-    let matches: HashMap<String, String> = if machine == "local" { match_local_folders(store, &folders)? } else { store.match_folders_by_path(&to_json(&folders)?, machine).map_err(|error| error.to_string())? }.into_iter().collect();
+    let matches: HashMap<String, String> = match_folders(store, machine, &folders, common_dir)?.into_iter().collect();
     let pairs: Vec<(&str, Option<&str>)> = folders
         .iter()
         .map(|folder| (folder.as_str(), matches.get(folder).map(String::as_str)))

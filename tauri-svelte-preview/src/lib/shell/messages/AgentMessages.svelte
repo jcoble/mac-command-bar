@@ -23,7 +23,8 @@
   import * as Select from '$lib/components/ui/select/index.js';
   import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
   import { adoptSession } from '$lib/shell/conversation/conversationService.ts';
-  import { reloadLimit } from '$lib/shell/messages/agentMessagesModel.svelte.ts';
+  import { messageSession, reloadLimit } from '$lib/shell/messages/agentMessagesModel.svelte.ts';
+  import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
   import {
     listAgentMessagesFromTauri,
     listenAgentMessagesChanged,
@@ -237,14 +238,15 @@
     return match ? { tag: match[1], text: text.slice(match[0].length) } : { tag: '', text };
   }
 
-  async function open(ownedId: string): Promise<void> {
+  async function open(identity: string): Promise<void> {
+    const ownedId = identity.slice(identity.indexOf(':') + 1);
     openLookup?.abort();
     const lookup = new AbortController();
     openLookup = lookup;
     try {
       const adopted = await adoptSession(ownedId, lookup.signal);
       if (lookup.signal.aborted) return;
-      if (!adopted) throw new Error('That session is not available yet.');
+      if (!adopted || !messageSession(identity, rail.owned)) throw new Error('That session is not available on that machine.');
       const opened = await sessionRowJump(ownedId, 'session');
       if (!lookup.signal.aborted && opened) onOpened?.();
     } catch (cause) {

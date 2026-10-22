@@ -471,10 +471,10 @@ export type AgentConversationPayload =
       contextWindow?: number;
       totalTokens?: number;
     }
-  /** The agent threw away the older part of the conversation to make room.
-   * The sizes are absent when the provider does not say what it cost. */
+  /** Older context was discarded; sizes are absent when the provider omits them. */
   | { kind: 'contextCompaction'; trigger?: string | null; preTokens?: number | null; postTokens?: number | null }
   | { kind: 'checkoutChanged'; fromCwd: string; toCwd: string }
+  | { kind: 'sessionCompleted'; completedAt: string }
   | {
       kind: 'terminalProjection';
       eventType: AgentEventType;

@@ -121,14 +121,17 @@ function folderName(path: string): string {
  * The folders the panel can be pointed at: the session's own first, then every
  * other checkout, each named by its folder and the branch it has out. The
  * session folder is never listed twice, because it is usually a worktree too.
+ * While the panel shows a project the session only views, `sessionRoot` is that
+ * viewed folder, so it is listed by its plain name rather than as "(session)".
  */
 export function sourceControlScopeOptions(
   sessionRoot: string,
-  worktrees: readonly { path: string; branch: string }[]
+  worktrees: readonly { path: string; branch: string }[],
+  viewing: boolean
 ): SourceControlScopeOption[] {
   const session = sessionRoot.trim();
-  const options: SourceControlScopeOption[] =
-    session === '' ? [] : [{ path: session, label: `${folderName(session)} (session)` }];
+  const label = viewing ? folderName(session) : `${folderName(session)} (session)`;
+  const options: SourceControlScopeOption[] = session === '' ? [] : [{ path: session, label }];
 
   for (const worktree of worktrees) {
     const path = worktree.path.trim();
