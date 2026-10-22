@@ -519,7 +519,7 @@ Exactly which path let today's agent keep working was not established.
 
 **Until Q-J, the merge is the merge item** (r9 ruling V; r10 ruling Y; r12 ruling AH), the one self-merge rule; other sections point here. `mergeGate.ts` raises it with the gate's results and the acceptance breakdown ("3 by app proof · 1 by test · 1 owner-check open"), and the buttons "Open PR on GitHub", "Send back to build", Stop, one tap for each thing that needs the owner (a protected path or script-rule hit, a `mobile/` change as "checked on device" (Q-P), each open `owner-check` item), and **"Merge #N"**. Merge is enabled only once every tap is recorded at the gated head, and runs `gh pr merge --merge --match-head-commit <gated head>`; until then the title is "N taps before merge". **Who merges:** when no tap is needed (say, a style-only one-off touching no protected path), the crowned orchestrator merges through the same gate under the owner's standing Assembly rule, and no owner card is raised; when taps are needed, the item is an owner card, pushed to the desktop and phone. **The PR stays a draft until every tap is recorded at the gated head** (r11 ruling AD). On workflow PRs only the engine marks ready: it re-reads the head immediately before `gh pr ready`, the agents' deny list holds `gh pr ready*`, and `orchestrator-rules.md` gains "workflow PRs: the engine owns draft and ready". **One merge watcher**, on the existing deadline tick, serves runs and slices: it puts the PR back to draft (`gh pr ready --undo`) on every head move and whenever anyone else marked it ready. A moved head also clears the taps, withdraws the item and returns the run to `bot-check`. The run is Done only when GitHub reports the PR merged at the gated head. A merge at any other head ends the run in the terminal state **"merged outside the gate"**: it shows in Done with a warning badge and "Open PR", and a project's next slice waits for the owner's "Continue".
 
-**GitHub powers, said plainly** (security-r9-4, guardrails-r9-4). Until Q-J, agents push and call GitHub with the owner's login (the workbox's `gh` token and SSH key). The fixed deny list (0.7) is a policy, not a wall. The real stops are ruleset B below and the PR staying a draft. Q-J is what makes the deny list a wall.
+**GitHub powers, said plainly** (security-r9-4, guardrails-r9-4). Until Q-J, agents push and call GitHub with the owner's login. The fixed deny list (0.7) is a policy, not a wall. The real stops are ruleset B below and the PR staying a draft. Q-J is what makes the deny list a wall.
 
 **Ruleset B on `main`**, with **no** bypass and applied to admins: required checks `lifecycle-checks` and `rust-checks`, up to date with `main`, conversation resolution. Until Q-J, protected-path approval is the tap above: agents open PRs under the owner's login, and GitHub won't let an author approve their own PR, so the code-owner review rule arrives with Q-J's piece (guardrails-r10-1).
 
@@ -775,7 +775,7 @@ The remote install today ships the adapters only (`remote/install.rs:54, 333`). 
 
 ### Build order (rough sizes, including tests)
 
-**Now, outside the redesign:** Rust tests on every PR (PR #426, merged); the release-key fix in 3.6 (the owner moves the secret values and approves release runs, Q-O).
+**Now, outside the redesign:** Rust tests on every PR (PR #426, merged); the `release` Environment in 3.6 (Q-O).
 
 **Piece 0, the foundation:**
 
