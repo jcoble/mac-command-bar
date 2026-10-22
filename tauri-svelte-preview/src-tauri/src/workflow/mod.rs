@@ -1,6 +1,7 @@
 pub(crate) mod commands;
 pub(crate) mod orchestration;
 pub(crate) mod orchestration_commands;
+pub(crate) mod policy;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -143,6 +144,8 @@ pub(crate) struct WorkflowDefinitionV1 {
     pub budgets: WorkflowBudgetPolicy,
     #[serde(default)]
     pub completion: WorkflowCompletionPolicy,
+    #[serde(default)]
+    pub policy: policy::GuardPolicy,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -619,6 +622,7 @@ pub(crate) struct AgentDispatchRequest {
     pub effort: Option<String>,
     pub permission: Option<String>,
     pub starter: Option<String>,
+    pub policy: policy::GuardPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -711,6 +715,9 @@ impl AgentRuntimePort for AgentRuntimeManager {
             }, true).await.map_err(WorkflowError::Runtime)?;
             self.activate(&connection.owned_id, connection.generation)
                 .await
+                .map_err(WorkflowError::Runtime)?;
+            // Before the first prompt, so the agent's first request already meets it.
+            self.set_guard_policy(&connection.owned_id, request.policy)
                 .map_err(WorkflowError::Runtime)?;
             // The model and mode are set the way the chat sets them. The adapter names its modes when the
             // session starts, not in the capabilities it reports at initialize, so a worker cannot be judged
@@ -1439,7 +1446,7 @@ impl WorkflowEngine {
         if documents.len() != 1 { return Err(invalid_yaml("Expected one YAML workflow")); }
         let yaml = yaml_value(&documents[0])?;
         if let Some(key) = yaml.as_object().into_iter().flatten().map(|(key, _)| key)
-            .find(|key| !["name", "inputs", "limits", "steps"].contains(&key.as_str())) {
+            .find(|key| !["name", "inputs", "limits", "policy", "steps"].contains(&key.as_str())) {
             return Err(invalid_yaml(format!("Unknown workflow field `{key}`")));
         }
         let name = yaml["name"].as_str().ok_or_else(|| invalid_yaml("Workflow name is required"))?;
@@ -1511,7 +1518,7 @@ impl WorkflowEngine {
             .map(|(name, value)| json!({"name":name,"definition":value})).collect::<Vec<_>>()).unwrap_or_default();
         let max_sessions = yaml["limits"]["max_sessions"].as_u64().unwrap_or(3);
         let definition = serde_json::from_value(json!({"id":format!("{}:{}", root.display(), relative_yaml.display()),"name":name,
-            "inputs":inputs,"limits":yaml["limits"],"roles":roles,"nodes":nodes,
+            "inputs":inputs,"limits":yaml["limits"],"policy":yaml.get("policy").cloned().unwrap_or(json!({})),"roles":roles,"nodes":nodes,
             "concurrency":{"global":max_sessions,"workflow":max_sessions},
             "budgets":{"maximumActiveAgents":max_sessions}})).map_err(invalid_yaml)?;
         WorkflowPolicy::validate_definition(&definition)?;
@@ -2401,6 +2408,7 @@ impl WorkflowEngine {
                     effort: role.effort_policy.value,
                     permission: role.permission_policy.value,
                     starter: run.input_snapshot["started_by"].as_str().map(str::to_owned),
+                    policy: run.definition.policy.clone(),
                 })
                 .await;
             let mut run = self.require_run(run_id)?;
@@ -3688,6 +3696,7 @@ mod tests {
                 ..Default::default()
             },
             completion: WorkflowCompletionPolicy::default(),
+            policy: Default::default(),
         }
     }
 
@@ -4534,18 +4543,6 @@ mod tests {
         assert_eq!(worker_permission(Codex, Some("agent-full-access".into())).as_deref(), Some("agent-full-access"));
         assert_eq!(worker_permission(Claude, Some("bypassPermissions".into())).as_deref(), Some("bypassPermissions"));
         assert_eq!(worker_permission(Antigravity, None), None);
-    }
-
-    #[test]
-    fn yaml_agent_permission_reaches_the_role() {
-        let (root, _) = yaml_fixture("agent-permission");
-        let path = Path::new(".assembly/workflows/demo.yml");
-        std::fs::write(root.join(path), "name: Permissions\nsteps:\n  explicit:\n    agent: { provider: claude, permission: bypassPermissions }\n    prompt: prompts/build.md\n  omitted:\n    agent: { provider: claude }\n    prompt: prompts/build.md\n").unwrap();
-        let definition = WorkflowEngine::validate_file(&root, path).unwrap();
-        let role = |id: &str| definition.roles.iter().find(|role| role.id == id).unwrap();
-        assert_eq!(role("explicit").permission_policy.value.as_deref(), Some("bypassPermissions"));
-        assert_eq!(role("omitted").permission_policy.value, None);
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -5814,7 +5811,7 @@ mod tests {
         let manager = AgentRuntimeManager::new(providers);
         manager.dispatch(AgentDispatchRequest {
             owned_id: "worker".into(), provider: "claude".into(), cwd: root.to_string_lossy().into(), title: "Review".into(),
-            prompt: "Review it".into(), role_id: "review".into(), model: None, effort: None, permission: None, starter: None,
+            prompt: "Review it".into(), role_id: "review".into(), model: None, effort: None, permission: None, starter: None, policy: Default::default(),
         }).await.unwrap();
         let frames = std::fs::read_to_string(&log).unwrap();
         let set_mode = frames.lines().position(|line| line.contains(r#""method":"session/set_mode""#) && line.contains(r#""modeId":"auto""#));

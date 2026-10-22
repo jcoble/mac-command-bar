@@ -1805,7 +1805,7 @@ while IFS= read -r line; do
         printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32001,"message":"fixture prompt failed"}}}}\n' "$id"
         exit 0
       elif [ "$fixture" = "permission_midturn" ]; then
-        printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"options":[{{"optionId":"allow","name":"Allow","kind":"allow_once"}},{{"optionId":"reject","name":"Reject","kind":"reject_once"}}]}}}}\n'
+        printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"toolCall":{{"rawInput":{{"command":"ALLOW_MERGE=1 gh pr merge 5 --merge"}}}},"options":[{{"optionId":"allow","name":"Allow","kind":"allow_once"}},{{"optionId":"reject","name":"Reject","kind":"reject_once"}}]}}}}\n'
         while IFS= read -r response; do
           printf '%s\n' "$response" >> "$log"
           case "$response" in
