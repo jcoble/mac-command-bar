@@ -146,7 +146,7 @@ test('Stop ends the run and what it is running, and nothing is relaunched', asyn
     git('remote', 'add', 'origin', 'ssh://example.invalid/repo.git');
     const log = path.join(repo, 'build-latest.log');
     const run = spawn(process.execPath, ['--experimental-strip-types', path.join(scripts, 'buildLatestDev.ts'), '--pid', '1', '--log', log], {
-      detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_SSH_COMMAND: 'sleep 60' }
+      detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_SSH_COMMAND: 'sleep 60;:' }
     });
     let output = '';
     await new Promise<void>((resolve) => run.stdout.on('data', (chunk: Buffer) => {
