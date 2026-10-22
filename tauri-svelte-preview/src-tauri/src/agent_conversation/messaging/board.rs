@@ -101,7 +101,11 @@ pub(super) fn update(store: &SessionStore, caller: &str, role: &str, mut args: V
     } else {
         store.board_update(&key, caller, role == "orchestrator", &args, now).map_err(|error| error.to_string())?;
     }
-    if args["notify"] == true { NOTIFIED.lock().unwrap_or_else(PoisonError::into_inner).push(now); }
+    let mut sent = NOTIFIED.lock().unwrap_or_else(PoisonError::into_inner);
+    // An answer recorded here is the owner's answer from the chat; it resets the limit like a board answer.
+    if args.get("answer").is_some() { sent.clear(); }
+    if args["notify"] == true { sent.push(now); }
+    drop(sent);
     if let Some(text) = refused { reply["phone"] = json!(text); }
     mcb_core::broker::messages_changed();
     Ok(reply)
@@ -232,6 +236,10 @@ mod tests {
         answer(&store, "board_question", &json!({"id": id, "asked_at_ms": asked, "answer": "yes", "now_ms": 1})).unwrap();
         assert_eq!(notify("after"), json!({"key": "after", "saved": true}));
         assert_eq!(store.board_notified_since(0).unwrap().len(), 4, "an answer resets the count");
+        for n in 0..2 { notify(&format!("more-{n}")); }
+        assert!(notify("full").get("phone").is_some());
+        update(&store, "lead", "orchestrator", json!({"key": "q", "answer": "yes, from the chat"})).unwrap();
+        assert_eq!(notify("after-chat"), json!({"key": "after-chat", "saved": true}), "an answer recorded from the chat resets it too");
     }
 
     #[test]

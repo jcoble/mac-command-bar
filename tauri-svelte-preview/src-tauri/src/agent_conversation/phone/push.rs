@@ -222,7 +222,8 @@ fn board_message(token: &str, (machine_id, _): &(String, String), item: &Value) 
     json!({ "message": {
         "token": token,
         "notification": { "title": format!("From {session} · {}", text("title").unwrap_or_default()), "body": body },
-        "data": { "machineId": machine_id, "cardKey": item["key"] },
+        // A tap opens the chat of the session that posted it, where the whole question or card is.
+        "data": { "machineId": machine_id, "kind": "turn", "sessionId": item["session"], "cardKey": item["key"] },
         "android": { "priority": "high", "notification": { "channel_id": "assembly_inbox" } },
     } })
 }

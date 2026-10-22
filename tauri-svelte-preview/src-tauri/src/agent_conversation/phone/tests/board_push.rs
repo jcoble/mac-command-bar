@@ -42,7 +42,7 @@ async fn notify_board_card_pushes_to_the_phone_once() {
     let message = &messages[0]["message"];
     assert_eq!(message["notification"]["title"], "From snowy-coral · Server down");
     assert_eq!(message["notification"]["body"], "The API answers 502.");
-    assert_eq!(message["data"]["cardKey"], "deploy");
+    assert_eq!(message["data"], json!({"machineId": message["data"]["machineId"], "kind": "turn", "sessionId": "lead", "cardKey": "deploy"}));
     assert_eq!(message["android"]["priority"], "high");
     post(json!({"summary": "Still down."}));
     assert_eq!(pushes(2).await.len(), 1, "an update without notify sends nothing");

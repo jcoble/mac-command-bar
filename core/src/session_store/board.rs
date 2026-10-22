@@ -293,14 +293,14 @@ impl SessionStore {
     }
 
     /// Board items for a phone push, each `(time column, filter)`: kind, key, title, text (what the owner must
-    /// do: the card's first step, else its summary or note, or the question), the posting session's name and at.
+    /// do: the card's first step, else its summary or note, or the question), the posting session's id and name, and at.
     fn board_phone_items(&self, (card_at, cards): (&str, &str), (question_at, questions): (&str, &str), args: &[i64]) -> Result<Vec<Value>> {
         let json: String=self.lock()?.query_row(&format!("SELECT json_group_array(json(item) ORDER BY at) FROM (
             SELECT {card_at} AS at, json_object('kind','card','key',c.card_key,'title',c.title,
-                'text',COALESCE(json_extract(c.steps_json,'$[0]'),NULLIF(c.summary,''),c.agent_note),'session_name',s.title,'at',{card_at}) AS item
+                'text',COALESCE(json_extract(c.steps_json,'$[0]'),NULLIF(c.summary,''),c.agent_note),'session',c.written_by,'session_name',s.title,'at',{card_at}) AS item
             FROM board_cards c LEFT JOIN sessions s ON s.owned_id=c.written_by WHERE {cards}
             UNION ALL
-            SELECT {question_at}, json_object('kind','question','key',q.question_key,'title',q.title,'text',q.body,'session_name',s.title,'at',{question_at})
+            SELECT {question_at}, json_object('kind','question','key',q.question_key,'title',q.title,'text',q.body,'session',q.session_owned_id,'session_name',s.title,'at',{question_at})
             FROM board_questions q LEFT JOIN sessions s ON s.owned_id=q.session_owned_id WHERE {questions})"),rusqlite::params_from_iter(args),|r|r.get(0))
             .map_err(|e|StoreError::sqlite("could not read the board items for the phone",e))?;
         serde_json::from_str(&json).map_err(|_|StoreError::message("could not read the board items for the phone"))
