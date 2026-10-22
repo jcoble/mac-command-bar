@@ -686,9 +686,9 @@ Everything else goes to the orchestrator: retry, narrow, accept at a cap, stop a
 
 The run page, the Needs-you card, the Build Board card and the phone all read that one record, and every answer goes through `answer_pause` (`mod.rs:2550`) with its idempotency and expected-attempt checks and the origin rules in 0.1. AG-UI interrupts are kept only for ACP permission, approval and input requests inside a session.
 
-**Reaching the owner** ([TSK-1557](https://app.notion.com/p/3ff394b0689d81d28467df26cea5e74f)): the Build Board card at once; a desktop notification after 20 minutes unanswered; the phone after 10 more.
+**Reaching the owner** ([TSK-1557](https://app.notion.com/p/3ff394b0689d81d28467df26cea5e74f)): the Build Board card at once, with a desktop notification when a card needs the owner or a question is asked. Orchestrators act as the owner's assistants and may message the phone (`notify` on the card) for anything reasonable: a question, something ready to test, a blocker, a finished batch, an emergency. Routine progress doesn't go to the phone.
 
-Mute (1 hour, or until tomorrow) holds the desktop and phone steps but never the board card. Only questions (including a merge item with a tap open) and run endings push (lesson 15).
+Mute (1 hour, or until tomorrow) holds the desktop and phone notifications but never the board card. The engine itself pushes only questions (including a merge item with a tap open) and run endings (lesson 15).
 
 **Phone** (`mobile/`, Flutter: `features/runs/runs_screen.dart`, `run_screen.dart`, `inbox/inbox_screen.dart`): **Runs:** grouped by **Needs you, Running, Done today**. **A question:** the note and files, with the answer buttons pinned above the tab bar. Stop and Mute are in "More". **Progress:** steps with glyphs, and milestone → slice progress. **Start a run** ([TSK-1504](https://app.notion.com/p/3fd394b0689d816cb6edcd049fdbe512)).
 
