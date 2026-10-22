@@ -162,7 +162,9 @@ pub(in crate::agent_conversation) fn tool_details(update: &Value) -> ToolDetails
         name,
         summary,
         output,
-        path: (!paths.is_empty()).then(|| paths.join("\n")),
+        path: (!paths.is_empty()).then(|| {
+            paths_in_workdir(&paths.join("\n"), update.get("rawInput").unwrap_or(&Value::Null))
+        }),
         diff: (!diff.is_empty()).then(|| diff.join("\n")),
     }
 }
@@ -239,6 +241,20 @@ pub(in crate::agent_conversation) fn unified_diff(old_text: &str, new_text: &str
         .unified_diff()
         .context_radius(3)
         .to_string()
+}
+
+/// Each line of `paths`, if relative, joined onto the folder the call ran in
+/// (`workdir` or `cwd` in its input), so a file outside the session's project
+/// still resolves. Unchanged when the call recorded no absolute folder.
+pub(in crate::agent_conversation) fn paths_in_workdir(paths: &str, input: &Value) -> String {
+    let workdir = input.get("workdir").or_else(|| input.get("cwd")).and_then(Value::as_str)
+        .map(|folder| folder.trim_end_matches('/')).filter(|folder| folder.starts_with('/'));
+    let Some(workdir) = workdir else { return paths.to_string() };
+    paths.lines().map(|path| if path.starts_with('/') || path.starts_with('~') {
+        path.to_string()
+    } else {
+        format!("{workdir}/{}", path.trim_start_matches("./"))
+    }).collect::<Vec<_>>().join("\n")
 }
 
 #[cfg(test)]

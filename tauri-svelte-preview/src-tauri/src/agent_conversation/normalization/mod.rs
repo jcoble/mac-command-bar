@@ -1,4 +1,4 @@
-pub(super) mod tools;
+pub(in crate::agent_conversation) mod tools;
 
 use serde_json::Value;
 
