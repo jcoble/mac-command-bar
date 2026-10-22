@@ -63,6 +63,7 @@
 	import type { ThreadStartRequest } from "$lib/shell/conversation/newSession/threadStartFlow";
 	import { ownedSessionMetaForBackend, type OwnedSession } from "$lib/shell/ownedSessions";
 	import ProjectsScreen from "$lib/shell/projects/ProjectsScreen.svelte";
+	import WorkflowsScreen from "$lib/shell/workflows/WorkflowsScreen.svelte";
 	import { diffPathFor } from "$lib/shell/sessionWorkspaces";
 	import { ownedSessionStatusPatch, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
 	import type { CenterTabId } from "$lib/shell/workbenchNavigation";
@@ -101,8 +102,9 @@
 	});
 	let overlays = $state<ShellOverlays | null>(null);
 	let openUtility = $state<UtilityId | null>(null);
-	/** The Projects screen covers the frame; everything under it stays as it was. */
+	/** The Projects and Workflows screens cover the frame; everything under them stays as it was. */
 	let projectsOpen = $state(false);
+	let workflowsOpen = $state(false);
 	/** The Messages screen covers the frame the same way; a run narrows it to that run. */
 	let messagesOpen = $state(false);
 	let messagesRun = $state<{ id: string; label: string } | null>(null);
@@ -128,7 +130,7 @@
 		}
 	}
 	function openMessages(run: { id: string; label: string } | null): void {
-		projectsOpen = false;
+		projectsOpen = workflowsOpen = false;
 		messagesRun = run;
 		messagesOpen = true;
 	}
@@ -587,8 +589,7 @@
 	}
 
 	function openNewSession(projectId: string | null = null, folder: string | null = null): void {
-		projectsOpen = false;
-		messagesOpen = false;
+		projectsOpen = messagesOpen = workflowsOpen = false;
 		selection.newSession.open(projectId, folder);
 		selectCenterTab("session");
 	}
@@ -644,7 +645,7 @@
 
 {#snippet drawerArea()}
 	<RightPanel
-		visible={workbench.rightPanelOpen && !messagesOpen && !projectsOpen}
+		visible={workbench.rightPanelOpen && !messagesOpen && !projectsOpen && !workflowsOpen}
 		activeId={workbench.rightTab}
 		root={selection.newSession.draftOpen ? "" : selection.durableSessionRoot}
 		rootAvailable={selection.activeRootAvailable} sourceControlRoot={selection.newSession.draftOpen ? "" : selection.sessionCheckoutRoot}
@@ -652,6 +653,7 @@
 		messagesUnread={messagesUnread.unread}
 		onMessagesSeen={() => messagesUnread.seen()}
 		onShowRunMessages={(id, label) => openMessages({ id, label })}
+		onOpenWorkflows={() => { projectsOpen = messagesOpen = false; workflowsOpen = true; }}
 		filesRoot={selection.filesProjectionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
 		filesFilterFocusRequest={filesFilterFocus}
@@ -775,7 +777,7 @@
 					toolsRailWidth > 0 &&
 					!overlays?.settingsOpen() &&
 					!popupOpen &&
-					!projectsOpen &&
+					!projectsOpen && !workflowsOpen &&
 					!messagesOpen}
 				panelOpen={paneShowing}
 				root={browserRoot}
@@ -828,10 +830,7 @@
 	<div class="window-chrome" data-tauri-drag-region>
 		<div class="window-sessions-cap" data-tauri-drag-region>
 			<HomeButton
-				onOpenProjects={() => {
-					messagesOpen = false;
-					projectsOpen = true;
-				}}
+				onOpenProjects={() => { messagesOpen = workflowsOpen = false; projectsOpen = true; }}
 				onOpenMessages={() => openMessages(null)}
 				onOpenSettings={() => overlays?.openSettings()}
 				onOpenUpdate={() => overlays?.openSettings("updates")}
@@ -915,6 +914,7 @@
 		{#if projectsOpen}
 			<ProjectsScreen onBack={() => (projectsOpen = false)} onOpenProject={openNewSession} removeSession={(ownedId) => selection.removeSession(ownedId)} />
 		{/if}
+		{#if workflowsOpen}<WorkflowsScreen root={selection.durableSessionRoot} onBack={() => (workflowsOpen = false)} />{/if}
 		{#if messagesOpen}
 			<MessagesScreen
 				runId={messagesRun?.id ?? null}

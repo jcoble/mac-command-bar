@@ -22,7 +22,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use self::push::PushSender;
+use self::push::{spawn_push, PushSender};
 use super::manager::tool_call::ToolCall;
 use super::protocol::{
     AgentConversationEvent, AgentConversationPayload as Payload, AgentNativeSessionMode, EnsureAgentConversationRequest,
@@ -164,43 +164,6 @@ pub(super) async fn start_listener(bind: Option<&str>, state: ServerState) -> bo
         }
     });
     true
-}
-
-/// Rings the phones once for each inbox item that appears. It wakes on any permission request or run
-/// change, recomputes the inbox, and sends for each `(id, version)` it has not seen. It starts from
-/// the items already waiting, so a restart does not ring for them again. A finished reply rings nothing.
-fn spawn_push(state: ServerState, sender: PushSender) {
-    use tokio::sync::broadcast::error::RecvError;
-    tokio::spawn(async move {
-        let mut events = state.events.subscribe();
-        let mut runs = state.workflow.run_changes();
-        let mut seen: HashSet<(String, i64)> = inbox_items(&state).map(|items| item_keys(&items)).unwrap_or_default();
-        loop {
-            let closed = tokio::select! {
-                event = events.recv() => match event {
-                    Ok(event) if !matches!(event.payload, Payload::Approval { .. }) => continue,
-                    Err(RecvError::Closed) => true,
-                    _ => false,
-                },
-                change = runs.recv() => matches!(change, Err(RecvError::Closed)),
-            };
-            if closed { break; }
-            let Ok(items) = inbox_items(&state) else { continue };
-            let store = state.manager.store();
-            let machine = store.phone_machine().unwrap_or(None);
-            for (_, item) in &items {
-                let key = (item["id"].as_str().unwrap_or_default().to_string(), item["version"].as_i64().unwrap_or(0));
-                if let (false, Some(machine)) = (seen.contains(&key), &machine) {
-                    sender.send_inbox_push(store, machine, item).await;
-                }
-            }
-            seen = item_keys(&items);
-        }
-    });
-}
-
-fn item_keys(items: &[(Option<String>, Value)]) -> HashSet<(String, i64)> {
-    items.iter().map(|(_, item)| (item["id"].as_str().unwrap_or_default().to_string(), item["version"].as_i64().unwrap_or(0))).collect()
 }
 
 /// Answers the desktop's phone operations, sent as workflow operations over its
@@ -1403,6 +1366,7 @@ mod tests {
     use futures_util::StreamExt;
     use serde_json::{json, Value};
     use std::time::Duration;
+    mod board_push;
     mod device_removal;
     const PHONE_URL: &str = "https://phone.example.ts.net:8778";
 

@@ -36,8 +36,10 @@ import type {
   RetryWorkflowNodeDto,
   StartWorkflowRunDto,
   WorkflowHistoryRow,
-  WorkflowRunRecord
+  WorkflowRunRecord,
+  WorkflowUsageRow
 } from './workflowTypes';
+import type { WorkflowReviewReport } from './workflowCloseup.ts';
 
 export const workflowSnapshotEvent = 'workflow-run-updated';
 
@@ -198,4 +200,37 @@ function stopWorkflowSnapshotListener(): void {
 export function stopWorkflowSnapshotSubscription(): void {
   stopWorkflowSnapshotListener();
   listeners.clear();
+}
+
+/** Tells this Mac's engine what the Workflows screen shows: the board, and the run it has open. */
+export async function watchWorkflowRuns(board: boolean, runId: string | null): Promise<void> {
+  if (!isNativeTauriRuntime()) return;
+  const { invoke } = await import('$lib/workspaceInvoke.ts');
+  await invoke('watch_workflow_runs', { board, runId });
+}
+
+/** Hands each changed run the engine sends the screen to `onRun`, until `signal` ends. */
+export async function followWorkflowRuns(onRun: (run: WorkflowRunRecord) => void, signal: AbortSignal): Promise<void> {
+  if (!isNativeTauriRuntime() || signal.aborted) return;
+  const stop = trackTauriListener(await listen<WorkflowRunRecord>('workflow-run-changed', ({ payload }) => {
+    if (!signal.aborted) onRun(payload);
+  }));
+  if (signal.aborted) { stop(); return; }
+  signal.addEventListener('abort', stop, { once: true });
+}
+
+/** A run's usage per step attempt and model, or every run's when `runId` is null, from the machine that runs it. */
+export async function readWorkflowUsage(machine: string | null, runId: string | null): Promise<WorkflowUsageRow[] | null> {
+  if (machine) return remoteWorkflowFromTauri(machine, 'usage', { runId });
+  if (!isNativeTauriRuntime()) return null;
+  const { invoke } = await import('$lib/workspaceInvoke.ts');
+  return invoke<WorkflowUsageRow[]>('read_workflow_usage', { runId });
+}
+
+/** Every review report of a run, for the review close-up, from the machine that runs it. */
+export async function readWorkflowReviews(machine: string | null, runId: string): Promise<WorkflowReviewReport[] | null> {
+  if (machine) return remoteWorkflowFromTauri(machine, 'reviews', { runId });
+  if (!isNativeTauriRuntime()) return null;
+  const { invoke } = await import('$lib/workspaceInvoke.ts');
+  return invoke<WorkflowReviewReport[]>('workflow_review_reports', { runId });
 }

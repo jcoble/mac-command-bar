@@ -15,7 +15,7 @@
   import type { ConversationCommand } from '$lib/shell/conversation/conversationCommandCatalog.ts';
   import { contextMeterPopover, draftAfterSlashCommand, moveSlashMenuIndex, ringDash, slashCommandQuery, slashMenuState, snapshotConversationCommands, type ContextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
   import { agentDisplayName } from '$lib/shell/agentIcons.ts';
-  import { presentAgentError } from '$lib/shell/errorPresentation.ts';
+  import { presentAgentError, presentProbeError } from '$lib/shell/errorPresentation.ts';
   import type { AgentKind } from '$lib/shell/ownedSessions.ts';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import AgentCommandMenu from './AgentCommandMenu.svelte';
@@ -52,7 +52,7 @@
     /** Clears the attachment failure. Given only where the failure is
      * per-session state that can be cleared; the draft composer has none. */
     onDismissAttachmentError?(): void;
-    sendError?: string;
+    sendError?: string; sendErrorIsProbe?: boolean; /* the error came from loading settings, before any send */
     /** Clears the send failure. Given only where the failure is per-session
      * state that can be cleared; the draft composer has none. */
     onDismissSendError?(): void;
@@ -61,7 +61,7 @@
     onDismissProviderNotice?(): void;
     pendingApproval?: AgentPermissionRequest | null;
     pendingApprovalCount?: number;
-    pendingInputs?: readonly AgentUserInputRequest[];
+    pendingInputs?: readonly AgentUserInputRequest[]; pendingInterrupts?: number;
     respondingRequestIds?: readonly string[];
     controlsDisabled?: boolean;
     sendDisabled?: boolean;
@@ -103,13 +103,13 @@
     planFileChanges = null,
     attachmentError = '',
     onDismissAttachmentError,
-    sendError = '',
+    sendError = '', sendErrorIsProbe = false,
     onDismissSendError,
     providerNotice = '',
     onDismissProviderNotice,
     pendingApproval = null,
     pendingApprovalCount = 1,
-    pendingInputs = [],
+    pendingInputs = [], pendingInterrupts = 0,
     respondingRequestIds = [],
     controlsDisabled = false,
     sendDisabled = false,
@@ -199,7 +199,7 @@
   const meterPopover = $derived(
     contextMeter ? contextMeterPopover(contextMeter, agentDisplayName(provider as AgentKind)) : null
   );
-  const composerLocked = $derived(Boolean(pendingApproval || pendingInputs.length));
+  const composerLocked = $derived(pendingInterrupts > 0); // steers too: the stock client guards only sendMessage
   const hasSendableContent = $derived(Boolean(inputDraft.trim() || attachments.length));
   /* Typed text joins a running turn; with only background work it starts a new one. */
   const steerable = $derived(turnRunning ?? sending);
@@ -262,10 +262,10 @@
     void settings.appearance.appFontSize;
     resizePrompt();
   });
-  const presentedSendError = $derived(sendError ? presentAgentError(sendError).summary : '');
+  const presentedSendError = $derived(!sendError ? '' : sendErrorIsProbe ? presentProbeError(sendError, agentDisplayName(provider as AgentKind)) : presentAgentError(sendError).summary);
   const bannerItems = $derived.by((): ComposerBannerItem[] => {
     const items: ComposerBannerItem[] = [];
-    if (presentedSendError) items.push({ id: 'send-error', variant: 'error', title: 'Message not sent', description: presentedSendError, dismissLabel: 'Dismiss send failure', onDismiss: onDismissSendError });
+    if (presentedSendError) items.push({ id: 'send-error', variant: 'error', title: sendErrorIsProbe ? 'Agent settings unavailable' : 'Message not sent', description: presentedSendError, dismissLabel: 'Dismiss send failure', onDismiss: onDismissSendError });
     if (attachmentError) items.push({ id: 'attachment-error', variant: 'error', title: 'Attachment unavailable', description: attachmentError, dismissLabel: 'Dismiss attachment failure', onDismiss: onDismissAttachmentError });
     if (configError) items.push({ id: 'config-error', variant: 'warning', title: 'Settings unavailable', description: configError });
     if (providerNotice) items.push({ id: 'provider-notice', variant: 'info', title: providerNotice, dismissLabel: 'Dismiss provider notice', onDismiss: onDismissProviderNotice });

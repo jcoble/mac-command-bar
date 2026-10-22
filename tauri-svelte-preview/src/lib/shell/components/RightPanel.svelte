@@ -19,6 +19,7 @@
   import { activate as activateExplorer } from '$lib/shell/files/explorer/explorerService';
   import { sessionWorkingIn } from '$lib/shell/projects/projects.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
+  import { settings } from '$lib/shell/settings/settingsStore.svelte';
 
   import AgentsPanel from '$lib/shell/panels/agents/AgentsPanel.svelte';
   import FilesPanel from '$lib/shell/files/components/FilesPanel.svelte';
@@ -67,6 +68,8 @@
     messagesUnread: number;
     onMessagesSeen(): void;
     onShowRunMessages(runId: string, label: string): void;
+    /** Opens the full Workflows screen. */
+    onOpenWorkflows(): void;
   }
   let {
     visible,
@@ -94,7 +97,8 @@
     onNewSessionHere,
     messagesUnread,
     onMessagesSeen,
-    onShowRunMessages
+    onShowRunMessages,
+    onOpenWorkflows
   }: Props = $props();
 
   // While another project is viewed, Files and Git read it and nothing there can move the session.
@@ -162,16 +166,17 @@
       <div class="panel-body showing"><WorktreesPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'terminal'}
       <div class="panel-body showing">
-        {#key ownedId}
+        <!-- Ghostty takes its colours only when a terminal is made: a theme change remakes it. -->
+        {#key settings.appearance.themeId}{#key ownedId}
           {#key root}<WorkspaceTerminal {root} {ownedId} />{/key}
-        {/key}
+        {/key}{/key}
       </div>
     {:else if visible && activeId === 'run'}
       <div class="panel-body showing"><RunPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'context'}
       <div class="panel-body showing"><SessionContextPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'agents'}
-      <div class="panel-body showing"><AgentsPanel visible={true} {root} {ownedId} {messagesUnread} {onMessagesSeen} {onShowRunMessages} /></div>
+      <div class="panel-body showing"><AgentsPanel visible={true} {root} {ownedId} {messagesUnread} {onMessagesSeen} {onShowRunMessages} {onOpenWorkflows} /></div>
     {:else if visible && activeId === 'history'}
       <div class="panel-body showing">
         <HistoryPanel visible={true} {root} {ownedId} />

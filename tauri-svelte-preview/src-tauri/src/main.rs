@@ -33,6 +33,7 @@ mod notion_oauth;
 mod notion_tasks;
 mod product_identity;
 mod project_folders;
+mod proof_mode;
 mod projection_streams;
 mod resources;
 mod resources_disk;
@@ -3330,8 +3331,8 @@ fn shutdown_agent_runtimes_on_exit(manager: &agent_conversation::manager::AgentR
 
 fn main() {
     install_panic_hook();
-    if let Err(error) = agent_conversation::messaging::endpoint() {
-        crate::debug_log::stderr_log!("Assembly messaging endpoint failed: {error}");
+    if let Err(error) = proof_mode::start_from_process().and_then(|()| agent_conversation::messaging::endpoint().map(drop)) {
+        crate::debug_log::stderr_log!("Assembly could not start: {error}");
         std::process::exit(1);
     }
     if std::env::args().any(|argument| argument == "--assembly-server") {
@@ -3352,6 +3353,7 @@ fn main() {
         .manage(browser::BrowserRegistry::default())
         .manage(resources::ResourceRegistry::default())
         .manage(usage_history::UsageHistoryState::default())
+        .manage(WorkflowWatch::default())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
@@ -3407,8 +3409,7 @@ fn main() {
                 agent_conversation::providers::ProviderRegistry::bundled_from_environment_at(Some(
                     &app_data_dir,
                 ))
-                .map_err(|error| { format!("Packaged ACP adapter configuration is invalid: {error}")
-                })?,
+                .map_err(|error| format!("Packaged ACP adapter configuration is invalid: {error}"))?,
                 &session_db_path,
             )?;
             agent_runtime.start_closing_finished_helpers();
@@ -3425,6 +3426,7 @@ fn main() {
             let workflow_store = agent_runtime.store_handle();
             let remote_session_store = Arc::clone(&workflow_store);
             let workflow_engine = WorkflowEngine::managed(agent_runtime.clone(), workflow_store);
+            usage_history::otel::start(&usage_history::usage_db_path(app.handle())?, agent_runtime.clone());
             let recovered_runs = workflow_engine.recover_after_restart().map_err(|error| error.to_string())?;
             let recovery_engine = workflow_engine.clone();
             tauri::async_runtime::spawn(async move {
@@ -3468,7 +3470,7 @@ fn main() {
             agent_conversation::messaging::endpoint()?
                 .set_relay(remote_connection.message_relay(agent_conversation::remote::LOCAL_MACHINE));
             agent_conversation::messaging::endpoint()?.set_workflow(workflow_engine.clone());
-            if !remote_connection.is_configured() {
+            if !remote_connection.is_configured() && proof_mode::active().is_none() {
                 if let Some(profiles) = agent_runtime.read_app_setting(
                     agent_conversation::remote::REMOTE_ASSEMBLY_PROFILES_SETTING_KEY,
                 )? {
@@ -3507,16 +3509,13 @@ fn main() {
                 let workflow_handle = workflow_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     if is_usage {
+                        // New usage changes the run's cost, which a watching screen reads again.
                         match workflow_events.list_runs() {
-                            Ok(runs) => {
-                                if let Some(run) = runs.into_iter().find(|run| run.nodes.iter()
-                                    .any(|node| node.owned_id == event.owned_id)) {
-                                    emit_workflow_run_updated(&workflow_handle, &run);
-                                }
-                            }
-                            Err(error) => debug_log::stderr_log!(
-                                "Could not show workflow usage: {error}"
-                            ),
+                            Ok(runs) => if let Some(run) = runs.into_iter().find(|run| run.nodes.iter().any(|node| node.owned_id == event.owned_id)) {
+                                emit_workflow_run_updated(&workflow_handle, &run);
+                                send_to_watchers(&workflow_handle, run);
+                            },
+                            Err(error) => debug_log::stderr_log!("Could not show workflow usage: {error}"),
                         }
                         return;
                     }
@@ -3550,6 +3549,7 @@ fn main() {
                     },
                 );
             }));
+            tauri::async_runtime::spawn(forward_run_changes(app.handle().clone(), workflow_engine.clone()));
             app.manage(workflow_engine);
             app.manage(remote_connection);
             app.manage(agent_runtime);
@@ -3562,7 +3562,7 @@ fn main() {
             }));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(proof_mode::guard(tauri::generate_handler![
             read_backend_capabilities,
             list_installed_font_families,
             list_source_files,
@@ -3685,7 +3685,7 @@ fn main() {
             resources::read_language_server_log,
             usage_current::read_current_provider_usage,
             usage_history::read_usage_summary,
-            usage_history::read_usage_breakdown,
+            usage_history::read_usage_breakdown, usage_history::read_workflow_usage,
             usage_history::read_usage_provider_summary,
             usage_history::read_usage_daily,
             usage_history::read_usage_daily_totals,
@@ -3702,9 +3702,10 @@ fn main() {
             list_orchestration_runs,
             record_orchestration_event,
             list_workflow_runs,
+            watch_workflow_runs,
             create_workflow_run,
             get_workflow_run,
-            workflow_history,
+            workflow_history, workflow_review_reports,
             list_workflow_files,
             list_owner_inbox,
             answer_workflow_pause,
@@ -3789,9 +3790,9 @@ fn main() {
             projection_streams::register_agent_conversation_stream,
             projection_streams::acknowledge_agent_conversation_stream,
             projection_streams::unregister_agent_conversation_stream,
-            projection_streams::register_terminal_output_stream,
-            projection_streams::acknowledge_terminal_output_stream,
+            projection_streams::register_terminal_output_stream, projection_streams::acknowledge_terminal_output_stream,
             projection_streams::unregister_terminal_output_stream,
+            agent_conversation::agui::register_agui_stream, agent_conversation::agui::acknowledge_agui_stream, agent_conversation::agui::unregister_agui_stream, agent_conversation::agui::run_agui, agent_conversation::agui::read_agui_snapshot, agent_conversation::agui::list_agui_events_before, agent_conversation::agui::list_agui_events_after, agent_conversation::agui::close_agui_view,
             agent_conversation::save_agent_conversation_attachment,
             agent_conversation::read_agent_conversation_attachments,
             agent_conversation::read_agent_conversation_selected_attachments,
@@ -3804,7 +3805,7 @@ fn main() {
             agent_conversation::handoff::handoff_agent_conversation,
             agent_conversation::providers::cli_updates::check_provider_clis,
             agent_conversation::providers::cli_updates::update_provider_cli,
-            agent_conversation::providers::updates::check_provider_updates,
+            agent_conversation::providers::updates::check_provider_updates, agent_conversation::providers::descriptors::list_provider_descriptors,
             agent_conversation::providers::updates::install_provider_updates,
             agent_conversation::providers::updates::restart_for_provider_updates,
             terminal::commands::start_terminal_session,
@@ -3852,7 +3853,7 @@ fn main() {
             helper::test_helper,
             continue_app_exit,
             cancel_app_exit
-        ])
+        ]))
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. }
                 if window.label() == "main" && window.state::<ExitRequestGuard>().hold() =>
@@ -7113,9 +7114,8 @@ mod tests {
         ));
         let native = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
         let handler = native
-            .split_once(".invoke_handler(tauri::generate_handler![")
-            .expect("main must register a Tauri invoke handler")
-            .1
+            .split_once(".invoke_handler(proof_mode::guard(tauri::generate_handler![")
+            .expect("main must register a Tauri invoke handler").1
             .split_once("])")
             .expect("Tauri invoke handler must have a closing delimiter")
             .0;

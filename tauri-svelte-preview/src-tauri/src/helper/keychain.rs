@@ -19,6 +19,7 @@ const SECURITY_ITEM_NOT_FOUND: i32 = 44;
 
 /// The stored key for one vendor, or `None` when there is not one.
 pub fn read_key(account: &str) -> Result<Option<String>, HelperError> {
+    crate::proof_mode::refuse("The secret store").map_err(HelperError::Settings)?;
     let output = Command::new("/usr/bin/security")
         .args([
             "find-generic-password",
@@ -56,6 +57,7 @@ pub fn read_key(account: &str) -> Result<Option<String>, HelperError> {
 /// typing it into any command, and the alternative, writing it to a file
 /// first, is worse.
 pub fn write_key(account: &str, key: &str) -> Result<(), HelperError> {
+    crate::proof_mode::refuse("The secret store").map_err(HelperError::Settings)?;
     let output = Command::new("/usr/bin/security")
         .args([
             "add-generic-password",
@@ -80,6 +82,7 @@ pub fn write_key(account: &str, key: &str) -> Result<(), HelperError> {
 
 /// Removes the key for one vendor. A key that is not there is not an error.
 pub fn delete_key(account: &str) -> Result<(), HelperError> {
+    crate::proof_mode::refuse("The secret store").map_err(HelperError::Settings)?;
     let output = Command::new("/usr/bin/security")
         .args([
             "delete-generic-password",

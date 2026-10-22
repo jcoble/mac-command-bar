@@ -626,7 +626,7 @@
     {configState}
     pendingConfig={{}}
     commands={[]}
-    sendError={submitError}
+    sendError={submitError} sendErrorIsProbe={Boolean(catalogError) && submitError === catalogError}
     footerControls={providerMenu}
     {subBar}
     onDraftChange={(value) => {

@@ -210,7 +210,8 @@ fn run_facts(run: &crate::workflow::WorkflowRunRecord, store: &SessionStore) -> 
         step
     }).collect::<Vec<_>>();
     json!({"run_id":run.id,"name":run.definition.name,"task_key":run.input_snapshot["task"]["key"],
-        "state":run.state,"phase":run.phase,"started_by":run.input_snapshot["started_by"],"steps":steps})
+        "state":run.state,"phase":run.phase,"started_by":run.input_snapshot["started_by"],
+        "parent_task":run.input_snapshot["inputs"]["parent_task"],"steps":steps})
 }
 
 /// The caller's session id, its backend's store, and the manager that delivers
@@ -391,6 +392,7 @@ impl MessagingEndpoint {
                     "helper" => return Err("helpers cannot start helpers".into()),
                     _ => {}
                 }
+                crate::proof_mode::refuse("Starting helpers")?;
                 let helper_limit = store.get_app_setting("helpers_per_session").map_err(|error| error.to_string())?
                     .map(|value| serde_json::from_str::<i64>(&value)).transpose()
                     .map_err(|error| format!("helpers_per_session must be an integer: {error}"))?.unwrap_or(5);
@@ -434,6 +436,7 @@ impl MessagingEndpoint {
             }
             Some("start_workflow") => {
                 if role == "worker" { return Err("workflow workers cannot start sessions or runs".into()); }
+                crate::proof_mode::refuse("Starting workflow runs")?;
                 let engine = self.workflow()?;
                 let args = &tool_call["arguments"];
                 let path = args["path"].as_str().ok_or("path must be a workflow file relative to your project")?;
@@ -469,7 +472,7 @@ impl MessagingEndpoint {
                     "task_key":run.input_snapshot["task"]["key"],"state":run.state,"phase":run.phase,
                     "current_step":run.nodes.iter().find(|node| !matches!(node.state, crate::workflow::WorkflowNodeState::Completed
                         | crate::workflow::WorkflowNodeState::Skipped | crate::workflow::WorkflowNodeState::Blocked)).map(|node| &node.node_id),
-                    "started_by":run.input_snapshot["started_by"]})).collect())))
+                    "started_by":run.input_snapshot["started_by"],"parent_task":run.input_snapshot["inputs"]["parent_task"]})).collect())))
             }
             Some("get_workflow_run") => {
                 let run_id = tool_call["arguments"]["run_id"].as_str().ok_or("run_id must be a run id")?;

@@ -1,5 +1,5 @@
 import { normalizeProvider } from '../ownedSessions.ts';
-import { EventType, type StreamChunk } from '@tanstack/ai/client';
+import { EventType, StreamProcessor, type StreamChunk } from '@tanstack/ai/client';
 import {
   createChat,
   type CreateChatReturn,
@@ -13,16 +13,12 @@ import {
   readOlderSelectedConversationItems,
   readSelectedConversationAttachments,
   restoreAttachmentList,
+  resumeConversationRun,
   sendStructuredMessage,
-  subscribeSelectedConversation
+  subscribeSelectedConversation,
+  type AguiRun
 } from './conversationService.ts';
-import {
-  conversationChunksFromEvent,
-  conversationMessagesAfterCustom,
-  conversationMessagesFromEvents,
-  conversationSnapshotChunks,
-  displayEventFrom, takeStreamItem
-} from './conversationMessages.ts';
+import { takeStreamItem } from './conversationMessages.ts';
 import {
   applySelectedConversationEventState,
   applySelectedConversationHistoryEventState,
@@ -43,28 +39,17 @@ import type {
   AgentConversationEvent,
   AgentConversationItemPage,
   AgentConversationSendReceipt,
-  AgentConversationSelectionSnapshot,
+  AguiSnapshot,
   ConversationAttachment
 } from './conversationTypes.ts';
-import { extendAgentConversationImportFromTauri } from '../../tauriSource.ts';
+import { closeAguiViewInBackground, extendAgentConversationImportFromTauri } from '../../tauriSource.ts';
 import { rail } from '../stores/sessionRailStore.svelte.ts';
-import { usageDropIsCompaction } from './conversationReducer.ts';
 
 const PAGE_BYTES = 512 * 1024;
 const encoder = new TextEncoder();
 
 type Direction = 'older' | 'newer';
-type QueueItem = StreamChunk | { nativeEvent: AgentConversationEvent } | { error: unknown };
-
-interface PendingSend {
-  runId: string;
-  prompt: string;
-  optimisticId: string | null;
-  receipt?: AgentConversationSendReceipt;
-  events: AgentConversationEvent[];
-  bytes: number;
-  overflow: boolean;
-}
+type QueueItem = StreamChunk | { error: unknown };
 
 interface PendingAdmission {
   resolve: (receipt: AgentConversationSendReceipt) => void;
@@ -78,14 +63,15 @@ interface ActiveConversation {
   chat: CreateChatReturn;
   beforeCursor?: number;
   afterCursor?: number;
-  pendingSend: PendingSend | null;
+  /** The chat's copy of the message being sent, kept through a snapshot read until the backend's arrives. */
+  sendingId: string | null;
   pendingAdmission: PendingAdmission | null;
   messageBytes: Map<string, number>;
   graphBytes: number;
   contentAdmitted: boolean;
   anchorRevision: number;
   anchorAdmission: Promise<void> | null;
-  anchorSnapshot: AgentConversationSelectionSnapshot | null;
+  anchorSnapshot: AguiSnapshot | null;
   resubscribe?: () => Promise<void>;
   push?: (item: QueueItem) => void;
   ready: Promise<void>;
@@ -125,12 +111,14 @@ function pushMessagesSnapshot(
   push: (item: QueueItem) => void
 ): void {
   resetMessageBytes(selection, messages);
-  for (const chunk of conversationSnapshotChunks(messages)) push(chunk);
+  push({ type: EventType.MESSAGES_SNAPSHOT, messages: [...messages] } as StreamChunk);
 }
 
-function messagesFromPage(page: AgentConversationItemPage): UIMessage[] {
+function messagesFromPage(page: AgentConversationItemPage, chunks: readonly StreamChunk[]): UIMessage[] {
+  const processor = new StreamProcessor();
+  for (const chunk of chunks) processor.processChunk(chunk);
   const descriptors = new Map(page.items.map((item) => [item.itemId, item]));
-  return conversationMessagesFromEvents(page.events).map((message) => {
+  return processor.getMessages().map((message) => {
     const item = descriptors.get(message.id);
     return item ? {
       ...message,
@@ -200,13 +188,6 @@ function recordLiveMessages(
   );
 }
 
-function isTerminal(event: AgentConversationEvent, turnId: string): boolean {
-  const payload = displayEventFrom(event).payload as { kind?: unknown; state?: unknown; turnId?: unknown };
-  if (payload.turnId !== turnId) return false;
-  return payload.kind === 'error'
-    || (payload.kind === 'turn' && payload.state !== 'started');
-}
-
 function optimisticUserId(messages: readonly UIMessage[]): string | null {
   return messages.findLast((message) => message.role === 'user')?.id ?? null;
 }
@@ -235,29 +216,11 @@ function enqueueFactory(signal: AbortSignal, selection: ActiveConversation): {
         while (!signal.aborted) {
           const item = await takeStreamItem(items, signal);
           if (item) {
-            if ('error' in item) {
-              selection.pendingSend = null;
-              throw item.error;
-            } else if ('nativeEvent' in item) {
-              const chunks = conversationChunksFromEvent(
-                selection.chat.messages,
-                item.nativeEvent
-              );
-              const changedIds = new Set<string>();
-              let replaced = false;
-              for (const chunk of chunks) {
-                if (chunk.type === EventType.MESSAGES_SNAPSHOT) replaced = true;
-                else if ('messageId' in chunk && typeof chunk.messageId === 'string') changedIds.add(chunk.messageId);
-                else if (chunk.type === EventType.CUSTOM) {
-                  const itemId = (chunk.value as { itemId?: unknown })?.itemId;
-                  if (typeof itemId === 'string') changedIds.add(itemId);
-                }
-                yield chunk;
-              }
-              recordLiveMessages(selection, changedIds, replaced);
-            } else {
-              yield item;
-            }
+            if ('error' in item) throw item.error;
+            yield item;
+            // A call's message is named after the call.
+            const id = 'toolCallId' in item ? item.toolCallId : 'messageId' in item ? item.messageId : undefined;
+            if (typeof id === 'string') recordLiveMessages(selection, new Set([id]), false);
             continue;
           }
           if (!items.length && !signal.aborted) await new Promise<void>((resolve) => { wake = resolve; });
@@ -344,19 +307,19 @@ async function restorePageAttachments(
   }
 }
 
-function pageAttachments(events: readonly AgentConversationEvent[]): Map<string, readonly string[]> {
+function pageAttachments(chunks: readonly StreamChunk[]): Map<string, readonly string[]> {
   const wanted = new Map<string, readonly string[]>();
-  for (const event of events) {
-    if (event.payload.kind === 'userMessage' && event.payload.attachmentIds?.length) {
-      wanted.set(event.payload.itemId, event.payload.attachmentIds);
-    }
+  for (const chunk of chunks) {
+    if (chunk.type !== EventType.TEXT_MESSAGE_START || chunk.role !== 'user') continue;
+    const ids = (chunk as { metadata?: { attachmentIds?: string[] } }).metadata?.attachmentIds;
+    if (ids?.length) wanted.set(chunk.messageId, ids);
   }
   return wanted;
 }
 
 function snapshotChunks(
   selection: ActiveConversation,
-  snapshot: AgentConversationSelectionSnapshot,
+  snapshot: AguiSnapshot,
   push: (item: QueueItem) => void,
   applyControls = selection.historyOwnedId === selection.workspaceOwnedId
 ): void {
@@ -365,7 +328,7 @@ function snapshotChunks(
     selection.beforeCursor = snapshot.page.watermark + 1;
   }
   selection.afterCursor = snapshot.page.afterCursor;
-  const pageMessages = messagesFromPage(snapshot.page);
+  const pageMessages = messagesFromPage(snapshot.page, snapshot.chunks);
   const current = getConversationSession(selection.historyOwnedId);
   const prefixEnd = selection.chat.messages.findIndex((message) => message.id === pageMessages[0]?.id);
   const prefix = prefixEnd > 0 ? selection.chat.messages.slice(0, prefixEnd) : [];
@@ -375,13 +338,8 @@ function snapshotChunks(
     turns: [...new Map([...(current?.selectedTurns ?? []), ...snapshot.page.turns]
       .map((turn) => [turn.turnId, turn])).values()]
   } };
-  const pending = selection.pendingSend;
-  if (pending && !pending.receipt && pending.optimisticId) {
-    const optimistic = selection.chat.messages.find((message) => message.id === pending.optimisticId);
-    if (optimistic && !messages.some((message) => message.id === optimistic.id)) {
-      messages.push(optimistic);
-    }
-  }
+  const optimistic = selection.chat.messages.find((message) => message.id === selection.sendingId);
+  if (optimistic && !messages.some((message) => message.id === optimistic.id)) messages.push(optimistic);
   selection.beforeCursor = historyPosition(messages.find((message) => historyPosition(message) !== undefined)) ?? selection.beforeCursor;
   selection.afterCursor = historyPosition(messages.findLast((message) => historyPosition(message) !== undefined)) ?? selection.afterCursor;
   resetMessageBytes(selection, messages);
@@ -408,23 +366,14 @@ function snapshotChunks(
   }
   pushMessagesSnapshot(selection, messages, push);
   push({ type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: selection.historyOwnedId } as StreamChunk);
-  void restorePageAttachments(selection, pageAttachments(snapshot.page.events),
+  for (const chunk of snapshot.runs) push(chunk);
+  void restorePageAttachments(selection, pageAttachments(snapshot.chunks),
     snapshot.connection.generation, messages.map((message) => message.id));
-  if (pending?.receipt && ((!snapshot.activeTurnId && (
-    snapshot.connection.generation > pending.receipt.generation
-    || (snapshot.connection.generation === pending.receipt.generation
-      && snapshot.pendingSequence >= pending.receipt.admittedSequence)
-  )) || snapshot.page.turns.some((turn) =>
-    turn.turnId === pending.receipt?.turnId && turn.terminalState
-  ))) {
-    push({ type: EventType.RUN_FINISHED, threadId: selection.historyOwnedId, runId: pending.runId } as StreamChunk);
-    selection.pendingSend = null;
-  }
 }
 
 function admitInitialSnapshot(
   selection: ActiveConversation,
-  snapshot: AgentConversationSelectionSnapshot,
+  snapshot: AguiSnapshot,
   push: (item: QueueItem) => void
 ): void {
   if (selection.contentAdmitted) {
@@ -463,7 +412,7 @@ function admitInitialSnapshot(
 /** Reads the saved window's page; leaving the selection or a newer Jump drops the result. */
 async function admitAnchorPage(
   selection: ActiveConversation,
-  snapshot: AgentConversationSelectionSnapshot,
+  snapshot: AguiSnapshot,
   firstSequence: number,
   revision: number,
   push: (item: QueueItem) => void
@@ -487,7 +436,7 @@ async function admitAnchorPage(
       await selection.resubscribe?.();
       return;
     }
-    snapshotChunks(selection, page ? { ...authority, page } : authority, push, false);
+    snapshotChunks(selection, page ? { ...authority, page, chunks: page.chunks } : authority, push, false);
   } catch (error) {
     if (!isCurrent(selection)
       || signal.aborted
@@ -499,19 +448,12 @@ async function admitAnchorPage(
   }
 }
 
-function emitEvent(
-  selection: ActiveConversation,
-  event: AgentConversationEvent,
-  push: (item: QueueItem) => void,
-  updateState = true
-): void {
-  const previousUsedTokens = getConversationSession(selection.historyOwnedId)?.usage?.usedTokens;
-  if (updateState) {
-    if (selection.historyOwnedId === selection.workspaceOwnedId) {
-      applySelectedConversationEventState(selection.workspaceOwnedId, event);
-    } else {
-      applySelectedConversationHistoryEventState(selection.historyOwnedId, event);
-    }
+/** A native event updates the store; the chat gets its own chunks for it. */
+function emitEvent(selection: ActiveConversation, event: AgentConversationEvent): void {
+  if (selection.historyOwnedId === selection.workspaceOwnedId) {
+    applySelectedConversationEventState(selection.workspaceOwnedId, event);
+  } else {
+    applySelectedConversationHistoryEventState(selection.historyOwnedId, event);
   }
   if (event.payload.kind === 'error') {
     const childId = getConversationSession(selection.workspaceOwnedId)?.selectedChildId;
@@ -521,29 +463,12 @@ function emitEvent(
       setConversationSendError(selection.workspaceOwnedId, event.payload.message);
     }
   }
-  const showingLatest = !getConversationSession(selection.historyOwnedId)?.selectedHasAfter;
-  const displayEvents = event.payload.kind === 'usage' && usageDropIsCompaction(previousUsedTokens, event.payload.usedTokens)
-    ? [{ ...event, payload: { kind: 'contextCompaction' as const, preTokens: previousUsedTokens, postTokens: event.payload.usedTokens } }, event]
-    : [event];
-  const pending = selection.pendingSend;
-  if (pending && !pending.receipt) {
-    const bytes = encoder.encode(JSON.stringify(displayEvents)).byteLength;
-    if (!pending.overflow && pending.bytes + bytes <= PAGE_BYTES) {
-      pending.events.push(...displayEvents);
-      pending.bytes += bytes;
-    } else {
-      pending.events.length = 0;
-      pending.bytes = 0;
-      pending.overflow = true;
-    }
-    return;
-  }
-  if (pending?.receipt && isTerminal(event, pending.receipt.turnId)) {
-    push({ type: EventType.RUN_FINISHED, threadId: selection.historyOwnedId, runId: pending.runId } as StreamChunk);
-    selection.pendingSend = null;
-  }
-  if (!selection.contentAdmitted || !showingLatest) return;
-  for (const displayEvent of displayEvents) push({ nativeEvent: displayEvent });
+}
+
+/** The view's chunks go to the chat as they are. While it shows older history, only runs and interrupts do. */
+function emitChunks(selection: ActiveConversation, chunks: readonly StreamChunk[], push: (item: QueueItem) => void): void {
+  const showingLatest = selection.contentAdmitted && !getConversationSession(selection.historyOwnedId)?.selectedHasAfter;
+  for (const chunk of chunks) if (showingLatest || String(chunk.type).startsWith('RUN_')) push(chunk);
 }
 
 function rejectPendingAdmission(selection: ActiveConversation, error: unknown): void {
@@ -590,7 +515,8 @@ function createConnection(selection: ActiveConversation): SubscribeConnectionAda
               found = true;
               admitInitialSnapshot(selection, snapshot, queue.push);
             },
-            onEvent: (event) => emitEvent(selection, event, queue.push),
+            onEvent: (event) => emitEvent(selection, event),
+            onChunks: (chunks) => emitChunks(selection, chunks, queue.push),
             onError: (error) => queue.push({ error })
           });
           if (joined.signal.aborted) next();
@@ -618,57 +544,42 @@ function createConnection(selection: ActiveConversation): SubscribeConnectionAda
         }
       })();
     },
-    async send(messages, _data, signal, runContext) {
+    async send(messages, _data, _signal, runContext) {
+      const run: AguiRun = {
+        threadId: runContext?.threadId ?? selection.historyOwnedId, runId: runContext?.runId ?? crypto.randomUUID(),
+        parentRunId: runContext?.parentRunId, resume: runContext?.resume ?? []
+      };
+      if (run.resume?.length) {
+        await resumeConversationRun(run);
+        return;
+      }
       const user = [...messages].reverse().find((message) =>
         message.role === 'user' && 'parts' in message
       );
       const prompt = user && 'parts' in user
         ? user.parts.map((part: UIMessage['parts'][number]) => part.type === 'text' ? part.content : '').join('')
         : '';
-      const pending: PendingSend = {
-        runId: runContext?.runId ?? crypto.randomUUID(),
-        prompt,
-        optimisticId: optimisticUserId(messages as UIMessage[]),
-        events: [],
-        bytes: 0,
-        overflow: false
-      };
-      selection.pendingSend = pending;
+      selection.sendingId = optimisticUserId(messages as UIMessage[]);
       try {
         if (getConversationSession(selection.historyOwnedId)?.selectedHasAfter) {
           if (!selection.resolveReady) resetReady(selection);
           await selection.resubscribe?.();
           await selection.ready;
         }
-        const receipt = await sendStructuredMessage(selection.workspaceOwnedId, prompt);
+        // The backend records the message under the chat's own id, and the reply streams under this run.
+        const receipt = await sendStructuredMessage(selection.workspaceOwnedId, prompt, undefined, true,
+          { ...run, messageId: selection.sendingId ?? undefined });
         if (!receipt) throw new Error('The native conversation did not admit the message.');
-        pending.receipt = receipt;
         const admission = selection.pendingAdmission;
         if (admission) {
           selection.pendingAdmission = null;
           admission.resolve(receipt);
         }
-        if (signal?.aborted || !isCurrent(selection)) return;
-        if (pending.optimisticId && selection.push) {
-          pushMessagesSnapshot(selection, selection.chat.messages.map((message) =>
-            message.id === pending.optimisticId ? { ...message, id: receipt.userItemId } : message
-          ), selection.push);
-        }
-        if (pending.overflow) {
-          await selection.resubscribe?.();
-          return;
-        }
-        const buffered = pending.events.sort((left, right) => left.sequence - right.sequence);
-        pending.events = [];
-        pending.bytes = 0;
-        for (const event of buffered) {
-          if (selection.push) emitEvent(selection, event, selection.push, false);
-        }
       } catch (error) {
         rejectPendingAdmission(selection, error);
         throw error;
       } finally {
-        if (selection.pendingSend === pending && !pending.receipt) selection.pendingSend = null;
+        selection.sendingId = null;
       }
     }
   };
@@ -696,7 +607,7 @@ export function selectConversationChat(
     disposeSelectedConversationChat();
   }
   const selection = {
-    workspaceOwnedId, historyOwnedId, controller: new AbortController(), pendingSend: null, pendingAdmission: null,
+    workspaceOwnedId, historyOwnedId, controller: new AbortController(), sendingId: null, pendingAdmission: null,
     messageBytes: new Map(), graphBytes: 0, contentAdmitted: false, anchorRevision: 0, anchorAdmission: null, anchorSnapshot: null
   } as ActiveConversation;
   resetReady(selection);
@@ -708,12 +619,7 @@ export function selectConversationChat(
     threadId: historyOwnedId,
     onCustomEvent(name, value) {
       if (selection.controller.signal.aborted) return;
-      if (name === 'assembly:running-tool' || name === 'assembly:running-tools' || name === 'assembly:stale-markdown'
-        || name === 'assembly:message-metadata') {
-        selection.chat.setMessages(conversationMessagesAfterCustom(
-          selection.chat.messages, name, value
-        ));
-      } else if (name === 'assembly:snapshot-ready' && value === selection.historyOwnedId) {
+      if (name === 'assembly:snapshot-ready' && value === selection.historyOwnedId) {
         selection.resolveReady?.();
         selection.resolveReady = undefined;
         selection.rejectReady = undefined;
@@ -754,6 +660,7 @@ function disposeConversationChat(selection: ActiveConversation): void {
   // A pending send is not rejected here: leaving the session does not stop it,
   // so its receipt or its own failure settles the admission.
   selection.chat.dispose();
+  void closeAguiViewInBackground(selection.historyOwnedId);
 }
 
 export function disposeChildConversationChat(workspaceOwnedId?: string): void {
@@ -893,7 +800,7 @@ export async function pageSelectedConversation(direction: Direction, historyOwne
     const current = getConversationSession(selection.historyOwnedId);
     const messages = mergeMessages(
       selection.chat.messages,
-      messagesFromPage(page),
+      messagesFromPage(page, page.chunks),
       direction
     );
     if (!selection.push) return;
@@ -916,7 +823,7 @@ export async function pageSelectedConversation(direction: Direction, historyOwne
     const generation = getConversationSession(selection.historyOwnedId)?.generation ?? 0;
     void restorePageAttachments(
       selection,
-      pageAttachments(page.events),
+      pageAttachments(page.chunks),
       generation,
       messages.map((message) => message.id)
     );

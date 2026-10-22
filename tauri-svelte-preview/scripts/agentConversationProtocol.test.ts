@@ -5,7 +5,7 @@ import {
   createConversationState,
   reduceConversationEvent
 } from '../src/lib/shell/conversation/conversationReducer.ts';
-import { conversationChunksFromEvent, conversationDisplayItems, conversationMessagesAfterCustom, conversationMessagesFromEvents } from '../src/lib/shell/conversation/conversationMessages.ts';
+import { conversationDisplayItems } from '../src/lib/shell/conversation/conversationMessages.ts';
 import type { AgentConversationEvent } from '../src/lib/shell/conversation/conversationTypes.ts';
 import { configOptionPlacement } from '../src/lib/shell/conversation/conversationTypes.ts';
 import { decideConversationActivation } from '../src/lib/shell/conversation/conversationActivation.ts';
@@ -19,6 +19,21 @@ const event = (overrides: Partial<AgentConversationEvent> = {}): AgentConversati
   payload: { kind: 'connection', state: 'connected', nativeSessionId: 'thread-a' },
   ...overrides
 });
+
+// The chat's messages from the chunks the backend sends: a reply, and a row AG-UI has no event for.
+const fold = (chunks: object[]) => {
+  const processor = new StreamProcessor();
+  for (const chunk of chunks) processor.processChunk(chunk as never);
+  return processor.getMessages();
+};
+const reply = (id: string, text: string, startedAtMs: number, turnId?: string) => [
+  { type: EventType.TEXT_MESSAGE_START, messageId: id, role: 'assistant',
+    metadata: { itemType: 'assistant-message', turnId, startedAtMs, firstSequence: startedAtMs, completed: false } },
+  { type: EventType.TEXT_MESSAGE_CONTENT, messageId: id, delta: text },
+  { type: EventType.TEXT_MESSAGE_END, messageId: id, metadata: { completed: true } }
+];
+const row = (id: string, native: AgentConversationEvent) =>
+  ({ type: EventType.ACTIVITY_SNAPSHOT, messageId: id, activityType: `assembly.${native.payload.kind}`, content: { event: native } });
 
 // The first event establishes the live generation and sequence.
 {
@@ -51,69 +66,31 @@ const event = (overrides: Partial<AgentConversationEvent> = {}): AgentConversati
     payload: { kind: 'assistantDelta', itemId: 'assistant-1', delta: 'Missing sequence three' }
   }));
   assert.equal(state.desynchronized, true);
-  const displayed = conversationDisplayItems(conversationMessagesFromEvents([first, user]));
-  assert.equal(displayed.length, 1);
-  assert.equal(displayed[0].text, 'Keep this');
-}
-
-// Assistant deltas append to one item and completion seals the authoritative text.
-{
-  const events = [event(), event({
-    sequence: 2,
-    payload: { kind: 'assistantDelta', itemId: 'assistant-1', delta: 'Hello' }
-  }), event({
-    sequence: 3,
-    payload: { kind: 'assistantDelta', itemId: 'assistant-1', delta: ' world' }
-  }), event({
-    sequence: 4,
-    payload: { kind: 'assistantMessage', itemId: 'assistant-1', text: 'Hello world', completed: true }
-  })];
-  const { metadata, turnId, blocks, ...answer } = conversationDisplayItems(
-    conversationMessagesFromEvents(events)
-  )[0];
-  assert.deepEqual(answer, {
-    kind: 'assistant',
-    itemId: 'assistant-1',
-    text: 'Hello world',
-    completed: true,
-    timestampMs: 1_000
-  });
 }
 
 // An admitted prompt uses native time so it follows every row of the previous turn.
 {
-  const messages = conversationMessagesFromEvents([event({
-    sequence: 1, timestampMs: 100,
-    payload: { kind: 'assistantMessage', itemId: 'assistant-a1', turnId: 'turn-a', text: 'First', completed: true }
-  }), event({
-    sequence: 2, timestampMs: 200,
-    payload: { kind: 'assistantMessage', itemId: 'assistant-a2', turnId: 'turn-a', text: 'Second', completed: true }
-  })]);
-  messages.push({
+  const processor = new StreamProcessor();
+  processor.setMessages([...fold([...reply('assistant-a1', 'First', 100, 'turn-a'), ...reply('assistant-a2', 'Second', 200, 'turn-a')]), {
     id: 'user-b', role: 'user', parts: [{ type: 'text', content: 'next' }],
     metadata: { itemType: 'user-message', startedAtMs: 150 }
-  });
-  const processor = new StreamProcessor();
-  processor.setMessages(messages);
-  const chunks = conversationChunksFromEvent(messages, event({
-    sequence: 3, timestampMs: 300,
-    payload: { kind: 'userMessage', itemId: 'user-b', turnId: 'turn-b', text: 'next', completed: true }
-  }));
-  for (const chunk of chunks) {
-    if (chunk.type === EventType.CUSTOM) {
-      processor.setMessages(conversationMessagesAfterCustom(processor.getMessages(), chunk.name, chunk.value));
-    } else {
-      processor.processChunk(chunk);
-    }
-  }
+  }]);
+  // The backend records the chat's message under the chat's id, with the turn and time it was admitted.
+  for (const chunk of [
+    { type: EventType.TEXT_MESSAGE_START, messageId: 'user-b', role: 'user',
+      metadata: { itemType: 'user-message', turnId: 'turn-b', startedAtMs: 300, firstSequence: 3 } },
+    { type: EventType.TEXT_MESSAGE_CONTENT, messageId: 'user-b', delta: 'next' },
+    { type: EventType.TEXT_MESSAGE_END, messageId: 'user-b', metadata: { completed: true } }
+  ]) processor.processChunk(chunk as never);
+  assert.equal(conversationDisplayItems(processor.getMessages()).at(-1)?.text, 'next', 'the text is not repeated');
   assert.deepEqual(conversationDisplayItems(processor.getMessages()).map((item) => [item.turnId, item.itemId]), [
     ['turn-a', 'assistant-a1'], ['turn-a', 'assistant-a2'], ['turn-b', 'user-b']
   ]);
 }
 
-// Plan payloads replace the current generation's plan without losing ordering.
+// Each plan update is a row; the newest says where the plan stands.
 {
-  const events = [event(), event({
+  const events = [event({
     sequence: 2,
     payload: {
       kind: 'plan',
@@ -126,7 +103,7 @@ const event = (overrides: Partial<AgentConversationEvent> = {}): AgentConversati
       items: [{ text: 'Inspect the change', status: 'completed' }]
     }
   })];
-  const plan = conversationDisplayItems(conversationMessagesFromEvents(events)).at(-1);
+  const plan = conversationDisplayItems(fold(events.map((native) => row(`plan:${native.sequence}`, native)))).at(-1);
   assert.equal(plan?.kind, 'plan');
   assert.deepEqual(plan?.steps.map((step) => ({ title: step.title, state: step.state })), [{ title: 'Inspect the change', state: 'completed' }]);
 }
@@ -173,13 +150,8 @@ const event = (overrides: Partial<AgentConversationEvent> = {}): AgentConversati
 
 // A provider error is additive and does not clear completed messages.
 {
-  const events = [event({
-    payload: { kind: 'assistantMessage', itemId: 'assistant-1', text: 'Still here', completed: true }
-  }), event({
-    sequence: 2,
-    payload: { kind: 'error', code: 'connection_lost', message: 'Reconnect', recoverable: true }
-  })];
-  const displayed = conversationDisplayItems(conversationMessagesFromEvents(events));
+  const error = event({ sequence: 2, timestampMs: 2_000, payload: { kind: 'error', code: 'connection_lost', message: 'Reconnect', recoverable: true } });
+  const displayed = conversationDisplayItems(fold([...reply('assistant-1', 'Still here', 1_000), row('error:1:2', error)]));
   assert.equal(displayed[0].text, 'Still here');
   assert.equal(displayed[1].kind, 'error');
   assert.equal(displayed[1].metadata?.recoverable, true);

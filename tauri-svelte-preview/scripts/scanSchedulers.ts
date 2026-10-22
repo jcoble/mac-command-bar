@@ -72,6 +72,8 @@ const allowedHits = new Set([
   // TSK-1424 E/H: one one-second clock for every running workflow stage's elapsed time. It runs only
   // while the panel is visible and a stage is running; the effect cleanup clears it on hide, finish or unmount.
   'src/lib/shell/workflows/components/WorkflowRuns.svelte:setInterval:const timer = window.setInterval(() => (now = Date.now()), 1000);',
+  // The Workflows screen's one elapsed-time clock; it runs only while a running step is on screen.
+  'src/lib/shell/workflows/WorkflowsScreen.svelte:setInterval:const timer = window.setInterval(() => (now = Date.now()), 1000);',
   // TSK-1424 G: the tools column's one-frame WebKit invalidation (hide, change the grid next frame, reveal
   // a frame later). The pending frame id is kept; a newer transition and dispose() cancel it.
   'src/lib/shell/layout/frame.ts:requestAnimationFrame:toolsFrame = requestAnimationFrame(() => {',

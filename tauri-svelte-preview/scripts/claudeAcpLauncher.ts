@@ -14,7 +14,7 @@
 //      capacity, which the stock adapter would otherwise store and cache.
 //   G. Out of a turn, ExitPlanMode offers no "clear context" choice: a fresh
 //      context continues the open prompt, and there is none.
-// The release build compiles this file with bun (prepareReleaseAdapters.ts).
+// The release build compiles this file with deno (prepareReleaseAdapters.ts).
 import { privateMcpHeaders } from './claudeMcpHeaders.ts';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
