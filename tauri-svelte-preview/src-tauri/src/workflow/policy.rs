@@ -13,8 +13,11 @@ pub(crate) const FIXED_DENY: &[&str] = &[
     "gh pr merge*",
     "gh pr ready*",
     "git push * main*",
+    "git push *:main*",
+    "git push *:refs/heads/main*",
     "gh workflow run*",
     "gh api *dispatches*",
+    "gh api *pulls/*/merge*",
     "git push *assembly-*",
 ];
 
@@ -53,9 +56,11 @@ pub(crate) struct GuardPolicy {
 impl GuardPolicy {
     /// Decides a shell command line. Each simple command in it (split on
     /// `&&`, `||`, `;`, `|`, newlines and `$(…)`) is judged on its own, with
-    /// leading `NAME=value` and `env` removed, and the strictest answer wins.
+    /// leading `NAME=value`, `env` and shell keywords removed, and the strictest
+    /// answer wins. `sh -c` nested past `MAX_NESTING` goes to a person.
     pub(crate) fn decide(&self, command_line: &str) -> Decision {
-        simple_commands(command_line)
+        let Some(commands) = simple_commands(command_line, 0) else { return Decision::Ask };
+        commands
             .iter()
             .map(|command| self.decide_one(command))
             .max()
@@ -76,8 +81,12 @@ impl GuardPolicy {
     }
 }
 
-/// The simple commands of a shell line, each as its words joined by one space.
-fn simple_commands(line: &str) -> Vec<String> {
+/// How many `sh -c` scripts may sit inside each other before a person decides.
+const MAX_NESTING: usize = 8;
+
+/// The simple commands of a shell line, each as its words joined by one space;
+/// `None` when `sh -c` is nested deeper than `MAX_NESTING`.
+fn simple_commands(line: &str, depth: usize) -> Option<Vec<String>> {
     let mut commands: Vec<Vec<String>> = vec![Vec::new()];
     let mut word: Option<String> = None;
     let mut quote: Option<char> = None;
@@ -91,7 +100,8 @@ fn simple_commands(line: &str) -> Vec<String> {
         match (quote, c) {
             (Some('\''), '\'') | (Some(_), '"') => quote = None,
             (Some('"'), '\\') | (None, '\\') => {
-                if let Some(next) = chars.next() {
+                // A backslash before a newline joins the lines.
+                if let Some(next) = chars.next().filter(|next| *next != '\n') {
                     word.get_or_insert_with(String::new).push(next);
                 }
             }
@@ -118,11 +128,15 @@ fn simple_commands(line: &str) -> Vec<String> {
         }
     }
     end_word(&mut word, &mut commands);
-    commands.into_iter().flat_map(normalize).collect()
+    let mut simple = Vec::new();
+    for words in commands {
+        simple.extend(normalize(words, depth)?);
+    }
+    Some(simple)
 }
 
 /// Removes what doesn't change which program runs, and opens `sh -c` scripts.
-fn normalize(mut words: Vec<String>) -> Vec<String> {
+fn normalize(mut words: Vec<String>, depth: usize) -> Option<Vec<String>> {
     let assignment = |word: &str| {
         word.split_once('=').is_some_and(|(name, _)| {
             !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
@@ -131,6 +145,10 @@ fn normalize(mut words: Vec<String>) -> Vec<String> {
     loop {
         match words.first() {
             Some(word) if assignment(word) => drop(words.remove(0)),
+            // Loop and block keywords start the command that follows them.
+            Some(word) if matches!(word.as_str(), "do" | "then" | "else" | "elif" | "if" | "while" | "until" | "{" | "}" | "!" | "done" | "fi") => {
+                words.remove(0);
+            }
             Some(word) if word == "env" => {
                 words.remove(0);
                 while words.first().is_some_and(|word| word.starts_with('-')) {
@@ -140,21 +158,24 @@ fn normalize(mut words: Vec<String>) -> Vec<String> {
             _ => break,
         }
     }
-    let Some(program) = words.first_mut() else { return Vec::new() };
+    let Some(program) = words.first_mut() else { return Some(Vec::new()) };
     if let Some((_, name)) = program.rsplit_once('/') {
         *program = name.to_string();
     }
     let flag_has_c = |word: &str| word.starts_with('-') && !word.starts_with("--") && word.contains('c');
     if matches!(words[0].as_str(), "sh" | "bash" | "zsh" | "dash") && words.get(1).is_some_and(|w| flag_has_c(w)) {
         // A quoted script is one word; an argument list joined without quotes is the rest.
-        return simple_commands(&words[2..].join(" "));
+        return if depth < MAX_NESTING { simple_commands(&words[2..].join(" "), depth + 1) } else { None };
     }
-    if words[0] == "git" {
-        while words.len() > 2 && (words[1] == "-C" || words[1] == "-c") {
-            words.drain(1..3);
-        }
+    let options: &[&str] = match words[0].as_str() {
+        "git" => &["-C", "-c"],
+        "gh" => &["-R", "--repo"],
+        _ => &[],
+    };
+    while words.len() > 2 && options.contains(&words[1].as_str()) {
+        words.drain(1..3);
     }
-    vec![words.join(" ")]
+    Some(vec![words.join(" ")])
 }
 
 /// Whole-string match where `*` stands for any text, including none.
@@ -224,6 +245,39 @@ mod tests {
         ] {
             assert_eq!(empty.decide(command), Decision::Deny, "{command}");
         }
+    }
+
+    #[test]
+    fn accidental_forms_of_a_denied_command_are_denied() {
+        let empty = GuardPolicy::default();
+        for command in [
+            "git push origin HEAD:main",
+            "git push origin tsk-1:refs/heads/main",
+            "git push origin +HEAD:main",
+            "for n in 1 2 3; do gh pr merge $n; done",
+            "if true; then gh pr merge 1; else gh pr ready 1; fi",
+            "true && { gh pr merge 1; }",
+            "! gh pr merge 1",
+            "gh pr \\\nmerge 1",
+            "git push \\\n  origin HEAD:main",
+            "gh -R o/r pr merge 1",
+            "gh --repo o/r pr merge 1",
+            "gh api -X PUT repos/o/r/pulls/1/merge",
+            "gh api repos/o/r/pulls/1/merge --method PUT",
+        ] {
+            assert_eq!(empty.decide(command), Decision::Deny, "{command}");
+        }
+        assert_eq!(empty.decide("gh api repos/o/r/pulls/1"), Decision::Ask);
+        assert_eq!(empty.decide("for n in 1 2; do echo $n; done"), Decision::Ask);
+    }
+
+    #[test]
+    fn nesting_past_the_depth_limit_goes_to_a_person_and_stays_small() {
+        let allow_all = policy(&[], &[], &[], Decision::Allow);
+        let within = format!("{}gh pr merge 1", "sh -c ".repeat(5));
+        assert_eq!(allow_all.decide(&within), Decision::Deny);
+        let too_deep = format!("{}gh pr merge 1", "sh -c ".repeat(100_000));
+        assert_eq!(allow_all.decide(&too_deep), Decision::Ask);
     }
 
     #[test]

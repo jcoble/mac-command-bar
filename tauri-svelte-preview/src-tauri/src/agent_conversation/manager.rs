@@ -6265,14 +6265,12 @@ async fn pump_inbound(
                     if let Err(error) = transport_runtime.respond(wire_id, answer).await { crate::debug_log::stderr_log!("Could not pre-approve an Assembly tool: {error}"); }
                     continue;
                 }
-                // A workflow step's policy answers what it names; only `ask` reaches a person.
+                // A workflow step's policy answers what it names; `ask`, or an allow with no allow-once option, reaches a person.
                 let decided = sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&owned_id)
                     .and_then(|session| Some(session.guard_policy.as_ref()?.decide(command.as_deref()?)))
-                    .filter(|decision| *decision != crate::workflow::policy::Decision::Ask);
-                if let Some(decision) = decided {
+                    .and_then(|decision| Some((decision, policy_answer(decision, &options)?)));
+                if let Some((decision, response)) = decided {
                     let allowed = decision == crate::workflow::policy::Decision::Allow;
-                    let response = permission_response(&options, if allowed { AgentApprovalDecision::Accept } else { AgentApprovalDecision::Decline })
-                        .unwrap_or_else(|_| serde_json::json!({ "outcome": { "outcome": "cancelled" } }));
                     if let Err(error) = transport_runtime.respond(wire_id, response).await {
                         crate::debug_log::stderr_log!("Could not answer a permission request from the policy: {error}");
                     }
@@ -7523,6 +7521,19 @@ fn permission_response(
                 "outcome": { "outcome": "selected", "optionId": option_id }
             }))
         }
+    }
+}
+
+/// What a workflow policy answers for the agent. Allow picks the allow-once
+/// option, never one that allows for good; with none offered, or on ask, a
+/// person is asked instead.
+fn policy_answer(decision: crate::workflow::policy::Decision, options: &[PermissionOption]) -> Option<Value> {
+    use crate::workflow::policy::Decision;
+    let selected = |option: &PermissionOption| serde_json::json!({ "outcome": { "outcome": "selected", "optionId": option.option_id } });
+    match decision {
+        Decision::Allow => options.iter().find(|option| option.kind == "allow_once").map(selected),
+        Decision::Deny => Some(options.iter().find(|option| is_reject_kind(&option.kind)).map_or_else(|| serde_json::json!({ "outcome": { "outcome": "cancelled" } }), selected)),
+        Decision::Ask => None,
     }
 }
 
