@@ -314,7 +314,12 @@ impl View {
             // Withdrawn, not answered: the turn's end usually follows (Stop, a failure).
             Payload::Approval { request_id, state: ApprovalState::Expired, .. }
             | Payload::UserInputResolved { request_id, cancelled: true } => {
+                let before = self.requests.len();
                 self.requests.retain(|open| open.id != *request_id);
+                if self.requests.len() < before {
+                    // What still waits is shown again; with nothing left it is empty.
+                    out.extend(self.pause_chunk(thread));
+                }
             }
             Payload::Approval { request_id, .. } | Payload::UserInputResolved { request_id, .. } => {
                 self.answered(&mut out, thread, request_id);
