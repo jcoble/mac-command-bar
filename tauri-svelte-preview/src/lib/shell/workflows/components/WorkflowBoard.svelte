@@ -8,8 +8,9 @@
   import { Chip, type ChipTone } from '$lib/components/ui/chip/index.js';
   import { FilterPills } from '$lib/components/ui/filter-pills/index.js';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
-  import { BOARD_COLUMNS, boardColumn, currentStep, runTask, shortDuration, stepGlyph, type BoardColumnId } from '../workflowBoard.ts';
+  import { BOARD_COLUMNS, currentStep, runTask, shortDuration, stepGlyph, type BoardColumnId } from '../workflowBoard.ts';
   import { workflowErrorText, type WorkflowRunRecord } from '../workflowTypes.ts';
+  import { projectColumn, projectIndex, projectProgress, sliceCount } from '../workflowProject.ts';
   import StepGlyphIcon from './StepGlyphIcon.svelte';
 
   interface Props {
@@ -38,9 +39,11 @@
   const shown = $derived(runs.filter((run) =>
     (!filters.workflow?.length || filters.workflow.includes(run.definition.name))
     && (!filters.starter?.length || filters.starter.includes(startedBy(run)))));
+  /** Who is whose parent, read once per change of the runs. */
+  const index = $derived(projectIndex(runs));
   const byColumn = $derived.by(() => {
     const columns = new Map<BoardColumnId, WorkflowRunRecord[]>(BOARD_COLUMNS.map((column) => [column.id, []]));
-    for (const run of [...shown].sort((a, b) => b.updatedAtMs - a.updatedAtMs)) columns.get(boardColumn(run))?.push(run);
+    for (const run of [...shown].sort((a, b) => b.updatedAtMs - a.updatedAtMs)) columns.get(projectColumn(run, index))?.push(run);
     return columns;
   });
   const active = $derived(shown.filter((run) => !['completed', 'cancelled', 'failed'].includes(run.state)).length);
@@ -81,27 +84,31 @@
       </h3>
       {#each cards as run (run.id)}
         {@const task = runTask(run)}
-        {@const step = currentStep(run)}
+        {@const project = projectProgress(run, index)}
+        <!-- A project card shows the step its current slice is at. -->
+        {@const stepRun = project?.current?.run ?? run}
+        {@const step = currentStep(stepRun)}
         {@const cost = costOf(run)}
         <button type="button" class="rounded-xl text-left outline-none focus-visible:ring-3 focus-visible:ring-ring/50" onclick={() => onOpen(run.id)}>
           <Card.Root size="sm" class="gap-2 bg-card shadow-sm transition-colors hover:bg-accent/60">
             <Card.Content class="flex flex-col gap-2">
               <div class="flex min-w-0 items-center gap-1.5">
-                <Chip tone="neutral">{task.key ? 'task' : 'one-off'}</Chip>
+                <Chip tone="neutral">{project ? 'project' : task.key ? 'task' : 'one-off'}</Chip>
                 {#if task.key}<span class="truncate font-mono text-sm text-muted-foreground">{task.key}</span>{/if}
               </div>
               <p class="line-clamp-3 text-[13px] leading-snug font-semibold">{task.title}</p>
+              {#if project}<p class="text-[13px] text-muted-foreground tabular-nums">{sliceCount(project)}{project.current ? ` · at ${project.current.key}` : ''}</p>{/if}
               {#if step}
                 <div class="flex min-w-0 items-start gap-1.5 text-[13px] text-muted-foreground">
                   <StepGlyphIcon glyph={stepGlyph(step)} />
                   <span class="line-clamp-3 min-w-0 [overflow-wrap:anywhere]" title={step.failure ? workflowErrorText(step.failure.message) : undefined}>
-                    {stepTitle(run, step.nodeId)}{step.attempt > 1 ? ` · attempt ${step.attempt}` : ''}{step.failure ? `: ${workflowErrorText(step.failure.message)}` : ''}
+                    {stepTitle(stepRun, step.nodeId)}{step.attempt > 1 ? ` · attempt ${step.attempt}` : ''}{step.failure ? `: ${workflowErrorText(step.failure.message)}` : ''}
                   </span>
                 </div>
               {/if}
-              {#if rounds(run).length}
+              {#if rounds(stepRun).length}
                 <div class="flex flex-wrap gap-1">
-                  {#each rounds(run) as round (round.id)}<Chip tone={round.tone} class="max-w-full"><span class="truncate">{round.label}</span></Chip>{/each}
+                  {#each rounds(stepRun) as round (round.id)}<Chip tone={round.tone} class="max-w-full"><span class="truncate">{round.label}</span></Chip>{/each}
                 </div>
               {/if}
               <div class="flex items-center justify-between gap-2 text-[13px] text-muted-foreground tabular-nums">
