@@ -369,7 +369,7 @@ pub fn tool_record(
                 .or_else(|| input.get("cmd"))
                 .and_then(Value::as_str)
                 .and_then(simple_shell_file_path)
-        });
+        }).map(|path| crate::agent_conversation::normalization::tools::paths_in_workdir(&path, input));
     let diff = input
         .get("diff")
         .or_else(|| input.get("patch"))
