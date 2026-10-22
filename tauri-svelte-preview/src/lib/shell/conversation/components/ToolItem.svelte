@@ -37,6 +37,8 @@
   let details = $state<{ output: string | null; diff: string | null } | null>(null);
   let streamed: string | undefined;
   const readId = $derived(detailsOpen && item.hasDetail ? item.itemId : '');
+  /* A derived value, so streamed updates that leave the state unchanged do not read again. */
+  const callState = $derived(item.state);
   async function readDetails(itemId: string, signal: AbortSignal): Promise<void> {
     try {
       const call = await readAgentConversationToolCallFromTauri(disclosure?.ownedId ?? '', itemId, signal);
@@ -50,7 +52,7 @@
   $effect(() => {
     details = null;
     // A call that finishes while its row is open is read again: what was read before may be a partial result.
-    void item.state;
+    void callState;
     if (!readId) return;
     const controller = new AbortController();
     void readDetails(readId, controller.signal);
@@ -58,7 +60,7 @@
   });
   const liveOutput = $derived.by(() => (streamed = detailsOpen ? item.output || streamed : undefined));
   /* A running call that streams output shows that stream; the read output may be a partial result. */
-  const shownOutput = $derived(details && !(item.state === 'running' && liveOutput) ? details.output ?? '' : liveOutput ?? '');
+  const shownOutput = $derived(details && !(callState === 'running' && liveOutput) ? details.output ?? '' : liveOutput ?? '');
   const shownDiff = $derived(details ? details.diff ?? undefined : item.diff);
   const output = $derived(detailsOpen && shownOutput !== shownDiff && /\S/.test(shownOutput) ? shownOutput.trimEnd() : '');
   const filePath = $derived(toolFilePath(item));
