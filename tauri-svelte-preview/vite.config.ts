@@ -18,6 +18,7 @@ import {
   validateLocalProjectRoot,
   writeLocalSourceFile,
 } from "./src/lib/server/localSourceFs";
+import { createDevBridgeGuard } from "./src/lib/server/devBridgeGuard";
 import type { SourceRecord } from "./src/lib/sourceData";
 
 function localSourceBridgePlugin(): Plugin {
@@ -28,6 +29,19 @@ function localSourceBridgePlugin(): Plugin {
     },
     configurePreviewServer(server) {
       server.middlewares.use(createLocalSourceBridgeMiddleware());
+    },
+  };
+}
+
+/** Must come before both bridges: it refuses bridge requests from anything but this server's own pages. */
+function devBridgeGuardPlugin(): Plugin {
+  return {
+    name: "mac-command-bar-dev-bridge-guard",
+    configureServer(server) {
+      server.middlewares.use(createDevBridgeGuard());
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(createDevBridgeGuard());
     },
   };
 }
@@ -346,6 +360,7 @@ export default defineConfig({
     freshDevModulesPlugin(),
     svelteStyleAfterComponentPlugin(),
     relationalSelectorPurgePlugin(),
+    devBridgeGuardPlugin(),
     gitBridgePlugin(),
     localSourceBridgePlugin(),
     tailwindcss(),

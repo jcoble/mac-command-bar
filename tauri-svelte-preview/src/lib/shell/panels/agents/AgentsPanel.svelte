@@ -44,7 +44,7 @@
   import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { parseRemoteWorkspacePath } from '$lib/workspacePaths.ts';
-  import { listOwnerInboxFromTauri } from '$lib/tauriSource.ts';
+  import { listenAgentMessagesChanged, listOwnerInboxFromTauri } from '$lib/tauriSource.ts';
 
   import AgentRow from './AgentRow.svelte';
   import { AGENT_STATUS_TONE, AGENT_STATUS_WORD, agentActivityRows } from './agentActivityModel.ts';
@@ -77,11 +77,22 @@
     session.pendingPermission === true || session.pendingInput === true
       || session.runtimeState === 'waiting-approval' || session.runtimeState === 'waiting-input'));
   const inboxCount = $derived(inboxStepCount + waitingSessions.length);
-  // The count covers waiting steps before the Inbox is opened: read once each time the panel shows.
+  const inboxOpen = $derived(view === 'inbox');
+  // The count covers waiting steps before the Inbox is opened: read when the panel shows and again
+  // on every run change, one read at a time. The open Inbox keeps the count itself.
   $effect(() => {
-    if (!visible) return;
+    if (!visible || inboxOpen) return;
     const controller = new AbortController();
-    void countInboxSteps(controller.signal);
+    let reading = false;
+    let again = false;
+    async function recount(): Promise<void> {
+      if (reading) { again = true; return; }
+      reading = true;
+      do { again = false; await countInboxSteps(controller.signal); } while (again && !controller.signal.aborted);
+      reading = false;
+    }
+    void recount();
+    void listenAgentMessagesChanged(() => void recount(), controller.signal);
     return () => controller.abort();
   });
   async function countInboxSteps(signal: AbortSignal): Promise<void> {

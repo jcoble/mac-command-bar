@@ -4,9 +4,8 @@
   Clicking it opens a menu for app-level items (Settings). Hovering it, or
   moving keyboard focus into it, slides joined circles out to its right:
   Projects, Messages, and Update while an app update is waiting. The waiting update also
-  puts a dot on the green button, and while the circles are out a short arc
-  sweeps round the Update circle every two seconds. The arc only runs while the
-  circles are out, so at rest nothing animates.
+  puts a dot on the green button, and while the circles are out a still arc
+  marks the Update circle. Only the slide moves, once per hover or focus.
 -->
 <script lang="ts">
   import Download from '@lucide/svelte/icons/download';
@@ -79,8 +78,8 @@
         >
           <Download />
         </IconButton>
-        <!-- One arc drawn once and turned by a transform. The glow is two wider,
-             fainter strokes under the bright one, not a blur filter. -->
+        <!-- One still arc. The glow is two wider, fainter strokes under the
+             bright one, not a blur filter. -->
         <svg class="home-arc" viewBox="0 0 32 32" aria-hidden="true">
           <circle cx="16" cy="16" r="14" pathLength="3" stroke-width="5" opacity="0.15" />
           <circle cx="16" cy="16" r="14" pathLength="3" stroke-width="3" opacity="0.35" />
@@ -197,35 +196,12 @@
   }
 
   .out .home-arc {
-    animation: home-arc-sweep 2s linear infinite;
-  }
-
-  @keyframes home-arc-sweep {
-    0% {
-      opacity: 0;
-      transform: rotate(0deg);
-    }
-    10% {
-      opacity: 1;
-    }
-    45% {
-      opacity: 1;
-    }
-    60%,
-    100% {
-      opacity: 0;
-      transform: rotate(360deg);
-    }
+    opacity: 1;
   }
 
   @media (prefers-reduced-motion: reduce) {
     .home-slide {
       transition: none;
-    }
-
-    .out .home-arc {
-      animation: none;
-      opacity: 1;
     }
   }
 </style>

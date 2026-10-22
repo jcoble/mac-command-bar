@@ -94,3 +94,12 @@ async fn non_claude_worker_applies_the_effort_advertised_at_session_creation() {
         }
     }
 }
+
+#[test]
+fn a_worker_with_no_step_permission_starts_in_auto_under_a_starter_in_default() {
+    use AgentConversationProvider::{Claude, Codex};
+    assert_eq!(capped_permission(None, Some(Some("default")), Claude).as_deref(), Some("auto"));
+    assert_eq!(capped_permission(None, Some(Some("read-only")), Codex).as_deref(), Some("agent"));
+    // A step asking for full access under a lower starter falls back to Auto, never below it.
+    assert_eq!(capped_permission(Some("bypassPermissions".into()), Some(Some("default")), Claude).as_deref(), Some("auto"));
+}

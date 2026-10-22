@@ -1536,7 +1536,7 @@ mod tests {
     }
 
     use super::*;
-
+    include!("notion_tasks/tests.rs");
     #[test]
     fn discovers_the_named_tasks_data_source() {
         let payload = json!({

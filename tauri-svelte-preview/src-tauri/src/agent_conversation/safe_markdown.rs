@@ -236,10 +236,10 @@ fn collect_blocks<'a>(nodes: impl Iterator<Item = &'a AstNode<'a>>) -> Vec<SafeM
             NodeValue::CodeBlock(code) => {
                 let language = code.info.trim().split_whitespace().next().unwrap_or("").to_string();
                 let complete = !code.fenced || code.literal.ends_with('\n');
-                // A fence's contents end with the line break before the
-                // closing fence, which is not part of the code.
+                // The parser appends a final line break to both forms of
+                // code block; it is not part of the code being copied.
                 let value = match code.literal.strip_suffix('\n') {
-                    Some(code_only) if code.fenced => code_only.to_string(),
+                    Some(code_only) => code_only.to_string(),
                     _ => code.literal.clone(),
                 };
                 blocks.push(SafeMarkdownBlock::Code {
@@ -260,7 +260,7 @@ fn collect_blocks<'a>(nodes: impl Iterator<Item = &'a AstNode<'a>>) -> Vec<SafeM
                     let mut item_blocks = Vec::new();
                     // comrak marks a task by turning the item itself into a
                     // task item, with its box already taken off the text.
-                    let (task, checked) = match &item_node.data.borrow().value {
+                    let (mut task, mut checked) = match &item_node.data.borrow().value {
                         NodeValue::TaskItem(status) => (true, status.is_some()),
                         _ => (false, false),
                     };
@@ -287,6 +287,19 @@ fn collect_blocks<'a>(nodes: impl Iterator<Item = &'a AstNode<'a>>) -> Vec<SafeM
                     }
                     if item_parts.is_empty() && item_blocks.is_empty() {
                         item_parts = collect_inline_parts(item_node);
+                    }
+                    if task && item_blocks.is_empty()
+                        && item_parts.iter().all(|part| matches!(part, SafeInlinePart::Text { value } if value.is_empty()))
+                    {
+                        let marker = match &item_node.data.borrow().value {
+                            NodeValue::TaskItem(Some(marker)) => *marker,
+                            _ => ' ',
+                        };
+                        item_parts = vec![SafeInlinePart::Text {
+                            value: format!("[{marker}]")
+                        }];
+                        task = false;
+                        checked = false;
                     }
                     items.push(SafeListItem {
                         task,
@@ -520,5 +533,35 @@ mod tests {
                 ],
             }]
         );
+    }
+
+    #[test]
+    fn indented_code_has_no_parser_added_trailing_line_break() {
+        assert_eq!(
+            parse_safe_markdown("    let value = 1;\n"),
+            vec![SafeMarkdownBlock::Code {
+                language: String::new(),
+                value: "let value = 1;".to_string(),
+                complete: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn bare_task_markers_remain_literal_list_text() {
+        for marker in ["[x]", "[ ]", "[X]"] {
+            assert_eq!(
+                parse_safe_markdown(&format!("- {marker}\n")),
+                vec![SafeMarkdownBlock::List {
+                    ordered: false,
+                    items: vec![SafeListItem {
+                        task: false,
+                        checked: false,
+                        parts: vec![SafeInlinePart::Text { value: marker.to_string() }],
+                        blocks: vec![],
+                    }],
+                }]
+            );
+        }
     }
 }
