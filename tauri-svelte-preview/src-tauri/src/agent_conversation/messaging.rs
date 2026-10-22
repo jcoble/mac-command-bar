@@ -502,8 +502,9 @@ impl MessagingEndpoint {
                 let run = engine.get_run(run_id).map_err(workflow_error)?;
                 let step = run.nodes.iter().find(|node| node.node_id == step_id).ok_or("Unknown step")?;
                 // Only a review's own decision points are the orchestrator's; gates, restart recovery and timeouts stay the owner's.
-                if !step.failure.as_ref().is_some_and(|failure| matches!(failure.code.as_str(), "loop-stopped" | "review-report")) {
-                    return Err("only a review waiting at its round limit or without a report can be decided here; post anything else (a gate, a timeout, a restart check) on the Build Board for the owner".into());
+                let is_review = run.definition.nodes.iter().any(|node| node.id == step_id && node.step.get("review").is_some());
+                if !is_review || !step.failure.as_ref().is_some_and(|failure| matches!(failure.code.as_str(), "loop-stopped" | "review-report")) {
+                    return Err("only a review waiting at its round limit or without a report can be decided here; post anything else (a gate, failed checks, a timeout, a restart check) on the Build Board for the owner".into());
                 }
                 let decision = args["decision"].as_str().unwrap_or_default();
                 let run = engine.answer_pause(run_id, step_id, decision, None, "orchestrator", args["why"].as_str(),

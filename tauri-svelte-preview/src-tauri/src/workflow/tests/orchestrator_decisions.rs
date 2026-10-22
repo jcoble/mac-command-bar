@@ -112,3 +112,21 @@ fn a_stop_whose_cancel_did_not_finish_is_finished_by_the_retry() {
     let done = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", "stop", None, "owner", None, "stop", None)).unwrap();
     assert_eq!(done.state, WorkflowRunState::Cancelled);
 }
+
+#[test]
+fn failed_checks_stopped_at_their_round_limit_stay_the_owners() {
+    let repo = RunRepo::new();
+    let engine = run_engine(Arc::new(FakeRuntime::default()));
+    let endpoint = agent_endpoint(&engine, &repo.0);
+    let token = agent(&engine, &endpoint, "orch", &repo.0);
+    engine.store.set_main_orchestrator(Some("orch")).unwrap();
+    let run = loop_run(&engine, &repo.0, "  build: { agent: { provider: codex }, prompt: prompts/p.md }\n  checks: { needs: [build], run: [\"exit 1\", \"true\"], on_fail: build }\n");
+    end_turn(&engine, &run.id, "build", &[]);
+    settle(&engine, &run.id);
+    end_turn(&engine, &run.id, "build", &[]);
+    let run = settle(&engine, &run.id);
+    assert_eq!(step_of(&run, "checks").failure.as_ref().unwrap().code, "loop-stopped");
+    let error = decide(&endpoint, &token, &run.id, "checks", json!("The failure is unrelated.")).unwrap_err();
+    assert!(error.contains("Build Board"), "{error}");
+    assert_eq!(step_of(&engine.get_run(&run.id).unwrap(), "checks").state, WorkflowNodeState::WaitingInput);
+}
