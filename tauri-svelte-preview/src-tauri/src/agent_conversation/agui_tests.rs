@@ -80,3 +80,35 @@ fn run_input_reads_resume_answers_and_ignores_what_assembly_does_not_use() {
     let fresh: RunAgentInput = serde_json::from_value(json!({ "threadId": "s", "runId": "run-3", "messages": [] })).unwrap();
     assert!(fresh.parent_run_id.is_none() && fresh.resume.is_empty());
 }
+
+#[test]
+fn a_page_keeps_the_native_paging_fields_and_carries_its_events_as_chunks() {
+    let page: AgentConversationItemPage = serde_json::from_value(json!({
+        "items": [{ "stableId": "s-1", "itemId": "user-1", "selectionMode": "whole", "firstSequence": 4, "firstTimestampMs": 50,
+            "lastSequence": 4, "authoritySeq": null, "turnId": "turn-1", "completed": true, "prefixComplete": true,
+            "positionKnown": true, "requiredBytes": 30 }],
+        "events": [{ "ownedId": "s", "provider": "claude", "generation": 1, "sequence": 4, "timestampMs": 50,
+            "payload": { "kind": "userMessage", "itemId": "user-1", "text": "hi", "completed": true } }],
+        "turns": [{ "turnId": "turn-1", "startedAtMs": 50, "endedAtMs": null, "terminalState": null, "finalAssistantItemId": null }],
+        "beforeCursor": 4, "afterCursor": 4, "hasBefore": true, "hasEarlierTranscript": false, "hasAfter": true,
+        "watermark": 9, "transferBytes": 30, "oversized": false, "coverage": { "low": 4, "high": 9, "startComplete": false },
+    })).unwrap();
+    let wire = serde_json::to_value(AguiPage::from(page)).unwrap();
+    for key in ["items", "turns", "beforeCursor", "afterCursor", "hasBefore", "hasEarlierTranscript", "hasAfter", "watermark", "coverage"] {
+        assert!(wire.get(key).is_some_and(|value| !value.is_null()), "{key} in {wire}");
+    }
+    assert_eq!(wire["events"], json!([]), "the events travel once, as chunks");
+    assert_eq!(wire["chunks"][0]["type"], "TEXT_MESSAGE_START");
+    assert_eq!(wire["chunks"][1]["delta"], "hi");
+}
+
+#[test]
+fn run_input_carries_the_message_the_run_sends() {
+    let input: RunAgentInput = serde_json::from_value(json!({
+        "threadId": "s", "runId": "run-1", "messageId": "client-1",
+        "message": { "ownedId": "s", "generation": 2, "text": "hello", "attachmentIds": ["shot-1"] },
+    })).unwrap();
+    let message = input.message.unwrap();
+    assert_eq!((message.text.as_str(), message.generation, input.message_id.as_deref()), ("hello", 2, Some("client-1")));
+    assert_eq!(message.attachment_ids, ["shot-1"]);
+}

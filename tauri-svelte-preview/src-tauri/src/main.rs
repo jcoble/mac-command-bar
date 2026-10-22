@@ -3791,7 +3791,7 @@ fn main() {
             projection_streams::unregister_agent_conversation_stream,
             projection_streams::register_terminal_output_stream, projection_streams::acknowledge_terminal_output_stream,
             projection_streams::unregister_terminal_output_stream,
-            agent_conversation::agui::register_agui_stream, agent_conversation::agui::acknowledge_agui_stream, agent_conversation::agui::unregister_agui_stream, agent_conversation::agui::run_agui, agent_conversation::agui::read_agui_snapshot, agent_conversation::agui::list_agui_events_before,
+            agent_conversation::agui::register_agui_stream, agent_conversation::agui::acknowledge_agui_stream, agent_conversation::agui::unregister_agui_stream, agent_conversation::agui::run_agui, agent_conversation::agui::read_agui_snapshot, agent_conversation::agui::list_agui_events_before, agent_conversation::agui::list_agui_events_after,
             agent_conversation::save_agent_conversation_attachment,
             agent_conversation::read_agent_conversation_attachments,
             agent_conversation::read_agent_conversation_selected_attachments,

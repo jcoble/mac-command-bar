@@ -32,6 +32,7 @@ impl Script {
         self.views.start_run(&RunAgentInput {
             thread_id: THREAD.into(), run_id: run_id.into(), parent_run_id: parent.map(str::to_string),
             resume: resume.into_iter().map(|(id, status, payload)| ResumeEntry { interrupt_id: id.into(), status, payload }).collect(),
+            message: None, message_id: None,
         })
     }
 }

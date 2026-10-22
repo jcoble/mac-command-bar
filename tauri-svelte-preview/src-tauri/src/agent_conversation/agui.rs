@@ -5,9 +5,9 @@
 use super::agui_projection::{page_chunks, Answer};
 use super::manager::AgentRuntimeManager;
 use super::protocol::{
-    AgentConversationConnection, AgentConversationEvent, AgentConversationPayload, ApprovalDecision,
-    CommandResult, RespondAgentConversationApprovalRequest, RespondAgentConversationInputRequest,
-    RespondAgentConversationPermissionRequest,
+    AgentConversationEvent, AgentConversationItemPage, AgentConversationPayload, AgentConversationSelectionSnapshot,
+    AgentConversationSendReceipt, ApprovalDecision, CommandResult, RespondAgentConversationApprovalRequest,
+    RespondAgentConversationInputRequest, RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest,
 };
 use super::remote::RemoteConnectionManager;
 use crate::projection_streams::{ProjectionStreams, StreamEnvelope};
@@ -22,9 +22,9 @@ const BINDING_VERSION: u64 = 1;
 /// Where TanStack AI looks for an interrupt's binding.
 const BINDING_KEY: &str = "tanstack:interruptBinding";
 
-/// The part of an AG-UI `RunAgentInput` Assembly acts on. The messages, tools
-/// and props the client also sends stay with the client: prompts still go out
-/// through `send_agent_conversation_message`.
+/// The part of an AG-UI `RunAgentInput` Assembly acts on, plus the message the
+/// run sends: the composer's prompt as `send_agent_conversation_message` takes
+/// it, and the id the chat gave its own copy. A run that only answers carries none.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunAgentInput {
@@ -34,6 +34,10 @@ pub struct RunAgentInput {
     pub parent_run_id: Option<String>,
     #[serde(default)]
     pub resume: Vec<ResumeEntry>,
+    #[serde(default)]
+    pub message: Option<SendAgentConversationMessageRequest>,
+    #[serde(default)]
+    pub message_id: Option<String>,
 }
 
 /// One answer to an interrupt, as the stock client sends it on `resume`.
@@ -241,32 +245,33 @@ fn js_number(number: f64) -> String {
     }
 }
 
-/// A chat view's opening snapshot as AG-UI chunks.
+/// A chat view's opening snapshot: the native one, with its page's events as
+/// AG-UI chunks, which main's ordered snapshot folds in (run events left out).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AguiSnapshot {
-    pub connection: AgentConversationConnection,
-    pub suspended: bool,
-    pub active_turn_id: Option<String>,
-    /// The newest sequence `events` covers; live envelopes at or below it are already in it.
-    pub head: i64,
-    /// The newest page, with run events left out; main's ordered snapshot folds these in.
-    pub events: Vec<Value>,
+    #[serde(flatten)]
+    pub snapshot: AgentConversationSelectionSnapshot,
+    pub chunks: Vec<Value>,
     /// One `RUN_FINISHED` carrying every request still waiting, to queue right after the snapshot.
     pub open_requests: Option<Value>,
-    pub before_cursor: Option<i64>,
-    pub has_before: bool,
-    pub has_earlier_transcript: bool,
 }
 
-/// An older page of a chat as AG-UI chunks, for scrolling up.
+/// A page of a chat for scrolling: the native page, its events as chunks.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AguiPage {
-    pub events: Vec<Value>,
-    pub before_cursor: Option<i64>,
-    pub has_before: bool,
-    pub has_earlier_transcript: bool,
+    #[serde(flatten)]
+    pub page: AgentConversationItemPage,
+    pub chunks: Vec<Value>,
+}
+
+impl From<AgentConversationItemPage> for AguiPage {
+    fn from(mut page: AgentConversationItemPage) -> Self {
+        let chunks = page_chunks(&page.events);
+        page.events = Vec::new();
+        Self { page, chunks }
+    }
 }
 
 #[tauri::command]
@@ -287,15 +292,14 @@ pub fn unregister_agui_stream(streams: State<'_, ProjectionStreams>, registratio
 
 #[tauri::command]
 /// AG-UI's run request. It records the client's run id for the turn that
-/// follows and answers each `resume` entry through the same commands the
-/// approval card uses, local or remote. The prompt itself still goes out
-/// through `send_agent_conversation_message`.
+/// follows, answers each `resume` entry through the same commands the approval
+/// card uses, local or remote, then sends the run's message, if any.
 pub async fn run_agui(
     streams: State<'_, ProjectionStreams>,
     manager: State<'_, AgentRuntimeManager>,
     remote: State<'_, RemoteConnectionManager>,
     input: RunAgentInput,
-) -> CommandResult<()> {
+) -> CommandResult<Option<AgentConversationSendReceipt>> {
     let answers = streams.with_agui_views(|views| views.start_run(&input))?;
     let owned_id = input.thread_id;
     for answer in answers {
@@ -315,7 +319,10 @@ pub async fn run_agui(
             }
         }
     }
-    Ok(())
+    match input.message {
+        Some(message) => super::send_agent_conversation_message(manager, remote, message).await.map(Some),
+        None => Ok(None),
+    }
 }
 
 #[tauri::command]
@@ -349,18 +356,9 @@ pub async fn read_agui_snapshot(
         }
         opened
     });
-    let Some(snapshot) = read? else { return Ok(None) };
-    Ok(Some(AguiSnapshot {
-        connection: snapshot.connection,
-        suspended: snapshot.suspended,
-        active_turn_id: snapshot.active_turn_id,
-        head: snapshot.pending_sequence,
-        events: opened.events,
-        open_requests: opened.open_requests,
-        before_cursor: snapshot.page.before_cursor,
-        has_before: snapshot.page.has_before,
-        has_earlier_transcript: snapshot.page.has_earlier_transcript,
-    }))
+    let Some(mut snapshot) = read? else { return Ok(None) };
+    snapshot.page.events = Vec::new();
+    Ok(Some(AguiSnapshot { snapshot, chunks: opened.events, open_requests: opened.open_requests }))
 }
 
 #[tauri::command]
@@ -374,12 +372,21 @@ pub async fn list_agui_events_before(
     request_id: u64,
 ) -> CommandResult<AguiPage> {
     let page = super::list_agent_conversation_items_before(manager, remote, owned_id, before_sequence, max_bytes, request_id).await?;
-    Ok(AguiPage {
-        events: page_chunks(&page.events),
-        before_cursor: page.before_cursor,
-        has_before: page.has_before,
-        has_earlier_transcript: page.has_earlier_transcript,
-    })
+    Ok(page.into())
+}
+
+#[tauri::command]
+/// The page just newer than `after_sequence`, as AG-UI chunks.
+pub async fn list_agui_events_after(
+    manager: State<'_, AgentRuntimeManager>,
+    remote: State<'_, RemoteConnectionManager>,
+    owned_id: String,
+    after_sequence: i64,
+    max_bytes: u32,
+    request_id: u64,
+) -> CommandResult<AguiPage> {
+    let page = super::list_agent_conversation_items_after(manager, remote, owned_id, after_sequence, max_bytes, request_id).await?;
+    Ok(page.into())
 }
 
 fn request_id_of(event: &AgentConversationEvent) -> Option<String> {
