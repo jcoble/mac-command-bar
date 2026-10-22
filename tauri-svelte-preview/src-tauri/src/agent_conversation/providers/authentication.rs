@@ -129,7 +129,8 @@ pub(crate) fn sign_in_method(initialize: &Value) -> Option<String> {
 }
 
 pub(crate) fn sign_in_needed(provider: AgentConversationProvider) -> String {
-    format!("{provider:?} needs you to sign in. Sign in with the {provider:?} CLI where this session runs, then send again.")
+    let name = &provider.descriptor().display_name;
+    format!("{name} needs you to sign in. Sign in with the {name} CLI where this session runs, then send again.")
 }
 
 // A failed prompt's error, in words when it asks for sign-in.
