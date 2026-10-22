@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { FOLDS_KEY, isFoldOpen, readFolds, writeFolds } from '../src/lib/shell/board/boardQuestionFolds.ts';
+import { FOLDS_KEY, MAX_FOLDS, isFoldOpen, readFolds, writeFolds } from '../src/lib/shell/board/boardQuestionFolds.ts';
 
 const memory = (): Storage => {
   const data = new Map<string, string>();
@@ -21,20 +21,19 @@ const memory = (): Storage => {
 }
 { // a_stored_fold_wins_over_the_default
   const storage = memory();
-  writeFolds(storage, { 'mac:1': false, 'mac:2': true }, ['mac:1', 'mac:2'], ['mac']);
+  writeFolds(storage, { 'mac:1': false, 'mac:2': true });
   const folds = readFolds(storage);
   assert.equal(isFoldOpen(folds, 'mac:1', false), false);
   assert.equal(isFoldOpen(folds, 'mac:2', true), true);
 }
-{ // ids_no_longer_on_the_board_are_dropped_on_write
+{ // only_the_newest_folds_are_kept
   const storage = memory();
-  writeFolds(storage, { 'mac:1': false, 'mac:9': false }, ['mac:1'], ['mac']);
-  assert.deepEqual(JSON.parse(storage.getItem(FOLDS_KEY) ?? ''), { 'mac:1': false });
-}
-{ // an_unreachable_machine_keeps_its_folds
-  const storage = memory();
-  writeFolds(storage, { 'mac:1': false, 'box:4': false }, ['mac:1'], ['mac']);
-  assert.deepEqual(JSON.parse(storage.getItem(FOLDS_KEY) ?? ''), { 'mac:1': false, 'box:4': false });
+  const folds = Object.fromEntries(Array.from({ length: MAX_FOLDS + 2 }, (_, i) => [`mac:${i}`, false]));
+  writeFolds(storage, folds);
+  const kept = readFolds(storage);
+  assert.equal(Object.keys(kept).length, MAX_FOLDS);
+  assert.equal('mac:0' in kept || 'mac:1' in kept, false);
+  assert.equal(kept[`mac:${MAX_FOLDS + 1}`], false);
 }
 { // a_damaged_value_reads_as_no_folds
   const storage = memory();

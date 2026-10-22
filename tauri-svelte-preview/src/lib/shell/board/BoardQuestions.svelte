@@ -41,8 +41,9 @@
 
   const isOpen = (row: Row): boolean => isFoldOpen(folds, row.id, row.q.answered_at_ms !== null);
   function fold(row: Row, value: boolean): void {
+    delete folds[row.id];
     folds[row.id] = value;
-    writeFolds(localStorage, folds, rows.map((each) => each.id), boards.map((board) => board.machine));
+    writeFolds(localStorage, folds);
   }
   function toggleAnswered(): void {
     answeredOpen = !answeredOpen;

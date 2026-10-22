@@ -15,10 +15,10 @@ export function readFolds(storage: Storage): Folds {
   }
 }
 
-/** Saves the folds of the questions still on the board and drops the rest. A machine missing from
- *  this read (unreachable for now) keeps its folds, since its questions weren't listed. Ids are `<machine>:<n>`. */
-export function writeFolds(storage: Storage, folds: Folds, boardIds: string[], machines: string[]): void {
-  const listed = (id: string): boolean => machines.includes(id.slice(0, id.lastIndexOf(':')));
-  const kept = Object.fromEntries(Object.entries(folds).filter(([id]) => boardIds.includes(id) || !listed(id)));
-  storage.setItem(FOLDS_KEY, JSON.stringify(kept));
+/** The board lists only some of each machine's questions (and none from an unreachable one), so a
+ *  missing id isn't gone. Instead of pruning, keep the newest MAX_FOLDS entries. */
+export const MAX_FOLDS = 500;
+
+export function writeFolds(storage: Storage, folds: Folds): void {
+  storage.setItem(FOLDS_KEY, JSON.stringify(Object.fromEntries(Object.entries(folds).slice(-MAX_FOLDS))));
 }
