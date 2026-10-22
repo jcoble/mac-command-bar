@@ -290,7 +290,7 @@ export interface GitService {
   unstagePaths(paths: string[]): Promise<void>;
   /** Commit the staged changes using `state.commitMessage` unless one is given. */
   commit(message?: string): Promise<void>;
-  setAmend(on: boolean): Promise<void>;
+  setAmend(on: boolean): void;
   /** Rewrite the last commit with the staged changes, then turn Amend off. `setAmend(true)` fills an empty box with the last message. */
   amendCommit(message?: string): Promise<void>;
   /**
@@ -335,7 +335,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
    * is cleared, or the repository changes. */
   let diffRead = new AbortController();
   let historySurfaceVisible = false;
-  const amend = createGitAmend(state, backend);
+  const amend = createGitAmend(state);
   let sourceControlSyncGeneration = 0;
 
   function publishGitDiagnostics(): void {

@@ -242,33 +242,33 @@ function makeService() {
 {
   const { backend, state, git } = makeService();
   await settle();
-  backend.readHistory = async () => ({ commits: [{ subject: 'fix the parser' }] });
+  state.history = [{ subject: 'fix the parser' }];
 
-  await git.setAmend(true);
+  git.setAmend(true);
   assert.equal(state.amend, true);
   assert.equal(state.commitMessage, 'fix the parser', 'an empty box gets the last commit message');
 
-  await git.setAmend(false);
+  git.setAmend(false);
   assert.equal(state.amend, false);
   assert.equal(state.commitMessage, '', 'turning it off takes back only the text it put there');
 
   state.commitMessage = 'my own words';
-  await git.setAmend(true);
+  git.setAmend(true);
   assert.equal(state.commitMessage, 'my own words', 'text the user typed is never overwritten');
-  await git.setAmend(false);
+  git.setAmend(false);
   assert.equal(state.commitMessage, 'my own words');
 
-  await git.setAmend(true);
+  git.setAmend(true);
   state.commitMessage = '';
-  await git.setAmend(false);
+  git.setAmend(false);
   state.commitMessage = 'my own words';
-  await git.setAmend(true);
-  await git.setAmend(false);
+  git.setAmend(true);
+  git.setAmend(false);
   assert.equal(state.commitMessage, 'my own words', 'a stale prefill is not remembered');
 
   // Amending with the prefilled message untouched keeps the whole message, body included.
   state.commitMessage = '';
-  await git.setAmend(true);
+  git.setAmend(true);
   backend.calls.length = 0;
   await git.amendCommit();
   assert.deepEqual(
@@ -279,7 +279,7 @@ function makeService() {
   assert.equal(state.amend, false);
 
   // An edited prefill is sent as the new message.
-  await git.setAmend(true);
+  git.setAmend(true);
   state.commitMessage = 'fix the lexer';
   backend.calls.length = 0;
   await git.amendCommit();
@@ -288,42 +288,32 @@ function makeService() {
     [['amend', '/repo', 'fix the lexer']]
   );
 
-  // A history read that finishes after the repository changed must not fill the new repository's box.
-  state.commitMessage = '';
-  state.amend = false;
-  let finish;
-  backend.readHistory = () => new Promise((resolve) => (finish = resolve));
-  const slow = git.setAmend(true);
-  state.root = '/other';
-  finish({ commits: [{ subject: 'from the first repository' }] });
-  await slow;
-  assert.equal(state.commitMessage, '', 'a read for another repository is dropped');
-  state.root = '/repo';
-
   // A prefill remembered from another repository is not mistaken for this repository's draft.
-  backend.readHistory = async () => ({ commits: [{ subject: 'same subject' }] });
   state.commitMessage = '';
-  state.amend = false;
-  await git.setAmend(true);
+  git.setAmend(true);
   state.root = '/other';
   state.amend = false;
-  state.commitMessage = 'same subject';
-  await git.setAmend(true);
+  state.commitMessage = 'fix the parser';
+  git.setAmend(true);
   backend.calls.length = 0;
   await git.amendCommit();
   assert.deepEqual(
     backend.calls.filter(([name]) => name === 'amend'),
-    [['amend', '/other', 'same subject']],
+    [['amend', '/other', 'fix the parser']],
     'a draft that matches another repository’s prefill is sent as typed'
   );
   state.root = '/repo';
 
-  // A history that cannot be read leaves the box empty; an empty amend still works.
-  backend.readHistory = async () => {
-    throw new Error('no history');
-  };
-  await git.setAmend(true);
+  // No loaded history, or a file's history, leaves the box empty; an empty amend still works.
+  state.commitMessage = '';
+  state.history = [];
+  git.setAmend(true);
   assert.equal(state.amend, true);
+  assert.equal(state.commitMessage, '');
+  state.history = [{ subject: 'fix the parser' }];
+  state.historyPath = 'src/a.ts';
+  git.setAmend(false);
+  git.setAmend(true);
   assert.equal(state.commitMessage, '');
 }
 
