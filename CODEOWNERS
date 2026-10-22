@@ -1,0 +1,55 @@
+# Protected paths: a change to any of these needs the owner's tap before a workflow PR merges.
+# tauri-svelte-preview/scripts/mergeGate.ts reads this file from main. Patterns with a slash are
+# anchored at the repo root, so every path is written in full. codeowners.test.ts checks that each
+# provider in providers/descriptors.json has its settings and instruction files listed here.
+
+# Workflows, CI, git hooks and this file
+/.assembly/ @jcoble
+/.github/ @jcoble
+/.githooks/ @jcoble
+/CODEOWNERS @jcoble
+
+# Agent settings and the instruction files agents read
+/.mcp.json @jcoble
+/.claude/ @jcoble
+/.codex/ @jcoble
+/.grok/ @jcoble
+/opencode.json @jcoble
+/.opencode/ @jcoble
+AGENTS.md @jcoble
+CLAUDE.md @jcoble
+GEMINI.md @jcoble
+.agents/ @jcoble
+.agent/ @jcoble
+
+# Proof mode
+/tauri-svelte-preview/src-tauri/src/proof_mode.rs @jcoble
+/scripts/build-test-app.sh @jcoble
+/scripts/launch-test-app.sh @jcoble
+
+# Checks and the release build
+/scripts/ci-checks.sh @jcoble
+/scripts/measure.sh @jcoble
+/.nvmrc @jcoble
+/tauri-svelte-preview/scripts/ @jcoble
+/tauri-svelte-preview/src-tauri/tauri.conf.json @jcoble
+/tauri-svelte-preview/patches/ @jcoble
+
+# Guard code
+/tauri-svelte-preview/src-tauri/src/workflow/ @jcoble
+/tauri-svelte-preview/src-tauri/src/agent_conversation/messaging.rs @jcoble
+/tauri-svelte-preview/src-tauri/src/agent_conversation/messaging/ @jcoble
+/tauri-svelte-preview/src-tauri/src/agent_conversation/providers/ @jcoble
+
+# Test-runner and compiler config
+/tauri-svelte-preview/vite.config.ts @jcoble
+/tauri-svelte-preview/svelte.config.js @jcoble
+/tauri-svelte-preview/tsconfig.json @jcoble
+/tauri-svelte-preview/pnpm-workspace.yaml @jcoble
+/tauri-svelte-preview/src-tauri/build.rs @jcoble
+**/.cargo/ @jcoble
+**/rust-toolchain* @jcoble
+
+# Database migrations
+/tauri-svelte-preview/migrations/ @jcoble
+/infrastructure/notion-oauth/migrations/ @jcoble

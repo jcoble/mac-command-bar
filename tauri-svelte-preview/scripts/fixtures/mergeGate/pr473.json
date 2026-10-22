@@ -1,0 +1,102 @@
+{
+ "_note": "Recorded from PR #473 on 2026-10-22, trimmed to the fields mergeGate.ts reads. compare: behind_by was 26 after later merges; set to 0 so the PR is current. Keys are matched against the gh arguments.",
+ "pr view": {
+  "baseRefName": "main",
+  "headRefOid": "27dc945d7b0322bbf7f1433deb8db7b931b9ca51",
+  "number": 473,
+  "statusCheckRollup": [
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-10-22T14:18:03Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/jcoble/mac-command-bar/actions/runs/39794355452/job/119877855875",
+    "name": "lifecycle-checks",
+    "startedAt": "2026-10-22T14:17:10Z",
+    "status": "COMPLETED",
+    "workflowName": "Lifecycle checks"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-10-22T14:17:18Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/jcoble/mac-command-bar/actions/runs/39794355456/job/119877885173",
+    "name": "sync",
+    "startedAt": "2026-10-22T14:17:14Z",
+    "status": "COMPLETED",
+    "workflowName": "Notion task sync"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-10-22T14:38:38Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/jcoble/mac-command-bar/actions/runs/39797434654/job/119888263704",
+    "name": "sync",
+    "startedAt": "2026-10-22T14:38:33Z",
+    "status": "COMPLETED",
+    "workflowName": "Notion task sync"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-10-22T14:17:11Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/jcoble/mac-command-bar/actions/runs/39794347393/job/119877830050",
+    "name": "sync",
+    "startedAt": "2026-10-22T14:17:07Z",
+    "status": "COMPLETED",
+    "workflowName": "Notion task sync"
+   },
+   {
+    "__typename": "CheckRun",
+    "completedAt": "2026-10-22T14:32:03Z",
+    "conclusion": "SUCCESS",
+    "detailsUrl": "https://github.com/jcoble/mac-command-bar/actions/runs/39794355452/job/119877855217",
+    "name": "rust-checks",
+    "startedAt": "2026-10-22T14:17:10Z",
+    "status": "COMPLETED",
+    "workflowName": "Lifecycle checks"
+   }
+  ]
+ },
+ "/compare/": {
+  "behind_by": 0,
+  "main": "7a79d897d35e507fd6fac9a660834e8f273e4137"
+ },
+ "api graphql": [
+  {
+   "data": {
+    "repository": {
+     "pullRequest": {
+      "reviewThreads": {
+       "pageInfo": {
+        "hasNextPage": false,
+        "endCursor": null
+       },
+       "nodes": []
+      }
+     }
+    }
+   }
+  }
+ ],
+ "/issues/": [
+  [
+   {
+    "user": {
+     "login": "chatgpt-codex-connector[bot]"
+    },
+    "body": "<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {\"code_review\":{\"commit_sha\":\"27dc945d7b0322bbf7f1433deb8db7b931b9ca51\",\"has_any_findings\":false,\"has_unresolved_findings\":false,\"status\":\"completed\"},\"security_review\":{\"commit_sha\":null,\"has_any_findings\":null,\"has_unresolved_findings\":null,\"status\":null}} -->\n\n## Codex Review Summary\n\nThis comment shows the latest Codex review activity on this pull request.\n\n| Review | Status | Commit | Review trigger |\n| --- | --- | --- | --- |\n| \ud83d\udcdd **Code Review** | \u2705 **Completed** <relative-time datetime=\"2026-10-22T14:17:44.556408Z\">2026-10-22T14:17:44.556408Z</relative-time> | `27dc945` | PR opened |\n\n\n\n<details> <summary>\u2139\ufe0f About Codex in GitHub</summary>\n<br/>\n\n[Your team has set up Codex to review pull requests in this repo](https://chatgpt.com/codex/cloud/settings/general). Reviews are triggered when you\n- Open a pull request for review\n- Mark a draft as ready\n- Comment \"@codex review\" or \"@codex security review\".\n\nCodex reacts with \ud83d\udc40 while any review is running, comments if it has suggestions, and reacts with \ud83d\udc4d once all reviews finish with no findings.\n\n</details>"
+   }
+  ]
+ ],
+ "/pulls/": [
+  [
+   {
+    "filename": "tauri-svelte-preview/src/lib/shell/board/BoardCards.svelte",
+    "status": "modified",
+    "additions": 1,
+    "deletions": 1,
+    "patch": "@@ -35,7 +35,7 @@\n \n   type Entry = { id: string; machine: string; card: BoardCard };\n   const SECTIONS = [\n-    { state: 'needs_you', label: 'On hold \u00b7 needs you', hint: 'Only you can move these', dot: 'bg-(--color-attention)' },\n+    { state: 'needs_you', label: 'On hold \u00b7 needs you', hint: 'Waiting on you; the orchestrator clears them', dot: 'bg-(--color-attention)' },\n     { state: 'running', label: 'Running', hint: 'Agents are working on these', dot: 'bg-(--color-live)' },\n     { state: 'in_review', label: 'In review', hint: 'Checks or a reviewer have it', dot: 'bg-(--color-merged)' }\n   ] as const;"
+   }
+  ]
+ ]
+}
