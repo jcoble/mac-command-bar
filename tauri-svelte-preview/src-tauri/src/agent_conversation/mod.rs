@@ -6,7 +6,7 @@ pub mod capabilities;
 pub mod handoff;
 pub mod manager;
 pub mod messaging;
-mod normalization;
+pub(crate) mod normalization;
 mod phone;
 pub mod prompt_content;
 pub mod protocol;

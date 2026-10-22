@@ -1,4 +1,5 @@
 pub(in crate::agent_conversation) mod tools;
+pub(crate) mod turn_usage;
 
 use serde_json::Value;
 

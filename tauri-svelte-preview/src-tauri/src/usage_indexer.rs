@@ -172,8 +172,8 @@ impl UsageDb {
     fn delete_claude_source_events(&self, source_key: &str) -> Result<(), String> {
         self.connection()?
             .execute(
-                "DELETE FROM usage_events WHERE provider = 'claude' AND source_kind = 'claude-jsonl' AND source_key = ?",
-                [source_key],
+                "DELETE FROM usage_events WHERE source_kind = ?1 AND source_key = ?2",
+                ["claude-jsonl", source_key],
             )
             .map(|_| ())
             .map_err(|error| self.database_error("could not clear Claude usage history", error))
