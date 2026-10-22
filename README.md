@@ -35,7 +35,7 @@ Assembly runs on your Mac. You can also keep projects, Git, agent sessions, and 
 
 Signed Mac builds are published on [GitHub Releases](https://github.com/jcoble/mac-command-bar/releases) under `assembly-v*` tags. The release workflow builds on macOS only ([`.github/workflows/release.yml`](.github/workflows/release.yml)).
 
-The app updates itself. Open **Settings → Updates**, press **Check for updates**, then **Install update**. It downloads the signed release, verifies it, installs it, and restarts. A development build (`pnpm app:dev`) skips this and tells you to pull the checkout instead.
+The app updates itself. Open **Settings → Updates**, press **Check for updates**, then **Install update**. It downloads the signed release, verifies it, installs it, and restarts. A development build (`pnpm app:dev`) has **Build latest (dev)** there instead: it pulls `main` into its checkout (refusing if the checkout is on another branch or has uncommitted changes), builds, deploys the backend to every saved machine through **Deploy from this checkout**, then quits and reopens Assembly on the new build. If the build fails, the running app stays as it is. The log is in the app's log folder as `build-latest.log`.
 
 The same screen updates the provider adapters, and the Codex and Claude command-line tools on this Mac, separately from the app.
 
@@ -191,7 +191,7 @@ pnpm --dir tauri-svelte-preview install --frozen-lockfile
 pnpm app:dev
 ```
 
-`pnpm app:dev` runs `tauri-svelte-preview/scripts/dev-app.sh`. It prepares the provider adapters if they are missing, starts Vite on `127.0.0.1:5177` (or attaches to one already running from this checkout), builds the Rust app, and opens Assembly. Frontend edits reload on their own. After Rust changes, stop it with **Ctrl+C** and start it again.
+`pnpm app:dev` runs `tauri-svelte-preview/scripts/dev-app.sh`. It prepares the provider adapters if they are missing, starts Vite on `127.0.0.1:5177` (or attaches to one already running from this checkout), builds the Rust app, and opens Assembly. Frontend edits reload on their own. Rust changes are not watched: after them, stop it with **Ctrl+C** and start it again, or use **Build latest (dev)**.
 
 On `main`, `pnpm app:update` pulls with fast-forward only, installs the locked dependencies, and launches the dev app.
 

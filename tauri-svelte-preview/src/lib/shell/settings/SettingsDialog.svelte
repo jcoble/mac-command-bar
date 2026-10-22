@@ -20,6 +20,7 @@
   import HelperSessionSettings from '$lib/shell/settings/HelperSessionSettings.svelte';
   import ProviderCliUpdateControl from '$lib/shell/providers/ProviderCliUpdateControl.svelte';
   import ProviderUpdateControl from '$lib/shell/providers/ProviderUpdateControl.svelte';
+  import BuildLatestControl from '$lib/shell/settings/BuildLatestControl.svelte';
   import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import { Slider } from '$lib/components/ui/slider/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
@@ -294,9 +295,9 @@
       id: 'app-update-install',
       section: 'updates',
       card: 'Assembly',
-      title: 'Install update',
-      description: 'Download, verify, install and restart Assembly.',
-      keywords: 'download restart upgrade'
+      title: import.meta.env.DEV ? 'Build latest (dev)' : 'Install update',
+      description: import.meta.env.DEV ? 'Pull main, build, deploy the backend to every saved machine, and restart Assembly.' : 'Download, verify, install and restart Assembly.',
+      keywords: import.meta.env.DEV ? 'build latest pull main deploy restart' : 'download restart upgrade'
     },
     {
       id: 'provider-updates',
@@ -1098,23 +1099,18 @@
 {/snippet}
 
 {#snippet appUpdateInstallControl()}
-  <Button
+  {#if import.meta.env.DEV}<BuildLatestControl />{:else}<Button
     variant="secondary"
     size="sm"
     disabled={appUpdateState.phase !== 'available'}
     onclick={() => void installAppUpdate(updateOwner.signal)}
   >
     {#if appUpdateState.phase === 'installing'}<WorkingSpinner size={12} />Installing…{:else}Install and restart{/if}
-  </Button>
+  </Button>{/if}
 {/snippet}
 
-{#snippet providerUpdateControl()}
-  <ProviderUpdateControl />
-{/snippet}
-
-{#snippet providerCliUpdateControl()}
-  <ProviderCliUpdateControl />
-{/snippet}
+{#snippet providerUpdateControl()}<ProviderUpdateControl />{/snippet}
+{#snippet providerCliUpdateControl()}<ProviderCliUpdateControl />{/snippet}
 
 {#snippet helperVendorControl()}
   <SettingsSelect

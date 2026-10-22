@@ -33,6 +33,7 @@
   import type { ProblemsLocation } from '$lib/shell/settings/settingsStore.svelte';
   import { checkForProviderUpdates } from '$lib/shell/providers/providerUpdateService.svelte';
   import { checkForAppUpdate } from '$lib/shell/appUpdateService.svelte';
+  import { listenToBuildLatest } from '$lib/shell/buildLatestService.svelte';
 
   /** The real settings surface, referred to by type only — no load yet. */
   type SettingsDialogComponent =
@@ -60,6 +61,7 @@
   onMount(() => {
     void checkForAppUpdate(updateOwner.signal, true);
     void checkForProviderUpdates(updateOwner.signal);
+    void listenToBuildLatest(updateOwner.signal);
   });
 
   onDestroy(() => {

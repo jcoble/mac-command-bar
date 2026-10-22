@@ -35,4 +35,6 @@ if [ "$#" -eq 0 ]; then
   fi
 fi
 
-exec pnpm exec tauri dev "$@"
+# No file watcher: a pull that touches Rust (Build latest pulls main) must not make tauri dev
+# kill the app mid-run. Restart after Rust edits, or use Build latest.
+exec pnpm exec tauri dev "$@" --no-watch
