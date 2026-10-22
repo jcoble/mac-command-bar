@@ -6,6 +6,8 @@ use crate::usage_indexer::UsageIndexer;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+pub mod otel;
+
 #[derive(Debug, Clone, Default)]
 pub struct UsageHistoryState;
 
