@@ -1170,13 +1170,7 @@ fn resource_terminal_name(session: &crate::terminal::TerminalSessionInfo) -> Str
 fn resource_provider_label(
     provider: crate::agent_conversation::protocol::AgentConversationProvider,
 ) -> &'static str {
-    match provider {
-        crate::agent_conversation::protocol::AgentConversationProvider::Codex => "Codex",
-        crate::agent_conversation::protocol::AgentConversationProvider::Claude => "Provider",
-        crate::agent_conversation::protocol::AgentConversationProvider::Antigravity => {
-            "Antigravity"
-        }
-    }
+    &provider.descriptor().display_name
 }
 
 type ResourceIdentity = (Option<String>, Option<String>);
