@@ -6,6 +6,9 @@
   animates: a running step is a static ring with its elapsed time.
 -->
 <script lang="ts">
+  import Maximize2 from '@lucide/svelte/icons/maximize-2';
+
+  import { closeupKind } from '../workflowCloseup.ts';
   import { layoutWorkflowMap } from '../workflowMapLayout.ts';
   import { shortDuration, stepGlyph } from '../workflowBoard.ts';
   import { workflowErrorText, type WorkflowNodeRunRecord, type WorkflowRunRecord } from '../workflowTypes.ts';
@@ -16,9 +19,11 @@
     selectedId: string | null;
     now: number;
     onSelect: (nodeId: string) => void;
+    /** Opens a review or proof step's close-up. */
+    onCloseup: (nodeId: string) => void;
   }
 
-  let { run, selectedId, now, onSelect }: Props = $props();
+  let { run, selectedId, now, onSelect, onCloseup }: Props = $props();
 
   const BOX_W = 184, BOX_H = 104, GAP_X = 44, GAP_Y = 24, TOP = 96;
   const layout = $derived(layoutWorkflowMap(run.definition.nodes));
@@ -101,6 +106,7 @@
       {@const at = place.get(definition.id)}
       {@const node = nodeOf(definition.id)}
       {@const glyph = node ? stepGlyph(node) : 'waiting'}
+      {@const closeup = closeupKind(run, definition.id)}
       {#if at}
         <button
           type="button"
@@ -110,12 +116,23 @@
           aria-pressed={selectedId === definition.id}
           onclick={() => onSelect(definition.id)}
         >
-          <span class="flex min-w-0 items-center gap-1.5 text-[13px] font-semibold">
+          <span class="flex min-w-0 items-center gap-1.5 text-[13px] font-semibold" class:pr-6={closeup}>
             <StepGlyphIcon {glyph} /><span class="truncate">{definition.title}</span>
           </span>
           <span class="truncate text-[13px] text-muted-foreground">{subtitle(definition.step, node)}</span>
           <span class="line-clamp-2 text-[13px] text-muted-foreground tabular-nums [overflow-wrap:anywhere]">{detail(node)}</span>
         </button>
+        {#if closeup}
+          <!-- A sibling of the box, not inside it: a button cannot hold another button. -->
+          <button
+            type="button"
+            class="absolute flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-background/60 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+            style:left={`${at.x + BOX_W - 28}px`} style:top={`${at.y + 4}px`}
+            aria-label={`Close-up of ${definition.title}`}
+            title="Close-up"
+            onclick={() => onCloseup(definition.id)}
+          ><Maximize2 class="size-3.5" aria-hidden="true" /></button>
+        {/if}
       {/if}
     {/each}
   </div>
