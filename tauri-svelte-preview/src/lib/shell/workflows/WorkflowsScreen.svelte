@@ -44,7 +44,7 @@
   import WorkflowCost from './components/WorkflowCost.svelte';
   import WorkflowMap from './components/WorkflowMap.svelte';
   import WorkflowProject from './components/WorkflowProject.svelte';
-  import { projectProgress } from './workflowProject.ts';
+  import { projectIndex, projectProgress } from './workflowProject.ts';
   import WorkflowStepPanel from './components/WorkflowStepPanel.svelte';
 
   interface Props {
@@ -71,7 +71,7 @@
   let runUsage = $state<WorkflowUsageRow[] | null>(null);
   const openRun = $derived(runs.find((run) => run.id === openRunId) ?? null);
   /** The open run's slices, when it is a project with child runs. */
-  const openProject = $derived(openRun ? projectProgress(openRun, runs) : null);
+  const openProject = $derived(openRun ? projectProgress(openRun, projectIndex(runs)) : null);
   /** The step whose details show: the one chosen on the Map, else where the run is. */
   const shownStep = $derived(openRun
     ? openRun.nodes.find((node) => node.nodeId === chosenStepId) ?? currentStep(openRun) : null);

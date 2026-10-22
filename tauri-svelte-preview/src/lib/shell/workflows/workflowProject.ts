@@ -43,15 +43,38 @@ export function runGlyph(run: WorkflowRunRecord): StepGlyph {
   return 'waiting';
 }
 
-/** The project's slices from `runs`, or null when no run names it as its parent. */
-export function projectProgress(project: WorkflowRunRecord, runs: readonly WorkflowRunRecord[]): ProjectProgress | null {
+/** The run list read once: each parent task's child runs, and when each task's newest run was created. */
+export interface ProjectIndex {
+  children: Map<string, WorkflowRunRecord[]>;
+  newest: Map<string, number>;
+}
+
+/** Built once per change of the run list; every card then reads its project from it. */
+export function projectIndex(runs: readonly WorkflowRunRecord[]): ProjectIndex {
+  const children = new Map<string, WorkflowRunRecord[]>();
+  const newest = new Map<string, number>();
+  for (const run of runs) {
+    const key = runTask(run).key;
+    if (!key) continue;
+    newest.set(key, Math.max(newest.get(key) ?? run.createdAtMs, run.createdAtMs));
+    const parent = parentTask(run);
+    if (!parent) continue;
+    const siblings = children.get(parent);
+    if (siblings) siblings.push(run);
+    else children.set(parent, [run]);
+  }
+  return { children, newest };
+}
+
+/** The project's slices, or null when no run names it as its parent. */
+export function projectProgress(project: WorkflowRunRecord, index: ProjectIndex): ProjectProgress | null {
   const key = runTask(project).key;
   // A project run again (say after its plan was sent back) leaves the slices to its latest run.
-  if (!key || runs.some((run) => runTask(run).key === key && run.createdAtMs > project.createdAtMs)) return null;
+  if (!key || (index.newest.get(key) ?? 0) > project.createdAtMs) return null;
   const latest = new Map<string, { first: number; run: WorkflowRunRecord }>();
-  for (const run of runs) {
+  for (const run of index.children.get(key) ?? []) {
     const task = runTask(run).key;
-    if (run.id === project.id || parentTask(run) !== key || !task) continue;
+    if (run.id === project.id || !task) continue;
     const seen = latest.get(task);
     latest.set(task, {
       first: Math.min(seen?.first ?? run.createdAtMs, run.createdAtMs),
@@ -69,8 +92,8 @@ export function projectProgress(project: WorkflowRunRecord, runs: readonly Workf
 export const sliceCount = (progress: ProjectProgress): string => `${progress.done} / ${progress.total} slices`;
 
 /** A project's Board column is its current slice's; any other run's is its own. */
-export function projectColumn(run: WorkflowRunRecord, runs: readonly WorkflowRunRecord[]): BoardColumnId {
-  const progress = projectProgress(run, runs);
+export function projectColumn(run: WorkflowRunRecord, index: ProjectIndex): BoardColumnId {
+  const progress = projectProgress(run, index);
   if (!progress) return boardColumn(run);
   return progress.current ? boardColumn(progress.current.run) : 'done';
 }

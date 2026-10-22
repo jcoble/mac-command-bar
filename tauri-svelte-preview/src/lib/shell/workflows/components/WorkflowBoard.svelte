@@ -10,7 +10,7 @@
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { BOARD_COLUMNS, currentStep, runTask, shortDuration, stepGlyph, type BoardColumnId } from '../workflowBoard.ts';
   import { workflowErrorText, type WorkflowRunRecord } from '../workflowTypes.ts';
-  import { projectColumn, projectProgress, sliceCount } from '../workflowProject.ts';
+  import { projectColumn, projectIndex, projectProgress, sliceCount } from '../workflowProject.ts';
   import StepGlyphIcon from './StepGlyphIcon.svelte';
 
   interface Props {
@@ -39,9 +39,11 @@
   const shown = $derived(runs.filter((run) =>
     (!filters.workflow?.length || filters.workflow.includes(run.definition.name))
     && (!filters.starter?.length || filters.starter.includes(startedBy(run)))));
+  /** Who is whose parent, read once per change of the runs. */
+  const index = $derived(projectIndex(runs));
   const byColumn = $derived.by(() => {
     const columns = new Map<BoardColumnId, WorkflowRunRecord[]>(BOARD_COLUMNS.map((column) => [column.id, []]));
-    for (const run of [...shown].sort((a, b) => b.updatedAtMs - a.updatedAtMs)) columns.get(projectColumn(run, runs))?.push(run);
+    for (const run of [...shown].sort((a, b) => b.updatedAtMs - a.updatedAtMs)) columns.get(projectColumn(run, index))?.push(run);
     return columns;
   });
   const active = $derived(shown.filter((run) => !['completed', 'cancelled', 'failed'].includes(run.state)).length);
@@ -82,7 +84,7 @@
       </h3>
       {#each cards as run (run.id)}
         {@const task = runTask(run)}
-        {@const project = projectProgress(run, runs)}
+        {@const project = projectProgress(run, index)}
         <!-- A project card shows the step its current slice is at. -->
         {@const stepRun = project?.current?.run ?? run}
         {@const step = currentStep(stepRun)}
