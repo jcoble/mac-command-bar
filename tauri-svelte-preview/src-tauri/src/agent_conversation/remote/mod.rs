@@ -5536,7 +5536,7 @@ mod provider_restart_tests {
             }
         }
         let state = open();
-        assert_eq!(call(&state, "listFiles", json!({"repoRoot": repo})).await, json!([".assembly/workflows/demo.yml"]));
+        assert_eq!((call(&state, "listFiles", json!({"repoRoot": repo})).await, call(&state, "usage", json!({"runId": null})).await), (json!([".assembly/workflows/demo.yml"]), json!([])));
         let run = call(&state, "create", json!({"repoRoot": repo, "workflowPath": ".assembly/workflows/demo.yml",
             "task": {"key": "TSK-9003", "title": "Remote demo", "body": "Prove remote runs"}, "idempotencyKey": "create"})).await;
         let run_id = run["id"].as_str().unwrap().to_string();

@@ -68,6 +68,8 @@
     messagesUnread: number;
     onMessagesSeen(): void;
     onShowRunMessages(runId: string, label: string): void;
+    /** Opens the full Workflows screen. */
+    onOpenWorkflows(): void;
   }
   let {
     visible,
@@ -95,7 +97,8 @@
     onNewSessionHere,
     messagesUnread,
     onMessagesSeen,
-    onShowRunMessages
+    onShowRunMessages,
+    onOpenWorkflows
   }: Props = $props();
 
   // While another project is viewed, Files and Git read it and nothing there can move the session.
@@ -173,7 +176,7 @@
     {:else if visible && activeId === 'context'}
       <div class="panel-body showing"><SessionContextPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'agents'}
-      <div class="panel-body showing"><AgentsPanel visible={true} {root} {ownedId} {messagesUnread} {onMessagesSeen} {onShowRunMessages} /></div>
+      <div class="panel-body showing"><AgentsPanel visible={true} {root} {ownedId} {messagesUnread} {onMessagesSeen} {onShowRunMessages} {onOpenWorkflows} /></div>
     {:else if visible && activeId === 'history'}
       <div class="panel-body showing">
         <HistoryPanel visible={true} {root} {ownedId} />

@@ -73,6 +73,8 @@ export interface WorkflowDefinitionV1 {
   name: string;
   description: string;
   trigger: unknown;
+  /** The file's `limits`, such as `max_rounds`. */
+  limits?: Record<string, unknown>;
   inputs: unknown[];
   roles: AgentRoleDefinition[];
   nodes: WorkflowNodeDefinition[];
@@ -100,6 +102,8 @@ export interface WorkflowNodeDefinition {
   id: string;
   title: string;
   roleId: string;
+  /** The step as written in the workflow file: `review`, `on_fail`, `run`, `agent`. */
+  step?: Record<string, unknown>;
   dependsOn: string[];
   condition: unknown | null;
   fanOut: unknown | null;
@@ -542,4 +546,18 @@ export function workflowErrorText(error: unknown): string {
   } catch {
     return text;
   }
+}
+
+/** One step attempt's usage with one model (`read_workflow_usage`); `nodeRunId` is `<run>:<step>:<attempt>`. */
+export interface WorkflowUsageRow {
+  nodeRunId: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** What the provider reported; null when it reports no cost. */
+  reportedCostMicros: number | null;
+  /** Tokens times the rate table; null when the model has no rate. */
+  estimatedCostMicros: number | null;
 }

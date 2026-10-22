@@ -142,6 +142,39 @@ impl UsageDb {
     }
 }
 
+/// One workflow step attempt's usage with one model, for a run's Cost tab.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowUsageRow {
+    /// `<run id>:<step id>:<attempt>`.
+    pub node_run_id: String,
+    pub model: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    /// What the provider reported; None when it reports no cost (Codex).
+    pub reported_cost_micros: Option<i64>,
+    /// Tokens times `usage_rates`; None when the model has no rate.
+    pub estimated_cost_micros: Option<i64>,
+}
+
+impl UsageDb {
+    /// Usage of every workflow step attempt per model, oldest first; only one run's when `run_id` is given.
+    pub fn read_workflow_usage(&self, run_id: Option<&str>) -> Result<Vec<WorkflowUsageRow>, String> {
+        let connection = self.connection()?;
+        // A turn's reported cost sits on its largest model's row and covers all of the turn's models,
+        // so only rows of turns without a reported cost are estimated; a step whose rows are all covered reads 0.
+        let sql = format!("WITH events AS (SELECT e.*, EXISTS (SELECT 1 FROM usage_events c WHERE c.owned_id = e.owned_id AND c.turn_id = e.turn_id AND c.reported_cost_micros IS NOT NULL) AS covered FROM usage_events e WHERE e.node_run_id IS NOT NULL AND (?1 IS NULL OR e.node_run_id LIKE ?1 || ':%')), steps AS (SELECT node_run_id, model, {} AS rate_model, MIN(occurred_at_micros) AS first_at, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cache_read_tokens) AS cache_read_tokens, SUM(cache_write_tokens) AS cache_write_tokens, SUM(reported_cost_micros) AS reported, MIN(covered) AS all_covered, SUM(CASE WHEN covered THEN 0 ELSE input_tokens END) AS est_input, SUM(CASE WHEN covered THEN 0 ELSE output_tokens END) AS est_output, SUM(CASE WHEN covered THEN 0 ELSE cache_read_tokens END) AS est_cache_read, SUM(CASE WHEN covered THEN 0 ELSE cache_write_tokens END) AS est_cache_write FROM events GROUP BY node_run_id, model) SELECT node_run_id, steps.model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reported, CASE WHEN all_covered THEN 0 ELSE CAST(ROUND(est_input * rates.input_rate + est_output * rates.output_rate + est_cache_read * rates.cache_read_rate + est_cache_write * rates.cache_write_rate) AS INTEGER) END FROM steps LEFT JOIN usage_rates rates ON rates.model = steps.rate_model ORDER BY first_at, node_run_id, steps.model", super::NORMALIZED_RATE_MODEL_SQL);
+        let mut statement = connection.prepare(&sql).map_err(|error| self.database_error("could not read workflow usage", error))?;
+        let rows = statement.query_map([run_id], |row| Ok(WorkflowUsageRow {
+            node_run_id: row.get(0)?, model: row.get(1)?, input_tokens: row.get(2)?, output_tokens: row.get(3)?,
+            cache_read_tokens: row.get(4)?, cache_write_tokens: row.get(5)?, reported_cost_micros: row.get(6)?, estimated_cost_micros: row.get(7)?,
+        })).map_err(|error| self.database_error("could not read workflow usage", error))?;
+        rows.collect::<rusqlite::Result<_>>().map_err(|error| self.database_error("could not read workflow usage", error))
+    }
+}
+
 /// Brings a database made before ACP rows up to date: the new columns, and
 /// Codex transcript rows, whose input used to include cached input, stored as
 /// uncached input like every other row.
@@ -381,6 +414,35 @@ mod tests {
         db.insert_events_with_cursor(&events, None).unwrap();
         let rows = db.read_usage_provider_summary(&UsageFilter::default()).unwrap();
         assert_eq!((rows[0].unpriced_percent, rows[0].estimated_cost_micros), (0, Some(243)));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn workflow_usage_is_one_row_per_step_attempt_and_model_with_reported_and_estimated_cost() {
+        let (path, db) = open();
+        db.rebuild_rates(SEEDED_RATES).unwrap();
+        let mut build = turn("t1", vec![model("claude-opus-5-5", 100, 10, 0, 20)], Some(0.5));
+        build.node_run_id = Some("run-1:build:1".into());
+        db.insert_acp_turn(&build).unwrap();
+        let mut review = turn("t2", vec![model("gpt-6.1-sol", 1000, 0, 0, 100)], None);
+        (review.owned_id, review.node_run_id, review.occurred_at_micros) = ("agent-2".into(), Some("run-1:code-review:1".into()), build.occurred_at_micros + 1);
+        db.insert_acp_turn(&review).unwrap();
+        let mut other = turn("t3", vec![model("gpt-6.1-sol", 5, 0, 0, 5)], None);
+        (other.owned_id, other.node_run_id) = ("agent-3".into(), Some("run-10:build:1".into()));
+        db.insert_acp_turn(&other).unwrap();
+        let rows = db.read_workflow_usage(Some("run-1")).unwrap();
+        assert_eq!(rows.iter().map(|row| row.node_run_id.as_str()).collect::<Vec<_>>(), ["run-1:build:1", "run-1:code-review:1"]);
+        assert_eq!((rows[0].input_tokens, rows[0].output_tokens, rows[0].cache_read_tokens), (100, 20, 10));
+        assert_eq!(rows[0].reported_cost_micros, Some(500_000));
+        // 1000 in at $2 and 100 out at $10 per million tokens.
+        assert_eq!((rows[1].reported_cost_micros, rows[1].estimated_cost_micros), (None, Some(3000)));
+        assert_eq!(db.read_workflow_usage(None).unwrap().len(), 3);
+        // A turn's reported cost covers its smaller models too, so they get no estimate on top.
+        let mut two = turn("t4", vec![model("claude-opus-5-5", 900, 0, 0, 90), model("gpt-6.1-sol", 50, 0, 0, 5)], Some(0.3));
+        (two.owned_id, two.node_run_id) = ("agent-4".into(), Some("run-2:build:1".into()));
+        db.insert_acp_turn(&two).unwrap();
+        let rows = db.read_workflow_usage(Some("run-2")).unwrap();
+        assert_eq!(rows.iter().map(|row| (row.reported_cost_micros, row.estimated_cost_micros)).collect::<Vec<_>>(), [(Some(300_000), Some(0)), (None, Some(0))]);
         let _ = std::fs::remove_file(path);
     }
 

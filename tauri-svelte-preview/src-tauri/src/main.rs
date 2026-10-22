@@ -3352,6 +3352,7 @@ fn main() {
         .manage(browser::BrowserRegistry::default())
         .manage(resources::ResourceRegistry::default())
         .manage(usage_history::UsageHistoryState::default())
+        .manage(WorkflowWatch::default())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
@@ -3507,16 +3508,13 @@ fn main() {
                 let workflow_handle = workflow_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     if is_usage {
+                        // New usage changes the run's cost, which a watching screen reads again.
                         match workflow_events.list_runs() {
-                            Ok(runs) => {
-                                if let Some(run) = runs.into_iter().find(|run| run.nodes.iter()
-                                    .any(|node| node.owned_id == event.owned_id)) {
-                                    emit_workflow_run_updated(&workflow_handle, &run);
-                                }
-                            }
-                            Err(error) => debug_log::stderr_log!(
-                                "Could not show workflow usage: {error}"
-                            ),
+                            Ok(runs) => if let Some(run) = runs.into_iter().find(|run| run.nodes.iter().any(|node| node.owned_id == event.owned_id)) {
+                                emit_workflow_run_updated(&workflow_handle, &run);
+                                send_to_watchers(&workflow_handle, run);
+                            },
+                            Err(error) => debug_log::stderr_log!("Could not show workflow usage: {error}"),
                         }
                         return;
                     }
@@ -3550,6 +3548,7 @@ fn main() {
                     },
                 );
             }));
+            tauri::async_runtime::spawn(forward_run_changes(app.handle().clone(), workflow_engine.clone()));
             app.manage(workflow_engine);
             app.manage(remote_connection);
             app.manage(agent_runtime);
@@ -3685,7 +3684,7 @@ fn main() {
             resources::read_language_server_log,
             usage_current::read_current_provider_usage,
             usage_history::read_usage_summary,
-            usage_history::read_usage_breakdown,
+            usage_history::read_usage_breakdown, usage_history::read_workflow_usage,
             usage_history::read_usage_provider_summary,
             usage_history::read_usage_daily,
             usage_history::read_usage_daily_totals,
@@ -3702,6 +3701,7 @@ fn main() {
             list_orchestration_runs,
             record_orchestration_event,
             list_workflow_runs,
+            watch_workflow_runs,
             create_workflow_run,
             get_workflow_run,
             workflow_history,
