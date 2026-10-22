@@ -12,7 +12,7 @@
     "tauri-svelte-preview/scripts/nextTerminalService.test.ts": 1106,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/attachments.rs": 704,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/manager.rs": 15988,
-    "tauri-svelte-preview/src-tauri/src/agent_conversation/messaging.rs": 1068,
+    "tauri-svelte-preview/src-tauri/src/agent_conversation/messaging.rs": 1066,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/mod.rs": 1418,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/phone/mod.rs": 3021,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/protocol.rs": 958,
@@ -92,7 +92,6 @@
   "providerBranches": {
     "core/src/scanners/sessions.rs": 6,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/manager.rs": 32,
-    "tauri-svelte-preview/src-tauri/src/agent_conversation/messaging.rs": 2,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/history/transcript/mod.rs": 18,
     "tauri-svelte-preview/src-tauri/src/resources.rs": 3,
     "tauri-svelte-preview/src-tauri/src/usage_sources.rs": 1,

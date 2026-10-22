@@ -360,11 +360,8 @@ impl MessagingEndpoint {
             }
             Some("start_session") => {
                 let args = &tool_call["arguments"];
-                let provider = match args["provider"].as_str() {
-                    Some("codex") => AgentConversationProvider::Codex,
-                    Some("claude") => AgentConversationProvider::Claude,
-                    _ => return Err("provider must be codex or claude".into()),
-                };
+                let provider: AgentConversationProvider = serde_json::from_value(args["provider"].clone())
+                    .map_err(|_| "provider must be codex, claude or antigravity")?;
                 // The name goes into message labels, so it is one line.
                 let name = args["name"].as_str().map(str::trim)
                     .filter(|name| !name.is_empty() && !name.chars().any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')))
@@ -487,8 +484,8 @@ impl MessagingEndpoint {
                  "inputSchema":{"type":"object","properties":{}}},
                 {"name":"send_message","description":OWNER_AUTHORITY.to_string() + " Send a message to an Assembly session you may reach (see list_sessions), addressed by its handle (such as brisk-heron), its name, or its owned id; add @machine (brisk-heron@workbox-test) for a session on another machine. A handle never changes when the session is renamed.",
                  "inputSchema":{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}},
-                {"name":"start_session","description":"Start a Codex or Claude helper session in your project. It is listed with your agents, and its final reply is sent to you as a message when it finishes.",
-                 "inputSchema":{"type":"object","properties":{"provider":{"type":"string","enum":["codex","claude"]},
+                {"name":"start_session","description":"Start a Codex, Claude or Antigravity helper session in your project. It is listed with your agents, and its final reply is sent to you as a message when it finishes.",
+                 "inputSchema":{"type":"object","properties":{"provider":{"type":"string","enum":["codex","claude","antigravity"]},
                      "model":{"type":"string"},"prompt":{"type":"string"},"name":{"type":"string"}},"required":["provider","prompt","name"]}},
                 {"name":"workflow_format","description":"Read the reference for writing an Assembly workflow (.assembly/workflows/*.yml).",
                  "inputSchema":{"type":"object","properties":{}}},
@@ -689,8 +686,9 @@ mod tests {
             "arguments":{"provider":provider,"name":"Helper","prompt":"Look"}});
         assert_eq!(endpoint.handle("missing", start("codex")).await.unwrap_err(), "Unauthorized");
         endpoint.bind_store(&a.token, &store, None);
-        assert_eq!(endpoint.handle(&a.token, start("gemini")).await.unwrap_err(), "provider must be codex or claude");
+        assert_eq!(endpoint.handle(&a.token, start("gemini")).await.unwrap_err(), "provider must be codex, claude or antigravity");
         assert_eq!(endpoint.handle(&a.token, start("codex")).await.unwrap_err(), "Sessions cannot be started from here");
+        assert_eq!(endpoint.handle(&a.token, start("antigravity")).await.unwrap_err(), "Sessions cannot be started from here");
         let manager = AgentRuntimeManager::default();
         endpoint.bind_store(&a.token, &store, Some(manager));
         let error = endpoint.handle(&a.token, start("claude")).await.unwrap_err();
