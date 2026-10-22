@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 const SERVICE: &str = "assembly";
 const PROBE_NAME: &str = "backend-probe";
 
+/// One writer at a time: set and delete read the whole file, change it and write it back.
+static FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn check_name(name: &str) -> Result<(), String> {
     let mut chars = name.chars();
     let first_ok = chars.next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
@@ -102,10 +105,13 @@ fn keyring_get(name: &str) -> Result<Option<String>, String> {
     }
 }
 
+/// A keyring that is not there (headless Linux) has nothing to delete. One that is there but refuses
+/// (locked, access denied) is an error, because the credential would still be stored.
 fn keyring_delete(name: &str) -> Result<(), String> {
-    match keyring_entry(name)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(_) => Err("The keyring refused the delete.".to_string()),
+    let Ok(entry) = keyring_entry(name) else { return Ok(()) };
+    match entry.delete_credential() {
+        Err(keyring::Error::NoStorageAccess(_)) => Err("The keyring refused the delete.".to_string()),
+        _ => Ok(()),
     }
 }
 
@@ -116,12 +122,22 @@ fn set_with(
     keyring: impl FnOnce(&str, &str) -> Result<(), String>,
 ) -> Result<(), String> {
     check_name(name)?;
+    let _guard = FILE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if keyring(name, value).is_ok() {
-        return Ok(());
+        // The keyring now holds the newest value; a copy left in the file would shadow it.
+        return remove_from_file(file, name);
     }
     let mut secrets = load_file(file)?;
     secrets.0.insert(name.to_string(), value.to_string());
     save_file(file, &secrets)
+}
+
+fn remove_from_file(file: &Path, name: &str) -> Result<(), String> {
+    let mut secrets = load_file(file)?;
+    if secrets.0.remove(name).is_some() {
+        save_file(file, &secrets)?;
+    }
+    Ok(())
 }
 
 fn get_with(
@@ -130,10 +146,11 @@ fn get_with(
     keyring: impl FnOnce(&str) -> Result<Option<String>, String>,
 ) -> Result<Option<String>, String> {
     check_name(name)?;
-    if let Ok(Some(value)) = keyring(name) {
+    // The file holds only values written while the keyring was down, so it is newer than any keyring copy.
+    if let Some(value) = load_file(file)?.0.remove(name) {
         return Ok(Some(value));
     }
-    Ok(load_file(file)?.0.remove(name))
+    Ok(keyring(name).ok().flatten())
 }
 
 fn delete_with(
@@ -142,12 +159,9 @@ fn delete_with(
     keyring: impl FnOnce(&str) -> Result<(), String>,
 ) -> Result<(), String> {
     check_name(name)?;
-    let _ = keyring(name);
-    let mut secrets = load_file(file)?;
-    if secrets.0.remove(name).is_some() {
-        save_file(file, &secrets)?;
-    }
-    Ok(())
+    let _guard = FILE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    remove_from_file(file, name)?;
+    keyring(name)
 }
 
 pub fn set(name: &str, value: &str) -> Result<(), String> {
@@ -230,7 +244,7 @@ mod tests {
 
     fn no_keyring_set(_: &str, _: &str) -> Result<(), String> { Err("no keyring".to_string()) }
     fn no_keyring_get(_: &str) -> Result<Option<String>, String> { Err("no keyring".to_string()) }
-    fn no_keyring_delete(_: &str) -> Result<(), String> { Err("no keyring".to_string()) }
+    fn no_keyring_delete(_: &str) -> Result<(), String> { Ok(()) }
 
     #[test]
     fn a_secret_round_trips_through_the_file_store() {
@@ -275,6 +289,39 @@ mod tests {
         }
         assert!(!file.exists());
         assert!(check_name(&"a".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn a_keyring_that_refuses_the_delete_is_an_error() {
+        let file = scratch().join("secrets.json");
+        set_with(&file, "k", VALUE, no_keyring_set).unwrap();
+        let refused = delete_with(&file, "k", |_| Err("The keyring refused the delete.".to_string()));
+        assert!(refused.is_err());
+        assert_eq!(get_with(&file, "k", no_keyring_get).unwrap(), None, "the file copy is gone either way");
+    }
+
+    #[test]
+    fn a_file_value_written_while_the_keyring_was_down_wins_over_the_old_keyring_value() {
+        let file = scratch().join("secrets.json");
+        set_with(&file, "k", "new", no_keyring_set).unwrap();
+        assert_eq!(get_with(&file, "k", |_| Ok(Some("old".to_string()))).unwrap().as_deref(), Some("new"));
+        // Once the keyring takes a newer value, the file copy is removed.
+        set_with(&file, "k", "newest", |_, _| Ok(())).unwrap();
+        assert_eq!(get_with(&file, "k", |_| Ok(Some("newest".to_string()))).unwrap().as_deref(), Some("newest"));
+        assert_eq!(load_file(&file).unwrap().0.len(), 0);
+    }
+
+    #[test]
+    fn overlapping_sets_keep_every_secret() {
+        let file = scratch().join("secrets.json");
+        let writers: Vec<_> = (0..16)
+            .map(|i| {
+                let file = file.clone();
+                std::thread::spawn(move || set_with(&file, &format!("key-{i}"), VALUE, no_keyring_set).unwrap())
+            })
+            .collect();
+        writers.into_iter().for_each(|w| w.join().unwrap());
+        assert_eq!(load_file(&file).unwrap().0.len(), 16);
     }
 
     #[test]
