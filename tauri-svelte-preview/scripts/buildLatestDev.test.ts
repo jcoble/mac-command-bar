@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildLatestDev, cargoRunVariables, relaunchCommand, type BuildLatestOptions } from './buildLatestDev.ts';
+import { appIsWatched, buildLatestDev, cargoRunVariables, relaunchCommand, type BuildLatestOptions } from './buildLatestDev.ts';
 
 type Call = [string, string[], string];
 
-function fixture(overrides: { branch?: string; status?: string; fail?: string; failHosts?: string[] } = {}) {
+function fixture(overrides: { branch?: string; status?: string; fail?: string; failHosts?: string[]; watched?: boolean } = {}) {
   const calls: Call[] = [];
   const lines: string[] = [];
   const deployed: string[] = [];
@@ -12,6 +12,7 @@ function fixture(overrides: { branch?: string; status?: string; fail?: string; f
   const options: BuildLatestOptions = {
     checkoutRoot: '/checkout',
     appPid: 4242,
+    watched: overrides.watched ?? false,
     logPath: '/logs/build-latest.log',
     hosts: ['box-a', 'box-b'],
     run: async (file, args, cwd, onLine) => {
@@ -41,6 +42,32 @@ test('refuses a checkout that is not on main, before changing anything', async (
   assert.match(lines.at(-1) ?? '', /^\[1\/4\] Failed: the checkout is on tsk-1-feature, not main/);
   assert.deepEqual(deployed, []);
   assert.deepEqual(relaunched, []);
+});
+
+test('refuses while the running app watches files, before changing anything', async () => {
+  const { options, calls, lines, relaunched } = fixture({ watched: true });
+  assert.equal(await buildLatestDev(options), false);
+  assert.deepEqual(calls, []);
+  assert.match(lines.at(-1) ?? '', /^\[1\/4\] Failed: Assembly was started with the file watcher.*pnpm app:dev --no-watch/);
+  assert.deepEqual(relaunched, []);
+});
+
+test('the app watches files when the tauri dev above it was started without --no-watch', async () => {
+  // ps -o ppid=,args= for: the app <- cargo run <- tauri dev <- pnpm exec
+  const tree = (tauriArgs: string): Record<string, string> => ({
+    100: '  90 /checkout/target/debug/app',
+    90: '  80 cargo run --no-default-features',
+    80: `  70 node ./node_modules/.bin/../@tauri-apps/cli/tauri.js dev ${tauriArgs}`,
+    70: '   1 node pnpm.cjs exec tauri dev'
+  });
+  const ps = (rows: Record<string, string>) => async (_file: string, args: string[]) => {
+    const row = rows[args.at(-1)!];
+    if (!row) throw new Error('ps exited with 1');
+    return `${row}\n`;
+  };
+  assert.equal(await appIsWatched(100, ps(tree('--config {"build":{}}'))), true);
+  assert.equal(await appIsWatched(100, ps(tree('--no-watch --config {"build":{}}'))), false);
+  assert.equal(await appIsWatched(100, ps({ 100: '  1 /checkout/target/debug/app' })), false, 'not under tauri dev');
 });
 
 test('refuses a checkout with uncommitted changes and names them', async () => {

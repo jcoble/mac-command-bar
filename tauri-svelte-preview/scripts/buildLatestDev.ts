@@ -17,6 +17,8 @@ type Command = { file: string; args: string[]; cwd: string };
 export type BuildLatestOptions = {
   checkoutRoot: string;
   appPid: number;
+  /** The running app's tauri dev watches files: see appIsWatched. */
+  watched: boolean;
   logPath: string;
   hosts: string[];
   run: Runner;
@@ -35,6 +37,27 @@ export function relaunchCommand(checkoutRoot: string, appPid: number, logPath: s
     + 'echo "Assembly did not quit within 10 minutes; start it with pnpm app:dev" >>"$2"; exit 1; fi; sleep 1; done; '
     + 'exec pnpm app:dev --no-watch >>"$2" 2>&1';
   return { file: '/bin/sh', args: ['-c', script, 'sh', String(appPid), logPath], cwd: checkoutRoot };
+}
+
+/**
+ * Whether the tauri dev that started this app watches files. It does unless it was given
+ * --no-watch, as plain `pnpm app:dev` is. A watching tauri dev restarts the app when the pull
+ * changes Rust, halfway through the run.
+ */
+export async function appIsWatched(appPid: number, run: Runner): Promise<boolean> {
+  let pid = appPid;
+  for (let depth = 0; depth < 10 && pid > 1; depth += 1) {
+    let row: string;
+    try {
+      row = (await run('ps', ['-o', 'ppid=,args=', '-p', String(pid)], '/')).trim();
+    } catch {
+      return false;
+    }
+    const [parent, ...args] = row.split(/\s+/);
+    if (/(^|\/)tauri(\.js)?$/.test(args[1] ?? '') && args[2] === 'dev') return !args.includes('--no-watch');
+    pid = Number(parent);
+  }
+  return false;
 }
 
 /**
@@ -59,6 +82,10 @@ export async function buildLatestDev(options: BuildLatestOptions): Promise<boole
   const git = (args: string[], onLine?: (line: string) => void) => run('git', ['-C', root, ...args], root, onLine);
   try {
     say('Pulling main');
+    if (options.watched) {
+      throw new Error('Assembly was started with the file watcher, so a pull that changes Rust would restart it partway through. '
+        + 'Quit it and start it once with pnpm app:dev --no-watch; Build latest reopens it that way.');
+    }
     const branch = (await git(['branch', '--show-current'])).trim();
     if (branch !== 'main') throw new Error(`the checkout is on ${branch || 'a detached HEAD'}, not main. Switch it to main first.`);
     const changes = (await git(['status', '--porcelain'])).trimEnd();
@@ -154,6 +181,7 @@ async function main(): Promise<void> {
   const readOnly = (args: string[]) => args.includes('--show-current') || args.includes('--porcelain') || args.includes('rev-parse');
   const ok = await buildLatestDev({
     checkoutRoot, appPid, logPath, hosts: args, out,
+    watched: await appIsWatched(appPid, streamingRunner),
     run: dryRun
       ? async (file, commandArgs, cwd, onLine) => {
         if (file === 'git' && readOnly(commandArgs)) return streamingRunner(file, commandArgs, cwd);
