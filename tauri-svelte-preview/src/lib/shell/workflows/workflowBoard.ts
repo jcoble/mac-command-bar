@@ -87,10 +87,13 @@ export function runTask(run: WorkflowRunRecord): { key: string | null; title: st
 
 const dollars = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}`;
 
-/** Usage rows' cost: "$1.07" when all of it was reported, else "$1.07 + $0.74 est.", or '' when none is priced. */
+/**
+ * Usage rows' cost: "$1.07" when all of it was reported, else "$1.07 + $0.74 est.", or '' when none is priced.
+ * A row's estimate only counts usage no reported cost covers, so the two add up.
+ */
 export function costText(rows: readonly { reportedCostMicros: number | null; estimatedCostMicros: number | null }[]): string {
   const reported = rows.reduce((sum, row) => sum + (row.reportedCostMicros ?? 0), 0);
-  const estimated = rows.reduce((sum, row) => sum + (row.reportedCostMicros === null ? row.estimatedCostMicros ?? 0 : 0), 0);
+  const estimated = rows.reduce((sum, row) => sum + (row.estimatedCostMicros ?? 0), 0);
   const priced = rows.some((row) => row.reportedCostMicros !== null);
   if (!priced && !estimated) return '';
   return [priced ? dollars(reported) : '', estimated ? `${dollars(estimated)} est.` : ''].filter(Boolean).join(' + ');

@@ -82,7 +82,8 @@ function run(state: WorkflowRunState, states: Partial<Record<string, WorkflowNod
 
 { // costs_read_reported_first_and_label_estimates
   const row = (reportedCostMicros: number | null, estimatedCostMicros: number | null) => ({ reportedCostMicros, estimatedCostMicros });
-  assert.equal(costText([row(1_070_000, 900_000)]), '$1.07');
+  assert.equal(costText([row(1_070_000, null)]), '$1.07');
+  assert.equal(costText([row(1_070_000, 200_000)]), '$1.07 + $0.20 est.');
   assert.equal(costText([row(1_070_000, null), row(null, 740_000)]), '$1.07 + $0.74 est.');
   assert.equal(costText([row(null, 740_000)]), '$0.74 est.');
   assert.equal(costText([row(null, null)]), '');

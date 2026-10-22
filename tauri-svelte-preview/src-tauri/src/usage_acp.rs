@@ -163,7 +163,9 @@ impl UsageDb {
     /// Usage of every workflow step attempt per model, oldest first; only one run's when `run_id` is given.
     pub fn read_workflow_usage(&self, run_id: Option<&str>) -> Result<Vec<WorkflowUsageRow>, String> {
         let connection = self.connection()?;
-        let sql = format!("WITH steps AS (SELECT node_run_id, model, {} AS rate_model, MIN(occurred_at_micros) AS first_at, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cache_read_tokens) AS cache_read_tokens, SUM(cache_write_tokens) AS cache_write_tokens, SUM(reported_cost_micros) AS reported FROM usage_events WHERE node_run_id IS NOT NULL AND (?1 IS NULL OR node_run_id LIKE ?1 || ':%') GROUP BY node_run_id, model) SELECT node_run_id, steps.model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reported, CAST(ROUND(input_tokens * rates.input_rate + output_tokens * rates.output_rate + cache_read_tokens * rates.cache_read_rate + cache_write_tokens * rates.cache_write_rate) AS INTEGER) FROM steps LEFT JOIN usage_rates rates ON rates.model = steps.rate_model ORDER BY first_at, node_run_id, steps.model", super::NORMALIZED_RATE_MODEL_SQL);
+        // A turn's reported cost sits on its largest model's row and covers all of the turn's models,
+        // so only rows of turns without a reported cost are estimated; a step whose rows are all covered reads 0.
+        let sql = format!("WITH events AS (SELECT e.*, EXISTS (SELECT 1 FROM usage_events c WHERE c.owned_id = e.owned_id AND c.turn_id = e.turn_id AND c.reported_cost_micros IS NOT NULL) AS covered FROM usage_events e WHERE e.node_run_id IS NOT NULL AND (?1 IS NULL OR e.node_run_id LIKE ?1 || ':%')), steps AS (SELECT node_run_id, model, {} AS rate_model, MIN(occurred_at_micros) AS first_at, SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cache_read_tokens) AS cache_read_tokens, SUM(cache_write_tokens) AS cache_write_tokens, SUM(reported_cost_micros) AS reported, MIN(covered) AS all_covered, SUM(CASE WHEN covered THEN 0 ELSE input_tokens END) AS est_input, SUM(CASE WHEN covered THEN 0 ELSE output_tokens END) AS est_output, SUM(CASE WHEN covered THEN 0 ELSE cache_read_tokens END) AS est_cache_read, SUM(CASE WHEN covered THEN 0 ELSE cache_write_tokens END) AS est_cache_write FROM events GROUP BY node_run_id, model) SELECT node_run_id, steps.model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reported, CASE WHEN all_covered THEN 0 ELSE CAST(ROUND(est_input * rates.input_rate + est_output * rates.output_rate + est_cache_read * rates.cache_read_rate + est_cache_write * rates.cache_write_rate) AS INTEGER) END FROM steps LEFT JOIN usage_rates rates ON rates.model = steps.rate_model ORDER BY first_at, node_run_id, steps.model", super::NORMALIZED_RATE_MODEL_SQL);
         let mut statement = connection.prepare(&sql).map_err(|error| self.database_error("could not read workflow usage", error))?;
         let rows = statement.query_map([run_id], |row| Ok(WorkflowUsageRow {
             node_run_id: row.get(0)?, model: row.get(1)?, input_tokens: row.get(2)?, output_tokens: row.get(3)?,
@@ -435,6 +437,12 @@ mod tests {
         // 1000 in at $2 and 100 out at $10 per million tokens.
         assert_eq!((rows[1].reported_cost_micros, rows[1].estimated_cost_micros), (None, Some(3000)));
         assert_eq!(db.read_workflow_usage(None).unwrap().len(), 3);
+        // A turn's reported cost covers its smaller models too, so they get no estimate on top.
+        let mut two = turn("t4", vec![model("claude-opus-5-5", 900, 0, 0, 90), model("gpt-6.1-sol", 50, 0, 0, 5)], Some(0.3));
+        (two.owned_id, two.node_run_id) = ("agent-4".into(), Some("run-2:build:1".into()));
+        db.insert_acp_turn(&two).unwrap();
+        let rows = db.read_workflow_usage(Some("run-2")).unwrap();
+        assert_eq!(rows.iter().map(|row| (row.reported_cost_micros, row.estimated_cost_micros)).collect::<Vec<_>>(), [(Some(300_000), Some(0)), (None, Some(0))]);
         let _ = std::fs::remove_file(path);
     }
 

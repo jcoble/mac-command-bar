@@ -65,7 +65,7 @@
   let now = $state(Date.now());
   /** Usage rows of every run, for the board's costs; read when the board shows. */
   let boardUsage = $state<WorkflowUsageRow[]>([]);
-  /** The open run's usage rows for its Cost tab; null while reading or on another machine. */
+  /** The open run's usage rows for its Cost tab; null while reading. */
   let runUsage = $state<WorkflowUsageRow[] | null>(null);
   const openRun = $derived(runs.find((run) => run.id === openRunId) ?? null);
   /** The step whose details show: the one chosen on the Map, else where the run is. */
@@ -108,8 +108,9 @@
       do { again = false; await read(signal); } while (again && !signal.aborted);
       reading = false;
     };
-    if (machine) await listenAgentMessagesChanged(() => void reread(), signal);
-    else await followWorkflowRuns(upsert, signal);
+    // A change can be new usage (this Mac's engine also sends a run on each usage row), so the board's costs are read again.
+    if (machine) await listenAgentMessagesChanged(() => { void reread(); if (!openRunId) void readBoardUsage(signal); }, signal);
+    else await followWorkflowRuns((run) => { upsert(run); if (!openRunId) void readBoardUsage(signal); }, signal);
     void readBoardUsage(signal);
     await reread();
   }
@@ -122,10 +123,12 @@
 
   const costOf = (run: WorkflowRunRecord): string => costText(boardUsage.filter((row) => row.nodeRunId.startsWith(`${run.id}:`)));
 
+  let usageReads = 0;
   async function readBoardUsage(signal: AbortSignal): Promise<void> {
+    const read = ++usageReads;
     try {
       const rows = await readWorkflowUsage(machine, null);
-      if (!signal.aborted) boardUsage = rows ?? [];
+      if (!signal.aborted && read === usageReads) boardUsage = rows ?? [];
     } catch {
       // The board shows no cost rather than an error; the Cost tab reports a failed read.
     }
@@ -308,7 +311,7 @@
         />
       {/if}
     {:else}
-      <WorkflowCost {run} rows={machine ? null : runUsage ?? []} {now} />
+      <WorkflowCost {run} rows={runUsage} {now} />
     {/if}
   {:else if loaded && runs.length === 0 && !error}
     <p class="text-[13px] text-muted-foreground">No workflow runs yet.</p>

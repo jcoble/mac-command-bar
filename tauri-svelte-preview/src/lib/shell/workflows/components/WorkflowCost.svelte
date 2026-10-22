@@ -13,7 +13,7 @@
 
   interface Props {
     run: WorkflowRunRecord;
-    /** Null while reading, or when the run's machine keeps its own usage. */
+    /** Null while reading. */
     rows: WorkflowUsageRow[] | null;
     now: number;
   }
@@ -52,8 +52,11 @@
 
   function cost(row: WorkflowUsageRow | null): string {
     if (!row) return '—';
-    if (row.reportedCostMicros !== null) return `$${(row.reportedCostMicros / 1_000_000).toFixed(2)} reported`;
-    return row.estimatedCostMicros !== null ? `$${(row.estimatedCostMicros / 1_000_000).toFixed(2)} est.` : 'not priced';
+    // A turn's reported cost sits on its largest model's row; its other models' rows carry an estimate of 0.
+    if (row.reportedCostMicros === null && row.estimatedCostMicros === 0) return "in the turn's reported cost";
+    const reported = row.reportedCostMicros === null ? '' : `$${(row.reportedCostMicros / 1_000_000).toFixed(2)} reported`;
+    const estimated = row.estimatedCostMicros ? `$${(row.estimatedCostMicros / 1_000_000).toFixed(2)} est.` : '';
+    return [reported, estimated].filter(Boolean).join(' + ') || 'not priced';
   }
 </script>
 
@@ -83,7 +86,7 @@
   <Card.Root size="sm" class="shadow-sm">
     <Card.Content>
       {#if rows === null}
-        <p class="text-[13px] text-muted-foreground">Usage for this run is kept on the machine that runs it.</p>
+        <p class="text-[13px] text-muted-foreground">Reading usage…</p>
       {:else}
         <table class="w-full text-[13px] tabular-nums">
           <thead class="text-left text-muted-foreground">

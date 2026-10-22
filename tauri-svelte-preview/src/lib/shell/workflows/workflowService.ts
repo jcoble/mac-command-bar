@@ -218,9 +218,10 @@ export async function followWorkflowRuns(onRun: (run: WorkflowRunRecord) => void
   signal.addEventListener('abort', stop, { once: true });
 }
 
-/** A run's usage per step attempt and model, or every run's when `runId` is null. Null off this Mac. */
+/** A run's usage per step attempt and model, or every run's when `runId` is null, from the machine that runs it. */
 export async function readWorkflowUsage(machine: string | null, runId: string | null): Promise<WorkflowUsageRow[] | null> {
-  if (machine || !isNativeTauriRuntime()) return null;
+  if (machine) return remoteWorkflowFromTauri(machine, 'usage', { runId });
+  if (!isNativeTauriRuntime()) return null;
   const { invoke } = await import('$lib/workspaceInvoke.ts');
   return invoke<WorkflowUsageRow[]>('read_workflow_usage', { runId });
 }
