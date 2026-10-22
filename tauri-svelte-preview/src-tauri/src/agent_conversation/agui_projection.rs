@@ -58,6 +58,15 @@ pub struct Opened {
     pub live: Vec<(u64, i64, Vec<Value>)>,
 }
 
+/// A call still open: its latest arguments, output and diff, as updates may
+/// carry each one only once.
+#[derive(Default)]
+struct OpenCall {
+    args: Map<String, Value>,
+    output: Option<String>,
+    diff: Option<String>,
+}
+
 #[derive(Default)]
 struct View {
     last_sequence: Option<i64>,
@@ -76,8 +85,7 @@ struct View {
     /// Text sent for each message still open, and what ended this turn.
     texts: HashMap<String, String>,
     ended: HashSet<String>,
-    /// Open tool calls and their latest arguments.
-    tools: HashMap<String, Map<String, Value>>,
+    tools: HashMap<String, OpenCall>,
     /// Child agents seen this turn, and whether each has finished.
     children: HashMap<String, bool>,
     usage: Option<Value>,
@@ -103,9 +111,14 @@ impl AguiProjector {
         }
         let chunks = view.project(event);
         if matches!(event.payload, Payload::Connection { state: ConversationConnectionState::Closed, .. }) {
-            self.views.remove(&event.owned_id);
+            self.close(&event.owned_id);
         }
         chunks
+    }
+
+    /// Stops projecting a session: its view closed, or the session did.
+    pub fn close(&mut self, owned_id: &str) {
+        self.views.remove(owned_id);
     }
 
     /// Holds the session's live events until `finish_open` has its snapshot.
@@ -114,13 +127,14 @@ impl AguiProjector {
     }
 
     /// Restarts the view from the snapshot's events (`head` is the newest
-    /// sequence it covers; `pending` the requests still waiting), then projects
+    /// sequence it covers; `pending` the requests still waiting; `running`
+    /// whether a turn is still going), then projects
     /// what arrived meanwhile. With no snapshot the view keeps what it had.
-    pub fn finish_open(&mut self, owned_id: &str, snapshot: Option<(&[AgentConversationEvent], &HashSet<String>, i64)>) -> Opened {
+    pub fn finish_open(&mut self, owned_id: &str, snapshot: Option<(&[AgentConversationEvent], &HashSet<String>, i64, bool)>) -> Opened {
         let Some(view) = self.views.get_mut(owned_id) else { return Opened::default() };
         let held = view.held.take().unwrap_or_default();
         let mut opened = Opened::default();
-        if let Some((events, pending, head)) = snapshot {
+        if let Some((events, pending, head, running)) = snapshot {
             let mut fresh = View::default();
             let chunks: Vec<Value> = events.iter().flat_map(|event| fresh.project(event)).collect();
             (fresh.next_run, fresh.next_parent, fresh.next_user) = (view.next_run.take(), view.next_parent.take(), view.next_user.take());
@@ -129,18 +143,21 @@ impl AguiProjector {
             if fresh.requests.is_empty() {
                 fresh.paused_run = None;
             }
-            // The client is in the runs this view started: the fresh view goes
-            // on in them while their turn does, and ends them once it is over.
-            for (old, new) in [(view.open_run.take(), &mut fresh.open_run), (view.paused_run.take(), &mut fresh.paused_run)] {
-                let Some(old) = old else { continue };
-                if new.is_some() {
-                    *new = Some(old);
-                } else {
-                    opened.runs.push(agui::run_finished(owned_id, &old, None, None));
-                }
+            // History leaves runs out and carries no turn ends, so the session
+            // says whether a turn still runs. The client's run goes on while it
+            // does and ends once it is over; a run the replay opened was never
+            // shown, so live content starts its own. A pause lasts while its requests do.
+            match view.open_run.take() {
+                Some(old) if !running => opened.runs.push(agui::run_finished(owned_id, &old, None, None)),
+                old => fresh.open_run = old,
+            }
+            match view.paused_run.take() {
+                Some(old) if fresh.paused_run.is_none() => opened.runs.push(agui::run_finished(owned_id, &old, None, None)),
+                Some(old) => fresh.paused_run = Some(old),
+                None => {}
             }
             fresh.last_sequence = Some(fresh.last_sequence.map_or(head, |last| last.max(head)));
-            opened.events = history(chunks);
+            opened.events = agui::history(chunks);
             opened.runs.extend(fresh.pause_chunk(owned_id));
             *view = fresh;
         }
@@ -172,27 +189,7 @@ impl AguiProjector {
 /// A page of older history as chunks, outside any view.
 pub fn page_chunks(events: &[AgentConversationEvent]) -> Vec<Value> {
     let mut view = View::default();
-    history(events.iter().flat_map(|event| view.project(event)).collect())
-}
-
-/// History keeps messages and leaves runs out, so nothing old reopens a pause;
-/// a reply's streamed pieces are joined into one.
-fn history(chunks: Vec<Value>) -> Vec<Value> {
-    let mut kept: Vec<Value> = Vec::with_capacity(chunks.len());
-    for chunk in chunks {
-        if chunk["type"].as_str().is_some_and(|kind| kind.starts_with("RUN_")) {
-            continue;
-        }
-        if let Some(last) = kept.last_mut() {
-            if chunk["type"] == "TEXT_MESSAGE_CONTENT" && last["type"] == "TEXT_MESSAGE_CONTENT" && last["messageId"] == chunk["messageId"] {
-                let joined = format!("{}{}", last["delta"].as_str().unwrap_or_default(), chunk["delta"].as_str().unwrap_or_default());
-                last["delta"] = Value::String(joined);
-                continue;
-            }
-        }
-        kept.push(chunk);
-    }
-    kept
+    agui::history(events.iter().flat_map(|event| view.project(event)).collect())
 }
 
 fn answer(request: &OpenRequest, status: ResumeStatus, payload: &Value) -> Result<Answer, String> {
@@ -322,9 +319,9 @@ impl View {
                 }
                 self.text(&mut out, item_id, "assistant", text, *completed, reply_facts(event), end);
             }
-            Payload::Tool { item_id, name, state, summary, path, .. } => {
+            Payload::Tool { item_id, name, state, summary, path, output, diff } => {
                 self.open(&mut out, thread, sequence);
-                self.tool(&mut out, event, item_id, name, *state, [summary, path]);
+                self.tool(&mut out, event, item_id, name, *state, [summary, path, output, diff]);
             }
             Payload::ChildUpdate { child_id, parent_tool_call_id, label, state, .. } => {
                 self.child(&mut out, child_id, parent_tool_call_id, label.as_deref(), state);
@@ -449,29 +446,38 @@ impl View {
 
     /// Starts a call once, as a message of its own; streams its arguments once
     /// they are known (later updates carry them), and ends it with the latest
-    /// ones, then its result: the native call, which the client draws from.
-    fn tool(&mut self, out: &mut Vec<Value>, event: &AgentConversationEvent, id: &str, name: &str, state: ToolState, fields: [&Option<String>; 2]) {
-        let [summary, path] = fields;
+    /// ones, then its result: the native call, which the client draws from,
+    /// with the output and diff an earlier update may have carried alone.
+    fn tool(&mut self, out: &mut Vec<Value>, event: &AgentConversationEvent, id: &str, name: &str, state: ToolState, fields: [&Option<String>; 4]) {
+        let [summary, path, output, diff] = fields;
         if self.ended.contains(id) {
             return;
         }
-        let args = self.tools.entry(id.to_string()).or_insert_with(|| {
+        let call = self.tools.entry(id.to_string()).or_insert_with(|| {
             out.push(agui::tool_start(id, name, Some(id), facts(event, "mcp-tool")));
-            Map::new()
+            OpenCall::default()
         });
-        let first = args.is_empty();
+        let first = call.args.is_empty();
         for (key, value) in [("summary", summary), ("path", path)] {
             if let Some(value) = value {
-                args.insert(key.into(), json!(value));
+                call.args.insert(key.into(), json!(value));
             }
         }
-        if first && !args.is_empty() {
-            out.push(agui::tool_args(id, &Value::Object(args.clone())));
+        call.output = output.clone().or(call.output.take());
+        call.diff = diff.clone().or(call.diff.take());
+        if first && !call.args.is_empty() {
+            out.push(agui::tool_args(id, &Value::Object(call.args.clone())));
         }
         if matches!(state, ToolState::Completed | ToolState::Failed) {
-            out.push(agui::tool_end(id, &Value::Object(self.tools.remove(id).unwrap_or_default())));
-            let content = serde_json::to_string(&event.payload).unwrap_or_default();
-            out.push(agui::tool_result(id, &content, state == ToolState::Failed));
+            let call = self.tools.remove(id).unwrap_or_default();
+            out.push(agui::tool_end(id, &Value::Object(call.args)));
+            let mut payload = serde_json::to_value(&event.payload).unwrap_or_default();
+            for (key, value) in [("output", call.output), ("diff", call.diff)] {
+                if let Some(value) = value {
+                    payload[key] = json!(value);
+                }
+            }
+            out.push(agui::tool_result(id, &payload.to_string(), state == ToolState::Failed));
             self.ended.insert(id.to_string());
         }
     }
@@ -539,9 +545,9 @@ impl View {
         let mut texts: Vec<String> = self.texts.drain().map(|(id, _)| id).collect();
         texts.sort();
         out.extend(texts.iter().map(|id| agui::text_end(id, json!({ "completed": true }))));
-        let mut tools: Vec<(String, Map<String, Value>)> = self.tools.drain().collect();
+        let mut tools: Vec<(String, OpenCall)> = self.tools.drain().collect();
         tools.sort_by(|a, b| a.0.cmp(&b.0));
-        out.extend(tools.into_iter().map(|(id, args)| agui::tool_end(&id, &Value::Object(args))));
+        out.extend(tools.into_iter().map(|(id, call)| agui::tool_end(&id, &Value::Object(call.args))));
         let mut children: Vec<String> = self.children.drain().filter(|(_, finished)| !finished).map(|(id, _)| id).collect();
         children.sort();
         out.extend(children.iter().map(|id| agui::subagent_finished(id)));

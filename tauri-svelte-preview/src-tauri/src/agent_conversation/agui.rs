@@ -279,6 +279,26 @@ impl From<AgentConversationItemPage> for AguiPage {
     }
 }
 
+/// History keeps messages and leaves runs out, so nothing old reopens a pause;
+/// a reply's streamed pieces are joined into one.
+pub fn history(chunks: Vec<Value>) -> Vec<Value> {
+    let mut kept: Vec<Value> = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        if chunk["type"].as_str().is_some_and(|kind| kind.starts_with("RUN_")) {
+            continue;
+        }
+        if let Some(last) = kept.last_mut() {
+            if chunk["type"] == "TEXT_MESSAGE_CONTENT" && last["type"] == "TEXT_MESSAGE_CONTENT" && last["messageId"] == chunk["messageId"] {
+                let joined = format!("{}{}", last["delta"].as_str().unwrap_or_default(), chunk["delta"].as_str().unwrap_or_default());
+                last["delta"] = Value::String(joined);
+                continue;
+            }
+        }
+        kept.push(chunk);
+    }
+    kept
+}
+
 #[tauri::command]
 /// The AG-UI channel: one envelope per native event, holding its chunks.
 pub fn register_agui_stream(streams: State<'_, ProjectionStreams>, registration_id: String, channel: Channel<StreamEnvelope<Vec<Value>>>) {
@@ -293,6 +313,12 @@ pub fn acknowledge_agui_stream(streams: State<'_, ProjectionStreams>, registrati
 #[tauri::command]
 pub fn unregister_agui_stream(streams: State<'_, ProjectionStreams>, registration_id: String) {
     streams.unregister_agui(&registration_id);
+}
+
+#[tauri::command]
+/// The chat view closed: its session is no longer projected. The session goes on.
+pub fn close_agui_view(streams: State<'_, ProjectionStreams>, owned_id: String) {
+    streams.with_agui_views(|views| views.close(&owned_id));
 }
 
 #[tauri::command]
@@ -354,8 +380,9 @@ pub async fn read_agui_snapshot(
         .map(|snapshot| snapshot.pending_events.iter().filter_map(request_id_of).collect())
         .unwrap_or_default();
     let head = snapshot.map(|snapshot| snapshot.pending_sequence);
+    let running = snapshot.is_some_and(|snapshot| snapshot.active_turn_id.is_some());
     let opened = streams.with_agui_views(|views| {
-        let mut opened = views.finish_open(&owned_id, head.map(|head| (events.as_slice(), &pending, head)));
+        let mut opened = views.finish_open(&owned_id, head.map(|head| (events.as_slice(), &pending, head, running)));
         for (generation, sequence, chunks) in std::mem::take(&mut opened.live) {
             streams.send_agui(owned_id.clone(), generation, sequence, chunks);
         }

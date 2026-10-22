@@ -14,7 +14,7 @@ impl Script {
     fn open() -> Self {
         let mut views = AguiProjector::default();
         views.begin_open(THREAD);
-        views.finish_open(THREAD, Some((&[], &HashSet::new(), 0)));
+        views.finish_open(THREAD, Some((&[], &HashSet::new(), 0, false)));
         Self { views, sequence: 0 }
     }
 
@@ -298,13 +298,28 @@ fn a_client_run_survives_a_reopen_and_does_not_outlive_its_turn() {
     script.run("run-client-1", None, Vec::new()).unwrap();
     script.views.begin_open(THREAD);
     let history = [event(1, user("user-0", "Earlier")), event(2, turn(TurnState::Completed))];
-    script.views.finish_open(THREAD, Some((&history, &HashSet::new(), 2)));
+    script.views.finish_open(THREAD, Some((&history, &HashSet::new(), 2, false)));
     script.sequence = 2;
     assert_eq!(script.send(user("user-1", "Now"))[0]["runId"], "run-client-1", "the replayed history does not use it up");
     // A steer's run while one is open is not used by a later turn.
     script.run("run-client-2", None, Vec::new()).unwrap();
     script.send(turn(TurnState::Completed));
     assert_eq!(script.send(user("user-2", "From the phone"))[0]["runId"], "run-5");
+}
+
+/// A snapshot's events carry no turn boundaries, so its last turn looks open.
+#[test]
+fn the_turn_after_a_reopen_starts_its_own_run() {
+    let mut script = Script::open();
+    script.views.begin_open(THREAD);
+    let history = [event(1, user("user-0", "Earlier")), event(2, reply("msg-0", "Done earlier."))];
+    script.views.finish_open(THREAD, Some((&history, &HashSet::new(), 2, false)));
+    script.sequence = 2;
+    script.run("run-client-1", None, Vec::new()).unwrap();
+    let mut chunks = script.send(user("user-1", "Now"));
+    assert_eq!((&chunks[0]["type"], &chunks[0]["runId"]), (&json!("RUN_STARTED"), &json!("run-client-1")));
+    chunks.extend(script.send(turn(TurnState::Completed)));
+    assert_well_formed(&chunks);
 }
 
 #[test]
@@ -332,6 +347,24 @@ fn a_closed_session_drops_its_view_and_child_agents_are_kept_per_turn() {
     assert!(script.views.views[THREAD].children.is_empty());
     script.send(Payload::Connection { state: ConversationConnectionState::Closed, native_session_id: None });
     assert!(!script.views.views.contains_key(THREAD));
+    // A view its user leaves stops projecting; the session goes on.
+    let mut script = Script::open();
+    script.views.close(THREAD);
+    assert!(script.send(turn(TurnState::Started)).is_empty());
+}
+
+#[test]
+fn output_sent_before_a_status_only_completion_is_kept() {
+    let mut script = Script::open();
+    script.send(turn(TurnState::Started));
+    let call = |state: ToolState, output: Option<&str>, diff: Option<&str>| Payload::Tool { item_id: "tool-1".into(), name: "Edit".into(), state,
+        summary: None, output: output.map(str::to_string), path: None, diff: diff.map(str::to_string) };
+    script.send(call(ToolState::Started, None, None));
+    assert!(script.send(call(ToolState::Updated, Some("Edited notes.txt"), Some("+hello"))).is_empty());
+    let done = script.send(call(ToolState::Completed, None, None));
+    assert_eq!(types(&done), ["TOOL_CALL_END", "TOOL_CALL_RESULT"]);
+    let result: Value = serde_json::from_str(done[1]["content"].as_str().unwrap()).unwrap();
+    assert_eq!((&result["state"], &result["output"], &result["diff"]), (&json!("completed"), &json!("Edited notes.txt"), &json!("+hello")));
 }
 
 #[test]
@@ -522,7 +555,7 @@ fn reopening_replays_the_snapshot_then_the_open_request_then_live_events() {
     // A delta that lands while the snapshot is being read waits for it.
     assert!(views.project(&event(15, delta("msg-1", " Done")).clone()).is_empty());
     let pending = HashSet::from(["perm-1".to_string()]);
-    let opened = views.finish_open(THREAD, Some((&snapshot, &pending, 14)));
+    let opened = views.finish_open(THREAD, Some((&snapshot, &pending, 14, true)));
     assert!(!types(&opened.events).iter().any(|kind| kind.starts_with("RUN_")), "history leaves runs out");
     assert_eq!(opened.events[1]["delta"], "Let me check.", "history joins a reply's pieces");
     let reopened = &opened.runs[0];
@@ -541,7 +574,7 @@ fn reopening_replays_the_snapshot_then_the_open_request_then_live_events() {
 #[test]
 fn a_reopen_keeps_the_clients_run_while_its_turn_goes_on_and_ends_it_after() {
     // The live view saw the first `seen` events; the snapshot holds them all.
-    let reopen = |seen: usize, history: Vec<Payload>, pending: &[&str]| {
+    let reopen = |seen: usize, history: Vec<Payload>, pending: &[&str], running: bool| {
         let mut script = Script::open();
         script.run("run-client-1", None, Vec::new()).unwrap();
         history.iter().take(seen).for_each(|payload| { script.send(payload.clone()); });
@@ -549,16 +582,16 @@ fn a_reopen_keeps_the_clients_run_while_its_turn_goes_on_and_ends_it_after() {
         script.views.begin_open(THREAD);
         let events: Vec<_> = history.into_iter().enumerate().map(|(index, payload)| event(index as i64 + 1, payload)).collect();
         let pending = pending.iter().map(|id| id.to_string()).collect();
-        let runs = script.views.finish_open(THREAD, Some((&events, &pending, events.len() as i64))).runs;
+        let runs = script.views.finish_open(THREAD, Some((&events, &pending, events.len() as i64, running))).runs;
         (script, runs)
     };
-    let (mut script, runs) = reopen(1, vec![turn(TurnState::Started)], &[]);
+    let (mut script, runs) = reopen(1, vec![turn(TurnState::Started)], &[], true);
     assert!(runs.is_empty());
     assert_eq!(types(&script.send(delta("msg-1", "Hi"))), ["TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT"], "the run goes on");
     assert_eq!(script.send(turn(TurnState::Completed)).last().unwrap()["runId"], "run-client-1");
-    let (_, runs) = reopen(1, vec![turn(TurnState::Started), turn(TurnState::Completed)], &[]);
+    let (_, runs) = reopen(1, vec![turn(TurnState::Started), turn(TurnState::Completed)], &[], false);
     assert_eq!((types(&runs), &runs[0]["runId"], runs[0].get("outcome")), (vec!["RUN_FINISHED"], &json!("run-client-1"), None));
-    let (_, runs) = reopen(2, vec![turn(TurnState::Started), permission("perm-1", ApprovalState::Requested)], &["perm-1"]);
+    let (_, runs) = reopen(2, vec![turn(TurnState::Started), permission("perm-1", ApprovalState::Requested)], &["perm-1"], true);
     assert_eq!((runs.len(), &runs[0]["runId"]), (1, &json!("run-client-1")), "the request is shown again on the client's run");
 }
 
@@ -607,7 +640,7 @@ fn contract_scenarios_are_well_formed() {
     let snapshot = [event(10, turn(TurnState::Started)), event(11, delta("msg-4", "Let me check.")), event(12, permission("perm-3", ApprovalState::Requested))];
     let mut views = AguiProjector::default();
     views.begin_open(THREAD);
-    let opened = views.finish_open(THREAD, Some((&snapshot, &HashSet::from(["perm-3".to_string()]), 12)));
+    let opened = views.finish_open(THREAD, Some((&snapshot, &HashSet::from(["perm-3".to_string()]), 12, true)));
     extra.extend(opened.events.iter().chain(&opened.runs).map(|chunk| line("reopened-view", chunk)));
     let Some(folder) = std::env::var_os("AGUI_FIXTURE_OUT") else { return };
     let folder = std::path::PathBuf::from(folder);
