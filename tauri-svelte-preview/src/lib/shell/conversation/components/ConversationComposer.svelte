@@ -61,7 +61,7 @@
     onDismissProviderNotice?(): void;
     pendingApproval?: AgentPermissionRequest | null;
     pendingApprovalCount?: number;
-    pendingInputs?: readonly AgentUserInputRequest[];
+    pendingInputs?: readonly AgentUserInputRequest[]; pendingInterrupts?: number;
     respondingRequestIds?: readonly string[];
     controlsDisabled?: boolean;
     sendDisabled?: boolean;
@@ -109,7 +109,7 @@
     onDismissProviderNotice,
     pendingApproval = null,
     pendingApprovalCount = 1,
-    pendingInputs = [],
+    pendingInputs = [], pendingInterrupts = 0,
     respondingRequestIds = [],
     controlsDisabled = false,
     sendDisabled = false,
@@ -199,7 +199,7 @@
   const meterPopover = $derived(
     contextMeter ? contextMeterPopover(contextMeter, agentDisplayName(provider as AgentKind)) : null
   );
-  const composerLocked = $derived(Boolean(pendingApproval || pendingInputs.length));
+  const composerLocked = $derived(pendingInterrupts > 0); // steers too: the stock client guards only sendMessage
   const hasSendableContent = $derived(Boolean(inputDraft.trim() || attachments.length));
   /* Typed text joins a running turn; with only background work it starts a new one. */
   const steerable = $derived(turnRunning ?? sending);

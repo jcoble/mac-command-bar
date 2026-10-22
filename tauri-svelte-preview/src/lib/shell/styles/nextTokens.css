@@ -4,7 +4,7 @@
  *
  * WHY THIS FILE EXISTS
  * The shared components (Dialog, Tabs, Select, Slider, Switch,
- * Button — and therefore SettingsPanel) are painted entirely
+ * Button) are painted entirely
  * from the `--color-*` / `--shadow-*` names defined in
  * `src/lib/styles/tokens.css`. That file is loaded for the whole
  * app and carries the OLD shell's palette (#17191e greys), which

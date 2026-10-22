@@ -104,6 +104,7 @@ assert.equal(legacy.topTabs, undefined);
   const rail = { owned: [] as Array<{ ownedId: string; agent: string; remoteProfileId?: string }> };
   const clearedAttachments: string[] = [];
   const disposed: string[] = [];
+  const closedViews: string[] = [];
   const dependencies = {
     rail,
     normalizeProvider,
@@ -114,6 +115,7 @@ assert.equal(legacy.topTabs, undefined);
     },
     evictConversationSession: (id: string) => states.delete(id),
     restoreSelectedConversationAttachments: (id: string) => clearedAttachments.push(id),
+    closeAguiViewInBackground: (id: string) => closedViews.push(id),
     rejectPendingAdmission: (value: { pendingAdmission: unknown }) => { value.pendingAdmission = null; },
     createConnection: () => ({}),
     createChat: ({ threadId }: { threadId: string }) => ({
@@ -159,6 +161,7 @@ assert.equal(legacy.topTabs, undefined);
   assert.equal(api.selectedConversationChat('parent-a', 'history-c'), null);
   assert.equal(states.has('history-c'), false);
   assert.deepEqual(disposed, ['history-a', 'history-b', 'history-c', 'parent-a']);
+  assert.deepEqual(closedViews, disposed, 'a disposed chat stops its backend view');
 
   const panelSource = readFileSync(new URL('../src/lib/shell/panels/agents/AgentsPanel.svelte', import.meta.url), 'utf8');
   const panelSelect = panelSource.slice(panelSource.indexOf('  async function select('), panelSource.indexOf('  function openFile('));

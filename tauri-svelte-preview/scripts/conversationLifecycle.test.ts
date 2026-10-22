@@ -41,6 +41,7 @@ function eventHarness(holdRegistration = false, holdListener?: string, holdInven
       } };
     },
     handleConversationStreamEnvelope() {}, handleConversationStreamResync() {},
+    registerAguiStream: async () => ({ unregister: async () => {} }), admitSelectedConversationChunks() {},
     listen: async (name: string, callback: Function) => {
       handlers.set(name, callback);
       if (name === holdListener) { listening.resolve(); await listenerReply.promise; }
