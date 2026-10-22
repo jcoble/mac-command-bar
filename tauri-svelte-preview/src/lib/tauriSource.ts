@@ -2602,6 +2602,12 @@ export async function cancelAgentConversationRequestInBackground(requestId: numb
   }
 }
 
+/** The chat view closed: the backend stops projecting its session to the AG-UI channel. The session goes on. */
+export async function closeAguiViewInBackground(ownedId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try { await (await import('./workspaceInvoke.ts')).invoke('close_agui_view', { ownedId }); } catch (error) { console.warn('Could not close the chat view', error); }
+}
+
 export async function updateAgentConversationSessionMetaFromTauri(input: {
   ownedId: string;
   model: string | null;

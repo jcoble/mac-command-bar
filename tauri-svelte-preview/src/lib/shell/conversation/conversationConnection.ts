@@ -42,7 +42,7 @@ import type {
   AguiSnapshot,
   ConversationAttachment
 } from './conversationTypes.ts';
-import { extendAgentConversationImportFromTauri } from '../../tauriSource.ts';
+import { closeAguiViewInBackground, extendAgentConversationImportFromTauri } from '../../tauriSource.ts';
 import { rail } from '../stores/sessionRailStore.svelte.ts';
 
 const PAGE_BYTES = 512 * 1024;
@@ -660,6 +660,7 @@ function disposeConversationChat(selection: ActiveConversation): void {
   // A pending send is not rejected here: leaving the session does not stop it,
   // so its receipt or its own failure settles the admission.
   selection.chat.dispose();
+  void closeAguiViewInBackground(selection.historyOwnedId);
 }
 
 export function disposeChildConversationChat(workspaceOwnedId?: string): void {
