@@ -6248,9 +6248,9 @@ async fn pump_inbound(
                 let command = params.pointer("/toolCall/rawInput/command").and_then(|command| command.as_str().map(str::to_owned)
                     .or_else(|| command.as_array().map(|parts| parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))));
                 // The descriptor's permission-handler pre-approval answers the agent's Assembly tools here (TSK-1522).
-                let pre_approved = sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&owned_id).is_some_and(|session|
-                    session.writer_lease.owner == AgentWriterLeaseOwner::Structured && super::providers::descriptors::handler_approves(session.provider, &params));
-                if let Some(answer) = pre_approved.then(|| permission_response(&options, AgentApprovalDecision::Accept).ok()).flatten() {
+                let answer = sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&owned_id).filter(|session| session.generation == generation
+                    && session.writer_lease.owner == AgentWriterLeaseOwner::Structured).and_then(|session| super::providers::descriptors::handler_answer(session.provider, &params));
+                if let Some(answer) = answer {
                     if let Err(error) = transport_runtime.respond(wire_id, answer).await { crate::debug_log::stderr_log!("Could not pre-approve an Assembly tool: {error}"); }
                     continue;
                 }

@@ -9,7 +9,7 @@
       "unattended": { "mode": "agent" },
       "pre_approval": { "env": { "CODEX_CONFIG": { "mcp_servers.assembly.default_tools_approval_mode": "approve" } } },
       "proof_home": { "env": { "CODEX_HOME": "{home}" } },
-      "read_only": { "env": { "CODEX_CONFIG": { "sandbox_mode": "read-only" } } },
+      "read_only": { "mode": "read-only", "env": { "CODEX_CONFIG": { "sandbox_mode": "read-only" } } },
       "login": { "file": "auth.json", "refresh_field": "/tokens/refresh_token", "action": "blank" }
     },
     {
@@ -22,7 +22,7 @@
       "pre_approval": { "meta": { "claudeCode": { "options": { "allowedTools": ["mcp__assembly"] } } } },
       "proof_home": { "env": { "CLAUDE_CONFIG_DIR": "{home}" } },
       "read_only": { "meta": { "claudeCode": { "options": { "tools": [] } } } },
-      "login": { "file": ".credentials.json", "refresh_field": "/claudeAiOauth/refreshToken", "action": "delete", "expiry_field": "/claudeAiOauth/expiresAt" }
+      "login": { "file": ".credentials.json", "refresh_field": "/claudeAiOauth/refreshToken", "action": "delete" }
     },
     {
       "id": "antigravity",

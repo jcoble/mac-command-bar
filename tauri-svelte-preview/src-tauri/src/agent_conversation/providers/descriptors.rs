@@ -14,9 +14,13 @@
 //! - `pre_approval` lets unattended workers use Assembly's own tools without asking: Claude's
 //!   `allowedTools` meta, Codex's `default_tools_approval_mode` config, and for Antigravity, which
 //!   has neither, Assembly's permission handler answers them (TSK-1522; its MCP requests carry
-//!   `_meta.mcp.server`, Antigravity 1.2.1 tools.py:386-391, server.py:4400).
+//!   `_meta.mcp.server`, Antigravity 1.2.1 tools.py:386-391, server.py:4400). Antigravity lets a server Assembly supplies at session start replace a configured one
+//!   of the same name (mcp_servers.py:130-147), and every Assembly session supplies its `assembly`
+//!   endpoint, so that name is Assembly's endpoint. Only Allow (once) is chosen, never Allow Always.
 //! - `login`: Claude reads an empty refresh token as expired, so it is deleted; Codex can't read
-//!   `auth.json` without the field (token_data.rs:22), so it is blanked. Antigravity's saved login
+//!   `auth.json` without the field (token_data.rs:22), so it is blanked. Every refresh token in the
+//!   file goes (Claude's `mcpOAuth` entries hold their own); access tokens stay for the proof
+//!   session. Codex's `OPENAI_API_KEY` stays: it is an API key, not a way to renew the login. Antigravity's saved login
 //!   holds only a refresh token, so it has no proof home and can't prove (plan 3.11).
 
 use std::sync::LazyLock;
@@ -89,8 +93,6 @@ pub struct LoginEntry {
     /// JSON pointers into that file.
     pub refresh_field: String,
     pub action: LoginAction,
-    #[serde(default)]
-    pub expiry_field: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -128,11 +130,18 @@ pub fn for_adapter(adapter_id: &str) -> Option<&'static ProviderDescriptor> {
     all().iter().find(|descriptor| descriptor.adapter_id == adapter_id)
 }
 
-/// Whether Assembly's permission handler approves this ACP permission request itself: the
-/// provider's pre-approval says so and the request is for one of Assembly's own MCP tools.
-pub fn handler_approves(provider: AgentConversationProvider, params: &Value) -> bool {
-    provider.descriptor().pre_approval.permission_handler
-        && params.pointer("/toolCall/_meta/mcp/server").and_then(Value::as_str) == Some("assembly")
+/// Assembly's own answer to an ACP permission request, when the provider's pre-approval asks the
+/// permission handler to allow Assembly's MCP tools: the request's allow-once option.
+pub fn handler_answer(provider: AgentConversationProvider, params: &Value) -> Option<Value> {
+    let assembly_tool = params.pointer("/toolCall/_meta/is_mcp_tool_call") == Some(&Value::Bool(true))
+        && params.pointer("/toolCall/_meta/mcp/server").and_then(Value::as_str) == Some("assembly");
+    if !provider.descriptor().pre_approval.permission_handler || !assembly_tool {
+        return None;
+    }
+    let option = params.get("options")?.as_array()?.iter()
+        .find(|option| option.get("kind").and_then(Value::as_str) == Some("allow_once"))?;
+    let option_id = option.get("optionId").or_else(|| option.get("option_id"))?;
+    Some(serde_json::json!({"outcome": {"outcome": "selected", "optionId": option_id}}))
 }
 
 /// The value to set for `key`, given what it would inherit.
@@ -192,23 +201,35 @@ impl ProviderDescriptor {
 
 #[allow(dead_code)] // Used by proof mode (plan 3.11), a later piece.
 impl LoginEntry {
-    /// A copy of the login with its refresh token removed.
-    pub fn stripped(&self, login: &Value) -> Value {
+    /// A copy of the login with every refresh token removed; an error when the descriptor's
+    /// refresh field isn't there, because the file's format has changed.
+    pub fn stripped(&self, login: &Value) -> Result<Value, String> {
+        if login.pointer(&self.refresh_field).is_none() {
+            return Err(format!("The login in {} has no {}", self.file, self.refresh_field));
+        }
         let mut copy = login.clone();
-        let (parent, field) = self.refresh_field.rsplit_once('/').unwrap_or(("", &self.refresh_field));
-        if let Some(Value::Object(parent)) = copy.pointer_mut(parent) {
-            match self.action {
-                LoginAction::Delete => {
-                    parent.remove(field);
+        Self::strip_refresh_tokens(&mut copy, self.action);
+        Ok(copy)
+    }
+
+    fn strip_refresh_tokens(value: &mut Value, action: LoginAction) {
+        let is_refresh_token = |key: &str| key.to_ascii_lowercase().replace('_', "") == "refreshtoken";
+        match value {
+            Value::Object(object) => {
+                if action == LoginAction::Delete {
+                    object.retain(|key, _| !is_refresh_token(key));
                 }
-                LoginAction::Blank => {
-                    if let Some(value) = parent.get_mut(field) {
+                for (key, value) in object.iter_mut() {
+                    if is_refresh_token(key) {
                         *value = Value::String(String::new());
+                    } else {
+                        Self::strip_refresh_tokens(value, action);
                     }
                 }
             }
+            Value::Array(items) => items.iter_mut().for_each(|item| Self::strip_refresh_tokens(item, action)),
+            _ => {}
         }
-        copy
     }
 }
 
@@ -241,7 +262,8 @@ impl Serialize for AgentConversationProvider {
 impl<'de> Deserialize<'de> for AgentConversationProvider {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = String::deserialize(deserializer)?;
-        Self::parse(&value).ok_or_else(|| serde::de::Error::custom(format!("unknown provider {value}")))
+        let descriptor = all().iter().find(|descriptor| descriptor.id == value);
+        descriptor.map(ProviderDescriptor::provider).ok_or_else(|| serde::de::Error::custom(format!("unknown provider {value}")))
     }
 }
 
@@ -264,6 +286,10 @@ mod tests {
             assert_eq!(serde_json::from_value::<AgentConversationProvider>(json!(provider.id())).unwrap(), provider);
         }
         assert!(serde_json::from_value::<AgentConversationProvider>(json!("grok")).is_err());
+        // The wire stays exact; only transcript and workflow strings are trimmed and lower-cased.
+        assert!(serde_json::from_value::<AgentConversationProvider>(json!("Claude")).is_err());
+        assert!(serde_json::from_value::<AgentConversationProvider>(json!(" codex ")).is_err());
+        assert_eq!(AgentConversationProvider::parse(" Codex "), Some(AgentConversationProvider::Codex));
         assert_eq!(for_adapter("codex-acp").unwrap().id, "codex");
         assert!(parse_manifest(r#"{"providers":[{"id":"a","adapter_id":"x","display_name":"A"},{"id":"a","adapter_id":"y","display_name":"B"}]}"#).is_err());
     }
@@ -272,10 +298,12 @@ mod tests {
     fn launch_settings_merge_in_order_with_read_only_last() {
         let all_on = LaunchFor { unattended: true, pre_approval: true, proof: true, read_only: true };
         let claude = launch("claude", all_on).unwrap();
+        // Claude keeps auto under read_only: `tools: []` leaves it no built-in tools to run.
         assert_eq!(claude.mode.as_deref(), Some("auto"));
         assert_eq!(Value::Object(claude.meta), json!({"claudeCode": {"options": {"allowedTools": ["mcp__assembly"], "tools": []}}}));
         assert_eq!(claude.env, Map::from_iter([("CLAUDE_CONFIG_DIR".to_string(), json!("{home}"))]));
         let codex = launch("codex", all_on).unwrap();
+        assert_eq!(codex.mode.as_deref(), Some("read-only"));
         assert_eq!(codex.env["CODEX_CONFIG"], json!({"mcp_servers.assembly.default_tools_approval_mode": "approve", "sandbox_mode": "read-only"}));
         let pre_approval = LaunchFor { pre_approval: true, ..Default::default() };
         assert!(launch("antigravity", pre_approval).unwrap().permission_handler);
@@ -301,27 +329,40 @@ mod tests {
     }
 
     #[test]
-    fn logins_are_copied_without_their_refresh_token() {
+    fn logins_are_copied_without_any_refresh_token() {
         let claude = AgentConversationProvider::Claude.descriptor().login.as_ref().unwrap();
-        let login = json!({"claudeAiOauth": {"accessToken": "a", "refreshToken": "r", "expiresAt": 1}});
-        assert_eq!(claude.stripped(&login), json!({"claudeAiOauth": {"accessToken": "a", "expiresAt": 1}}));
-        assert_eq!(claude.expiry_field.as_deref(), Some("/claudeAiOauth/expiresAt"));
+        let login = json!({"claudeAiOauth": {"accessToken": "a", "refreshToken": "r", "expiresAt": 1},
+            "mcpOAuth": {"server|1": {"accessToken": "m", "refreshToken": "mr"}}});
+        assert_eq!(claude.stripped(&login).unwrap(), json!({"claudeAiOauth": {"accessToken": "a", "expiresAt": 1},
+            "mcpOAuth": {"server|1": {"accessToken": "m"}}}));
         let codex = AgentConversationProvider::Codex.descriptor().login.as_ref().unwrap();
-        let login = json!({"tokens": {"access_token": "a", "refresh_token": "r"}, "last_refresh": "t"});
-        assert_eq!(codex.stripped(&login), json!({"tokens": {"access_token": "a", "refresh_token": ""}, "last_refresh": "t"}));
+        let login = json!({"OPENAI_API_KEY": null, "tokens": {"access_token": "a", "refresh_token": "r"}, "last_refresh": "t"});
+        assert_eq!(codex.stripped(&login).unwrap(),
+            json!({"OPENAI_API_KEY": null, "tokens": {"access_token": "a", "refresh_token": ""}, "last_refresh": "t"}));
+        // A login whose format moved the refresh token is refused, never copied with it.
+        assert!(claude.stripped(&json!({"claudeAiOauth": {"accessToken": "a", "refresh": "r"}})).is_err());
+        assert!(codex.stripped(&json!({"refresh_token": "r"})).is_err());
         let antigravity = AgentConversationProvider::Antigravity.descriptor();
         assert!(antigravity.login.is_none() && antigravity.proof_home.is_none());
     }
 
     #[test]
-    fn the_permission_handler_approves_only_assembly_tools_for_providers_that_ask_it() {
-        // Antigravity 1.2.1 sends the MCP server in the tool call's _meta (tools.py:386-391).
-        let request = |server: &str| json!({"toolCall": {"_meta": {"mcp": {"tool": "report_result", "server": server}, "is_mcp_tool_call": true}}});
-        assert!(handler_approves(AgentConversationProvider::Antigravity, &request("assembly")));
-        assert!(!handler_approves(AgentConversationProvider::Antigravity, &request("notion")));
-        assert!(!handler_approves(AgentConversationProvider::Antigravity, &json!({"toolCall": {"title": "assembly_report_result"}})));
+    fn the_permission_handler_allows_assembly_tools_once_for_providers_that_ask_it() {
+        // Antigravity 1.2.1 sends the MCP server in the tool call's _meta (tools.py:386-391), and lists
+        // Allow Always before Allow (server.py:4380-4388).
+        let options = json!([{"optionId": "allow_always", "kind": "allow_always"}, {"optionId": "allow", "kind": "allow_once"},
+            {"optionId": "deny", "kind": "reject_once"}]);
+        let request = |server: &str| json!({"options": options, "toolCall": {"_meta": {"mcp": {"tool": "report_result", "server": server}, "is_mcp_tool_call": true}}});
+        let antigravity = AgentConversationProvider::Antigravity;
+        assert_eq!(handler_answer(antigravity, &request("assembly")), Some(json!({"outcome": {"outcome": "selected", "optionId": "allow"}})));
+        assert_eq!(handler_answer(antigravity, &request("notion")), None);
+        assert_eq!(handler_answer(antigravity, &json!({"options": options, "toolCall": {"title": "assembly_report_result"}})), None);
+        // With no allow-once choice the request goes to the owner rather than granting it for good.
+        let mut always_only = request("assembly");
+        always_only["options"] = json!([{"optionId": "allow_always", "kind": "allow_always"}]);
+        assert_eq!(handler_answer(antigravity, &always_only), None);
         // Claude and Codex pre-approve in the adapter, so their requests still reach the owner.
-        assert!(!handler_approves(AgentConversationProvider::Claude, &request("assembly")));
-        assert!(!handler_approves(AgentConversationProvider::Codex, &request("assembly")));
+        assert_eq!(handler_answer(AgentConversationProvider::Claude, &request("assembly")), None);
+        assert_eq!(handler_answer(AgentConversationProvider::Codex, &request("assembly")), None);
     }
 }
