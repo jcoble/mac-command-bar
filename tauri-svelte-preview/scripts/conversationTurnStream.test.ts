@@ -21,6 +21,7 @@ import {
   conversationMessagesFromEvents,
   displayItemsFromConversationEvents
 } from '../src/lib/shell/conversation/conversationMessages.ts';
+import { foldFileEdits, turnFileChanges } from '../src/lib/shell/conversation/conversationTimeline.ts';
 import type { AgentConversationEvent } from '../src/lib/shell/conversation/conversationTypes.ts';
 
 // The store reads `import.meta.env` and a runes module, so it is compiled the
@@ -160,7 +161,7 @@ test('streamed deltas build one reply and the finished message has the last word
   }
 });
 
-test('a tool call runs until it completes or fails, keeping the output it last reported', () => {
+test('a tool call streams its output until it completes or fails', () => {
   for (const provider of PROVIDERS) {
     for (const end of ['completed', 'failed']) {
       const event = stream(`owned-tool-${provider}`, provider);
@@ -175,9 +176,45 @@ test('a tool call runs until it completes or fails, keeping the output it last r
       const done = conversationMessagesFromEvents([...running,
         event({ kind: 'tool', itemId: 'tool-1', name: 'Run tests', state: end, output: 'one\ntwo\nend' })]);
       assert.equal(conversationHasRunningTool(done), false, `${provider} ${end}`);
-      assert.deepEqual(conversationDisplayItems(done).map((item) => [item.kind, item.state, item.output]), [['tool', end, 'one\ntwo\nend']]);
+      // Finished, the row keeps no output: opening it reads the call by id.
+      assert.deepEqual(conversationDisplayItems(done).map((item) => [item.kind, item.state, item.output, item.hasDetail]), [['tool', end, undefined, true]]);
     }
   }
+});
+
+// TSK-1574: a finished call's output and diff stay in the backend until its row opens.
+const editDiff = '--- a/notes.txt\n+++ b/notes.txt\n@@ -1,2 +1,3 @@\n-old line\n+new line\n+--- a removed-looking added line\n keep\n';
+
+test('a completed tool part keeps no output or diff but says it has details', () => {
+  const event = stream('owned-lazy-tool', 'claude');
+  const messages = conversationMessagesFromEvents([
+    event({ kind: 'tool', itemId: 'run', name: 'Bash', state: 'started', summary: 'seq 3', output: '1\n' }),
+    event({ kind: 'tool', itemId: 'run', name: 'Bash', state: 'completed', summary: 'seq 3', output: '1\n2\n3\n' }),
+    event({ kind: 'tool', itemId: 'grep', name: 'Grep', state: 'completed', output: 'a.ts:1 found\nb.ts:2 found' }),
+    event({ kind: 'tool', itemId: 'edit', name: 'Edit', state: 'completed', path: 'notes.txt', diff: editDiff }),
+    event({ kind: 'tool', itemId: 'empty', name: 'Read', state: 'completed', summary: 'nothing' })
+  ]);
+  assert.doesNotMatch(JSON.stringify(messages), /2\\n3|b\.ts|old line|removed-looking/);
+  assert.deepEqual(conversationDisplayItems(messages).map((item) => item.kind === 'tool'
+    ? [item.itemId, item.output, item.diff, item.hasDetail, item.added, item.removed, item.summary] : item.kind), [
+    ['run', undefined, undefined, true, undefined, undefined, 'seq 3'],
+    // The closed row's one line was the output's first line; it stays.
+    ['grep', undefined, undefined, true, undefined, undefined, 'a.ts:1 found'],
+    ['edit', undefined, undefined, true, 2, 1, undefined],
+    ['empty', undefined, undefined, undefined, undefined, undefined, 'nothing']
+  ]);
+});
+
+test('file edits count lines from added and removed when the diff is not loaded', () => {
+  const event = stream('owned-lazy-edit', 'codex');
+  // What a history page sends for an edit: the path and the counts, no diff.
+  const items = displayItemsFromConversationEvents([
+    event({ kind: 'userMessage', itemId: 'ask', text: 'Edit it', completed: true }),
+    event({ kind: 'tool', itemId: 'edit', name: 'apply_patch', state: 'completed', path: 'notes.txt', hasDetail: true, added: 2, removed: 1 })
+  ]);
+  assert.deepEqual(turnFileChanges(items), { files: 1, added: 2, removed: 1 });
+  const groups = foldFileEdits(items).flatMap((item) => item.kind === 'fileEdits' ? item.edits : []);
+  assert.deepEqual(groups, [{ itemId: 'edit', path: 'notes.txt', added: 2, removed: 1 }]);
 });
 
 // Protects dda06a519: the Thinking row closes when the reply starts or its own

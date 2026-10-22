@@ -1156,11 +1156,11 @@ impl RemoteConnectionManager {
     }
 
     pub fn owns(&self, owned_id: &str) -> bool {
-        self.remote_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(owned_id)
+        self.remote_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(owned_id)
     }
+
+    /// The key this Mac's saved copy of remote session `owned_id` is stored under.
+    pub(crate) fn history_key(&self, owned_id: &str) -> Result<String, String> { Ok(RemoteHistory::key(&self.profile_for_owned_id(owned_id)?, owned_id)) }
 
     /// A machine may route only ids that are neither this Mac's own sessions nor routed to another machine;
     /// otherwise a hostile backend could list a local session's id and receive its prompts and approvals.

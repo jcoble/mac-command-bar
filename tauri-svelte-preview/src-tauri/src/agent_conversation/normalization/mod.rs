@@ -295,7 +295,7 @@ pub(super) fn payload_from_session_update_for_turn(
                 summary: details.summary,
                 output: details.output,
                 path: details.path,
-                diff: details.diff,
+                diff: details.diff, has_detail: false, added: None, removed: None,
             })
         }
         "tool_call_update" => {
@@ -318,7 +318,7 @@ pub(super) fn payload_from_session_update_for_turn(
                 summary: details.summary,
                 output: details.output,
                 path: details.path,
-                diff: details.diff,
+                diff: details.diff, has_detail: false, added: None, removed: None,
             })
         }
         "plan" => Some(AgentConversationPayload::Plan {

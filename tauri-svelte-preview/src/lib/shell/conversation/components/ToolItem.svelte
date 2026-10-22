@@ -16,6 +16,7 @@
   import { toolFilePath, type ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import { sanitizeConversationHref } from '$lib/shell/conversation/conversationMessageSafety.ts';
   import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
+  import { readAgentConversationToolCallFromTauri } from '$lib/tauriSource.ts';
   import { highlightCode, languageForPath } from '../../markdown/codeHighlight.ts';
 
   const disclosure = getContext<ConversationDisclosureContext>(conversationDisclosureContext);
@@ -30,13 +31,44 @@
   const rawInput = $derived(item.metadata?.rawInput ?? (item.toolKind === 'command' ? item.summary : undefined));
   const hasOutput = $derived(!!item.output && item.output !== item.diff && /\S/.test(item.output));
   const input = $derived(!detailsOpen || rawInput == null ? '' : typeof rawInput === 'string' ? rawInput : JSON.stringify(rawInput, null, 2));
-  const output = $derived(detailsOpen && hasOutput ? item.output!.trimEnd() : '');
+  /* A finished call's output and diff stay in the backend: an opened row reads them and lets them go
+     when it closes. Until the read lands it keeps the output the call streamed, so a row open when
+     its call finishes does not go blank for a moment. */
+  let details = $state<{ output: string | null; diff: string | null } | null>(null);
+  let streamed: string | undefined;
+  const readId = $derived(detailsOpen && item.hasDetail ? item.itemId : '');
+  /* A derived value, so streamed updates that leave the state unchanged do not read again. */
+  const callState = $derived(item.state);
+  async function readDetails(itemId: string, signal: AbortSignal): Promise<void> {
+    try {
+      const call = await readAgentConversationToolCallFromTauri(disclosure?.ownedId ?? '', itemId, signal);
+      if (!call) return;
+      details = call;
+      // Opening moved the row to the top of its tool list before it had anything to show; say it is
+      // open again so the list moves it there now that it is taller. Setting the same state changes nothing else.
+      disclosure?.set(`${itemId}:details`, true);
+    } catch { if (!signal.aborted) details = { output: null, diff: null }; }
+  }
+  $effect(() => {
+    details = null;
+    // A call that finishes while its row is open is read again: what was read before may be a partial result.
+    void callState;
+    if (!readId) return;
+    const controller = new AbortController();
+    void readDetails(readId, controller.signal);
+    return () => controller.abort();
+  });
+  const liveOutput = $derived.by(() => (streamed = detailsOpen ? item.output || streamed : undefined));
+  /* A running call that streams output shows that stream; the read output may be a partial result. */
+  const shownOutput = $derived(details && !(callState === 'running' && liveOutput) ? details.output ?? '' : liveOutput ?? '');
+  const shownDiff = $derived(details ? details.diff ?? undefined : item.diff);
+  const output = $derived(detailsOpen && shownOutput !== shownDiff && /\S/.test(shownOutput) ? shownOutput.trimEnd() : '');
   const filePath = $derived(toolFilePath(item));
   const fileAction = $derived(item.toolKind === 'file-edit' || (item.toolKind === 'fetch' && !!filePath && !/^https?:/i.test(filePath)));
   const label = $derived(fileAction ? item.toolKind === 'file-edit' ? 'Edited' : 'Read' : item.toolKind === 'command' ? 'Ran' : item.title);
   const shownLines = $derived(detailsOpen ? highlightCode(output, languageForPath(filePath)) : []);
   /* Call arguments remain inspectable even when the tool returns no output. */
-  const expandable = $derived((rawInput != null && rawInput !== '') || hasOutput || !!item.diff);
+  const expandable = $derived((rawInput != null && rawInput !== '') || hasOutput || !!item.diff || !!item.hasDetail);
   const statusLabel = $derived(
     item.state === 'running' ? 'Running' : item.state === 'completed' ? 'Done' : item.state === 'failed' ? 'Failed' : 'Queued'
   );
@@ -54,14 +86,14 @@
     return href && /^https?:/i.test(href) ? href : '';
   });
 
-  function fileDisplayItem(tool: Extract<ConversationDisplayItem, { kind: 'tool' }>): Extract<ConversationDisplayItem, { kind: 'file' }> {
+  function fileDisplayItem(tool: Extract<ConversationDisplayItem, { kind: 'tool' }>, diff: string): Extract<ConversationDisplayItem, { kind: 'file' }> {
     return {
       kind: 'file',
       itemId: `${tool.itemId}:diff`,
-      text: tool.diff ?? '',
+      text: diff,
       completed: tool.state === 'completed',
       timestampMs: tool.timestampMs,
-      metadata: { path: toolFilePath(tool), diff: tool.diff ?? '' }
+      metadata: { path: toolFilePath(tool), diff }
     };
   }
 </script>
@@ -112,7 +144,8 @@
         <span>Input</span>
         <pre><code>{input}</code></pre>
       {/if}
-      {#if item.diff}<FileChangeItem item={fileDisplayItem(item)} {onFileLink} />{/if}
+      {#if shownDiff}<FileChangeItem item={fileDisplayItem(item, shownDiff)} {onFileLink} />{/if}
+      {#if details && !details.output && !details.diff}<span>Details are not available</span>{/if}
       {#if output}
         <pre data-testid="timeline-tool-output"><code>{#each shownLines as line, index}{#if index > 0}{'\n'}{/if}{#each line as span}<span class={span.className}>{span.value}</span>{/each}{/each}</code></pre>
       {/if}
