@@ -230,6 +230,20 @@ fn a_caller_with_no_running_step_cannot_see_or_call_report_result() {
 }
 
 #[test]
+fn a_starting_step_already_sees_and_can_call_report_result() {
+    let repo = RunRepo::new();
+    let engine = run_engine(Arc::new(FakeRuntime::default()));
+    let endpoint = reporter(&engine);
+    let mut run = loop_run(&engine, &repo.0, "  build: { result: build, agent: { provider: codex }, prompt: prompts/p.md }\n");
+    // A provider lists its tools while its session activates, before dispatch returns and the step is running.
+    run.nodes.iter_mut().find(|node| node.node_id == "build").unwrap().state = WorkflowNodeState::Starting;
+    engine.append(&mut run, "workflow.test.starting", "starting", Some("build")).unwrap();
+    let token = token_of(&engine, &endpoint, &run.id, "build");
+    assert!(report_schema(&endpoint, &token).unwrap()["properties"]["commits"].is_object());
+    report(&engine, &endpoint, &run.id, "build", built()).unwrap();
+}
+
+#[test]
 fn an_agent_step_whose_result_is_not_build_fails_changed_code() {
     let repo = RunRepo::new();
     let engine = run_engine(Arc::new(FakeRuntime::default()));

@@ -2928,7 +2928,7 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read workflow lease row", error))
     }
 
-    /// The run, attempt and output contract of the workflow step `owned_id` is running now.
+    /// The run, attempt and output contract of the workflow step `owned_id` is starting or running now.
     pub fn workflow_running_step(&self, owned_id: &str) -> Result<Option<(String, String, String)>> {
         use rusqlite::OptionalExtension;
         let connection = self.lock()?;
@@ -2944,7 +2944,7 @@ impl SessionStore {
              SELECT json_extract(run, '$.id'), json_extract(n.value, '$.id'), json_extract(n.value, '$.outputContract')
              FROM latest, json_each(run, '$.nodes') n
              WHERE json_extract(n.value, '$.ownedId') = ?1
-               AND json_extract(n.value, '$.state') = 'running'
+               AND json_extract(n.value, '$.state') IN ('starting', 'running')
              LIMIT 1",
             [owned_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).optional().map_err(|error| StoreError::sqlite("could not find the running step", error))

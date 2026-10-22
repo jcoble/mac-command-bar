@@ -303,7 +303,7 @@ impl WorkflowEngine {
     /// Checks a step's report against its contract and the checkout; an error names the failing field.
     pub(crate) fn check_report(&self, run_id: &str, attempt_id: &str, value: &Value) -> Result<(), WorkflowError> {
         let run = self.require_run(run_id)?;
-        let node = run.nodes.iter().find(|node| node.id == attempt_id && node.state == WorkflowNodeState::Running)
+        let node = run.nodes.iter().find(|node| node.id == attempt_id && matches!(node.state, WorkflowNodeState::Starting | WorkflowNodeState::Running))
             .ok_or_else(|| WorkflowError::InvalidTransition("That step is no longer running".into()))?;
         WorkflowPolicy::validate_output(node.output_contract, value)?;
         check_evidence(&run, &node.node_id, node.output_contract, value)
