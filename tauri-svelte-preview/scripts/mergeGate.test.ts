@@ -145,6 +145,8 @@ test('<IsTestProject>false is a tap', () => {
 test('a deleted or renamed test file is a tap', () => {
   assertTap(withFile(file('src/lib/a.test.ts', '', 'removed')), /^TAP: test file removed: src\/lib\/a\.test\.ts$/m);
   assertTap(withFile({ ...file('src/lib/b.ts', '', 'renamed'), previous_filename: 'src/lib/b.test.ts' }), /^TAP: test file renamed: src\/lib\/b\.test\.ts$/m);
+  assertTap(withFile(file('core/src/broker/tests.rs', '', 'removed')), /^TAP: test file removed: core\/src\/broker\/tests\.rs$/m);
+  assertTap(withFile(file('core/src/git/regression_tests.rs', '', 'removed')), /^TAP: test file removed: core\/src\/git\/regression_tests\.rs$/m);
 });
 
 test('a new dependency in a lockfile is a tap; a version bump is not', () => {

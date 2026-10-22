@@ -36,7 +36,7 @@ const SKIPS: Array<[RegExp, RegExp]> = [
   [/\.dart$/, /\bskip:/],
   [/\.(csproj|props|targets)$/, /<IsTestProject>false/],
 ];
-const TEST_FILE = /(^|\/)(tests?|__tests__)\/|\.(test|spec)\.[^/]+$|_test\.\w+$|Tests?\.cs$/;
+const TEST_FILE = /(^|\/)(tests?|__tests__)\/|\.(test|spec)\.[^/]+$|_test\.\w+$|(^|\/|_)tests\.rs$|Tests?\.cs$/;
 
 const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1);
 const short = (sha: string) => sha.slice(0, 9);
