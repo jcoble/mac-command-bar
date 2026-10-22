@@ -161,9 +161,9 @@ pub fn start_acp_usage(path: std::path::PathBuf, store: std::sync::Arc<mcb_core:
     let (sender, turns) = std::sync::mpsc::channel::<crate::usage_db::acp::AcpTurn>();
     std::thread::spawn(move || {
         for mut turn in turns {
-            turn.node_run_id = store.node_run_for_session(&turn.owned_id).unwrap_or_else(|error| {
+            (turn.node_run_id, turn.workflow_id) = store.workflow_step_for_session(&turn.owned_id).unwrap_or_else(|error| {
                 crate::debug_log::stderr_log!("Could not find the session's workflow step: {error}");
-                None
+                (None, None)
             });
             if let Err(error) = UsageDb::open(&path).and_then(|db| db.insert_acp_turn(&turn)) {
                 crate::debug_log::stderr_log!("Could not store turn usage: {error}");

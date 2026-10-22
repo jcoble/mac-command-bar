@@ -23,17 +23,19 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not find the session for that conversation", error))
     }
 
-    /// The workflow step attempt a session runs, from its latest workflow event (one indexed read).
-    pub fn node_run_for_session(&self, owned_id: &str) -> Result<Option<String>> {
+    /// The workflow step attempt a session runs and its workflow, from the session's latest
+    /// workflow event (one indexed read).
+    pub fn workflow_step_for_session(&self, owned_id: &str) -> Result<(Option<String>, Option<String>)> {
         self.lock()?
             .query_row(
-                "SELECT json_extract(payload_json,'$.nodeRunId') FROM orchestration_events
+                "SELECT json_extract(payload_json,'$.nodeRunId'), json_extract(payload_json,'$.workflowId')
+                 FROM orchestration_events
                  WHERE json_extract(payload_json,'$.ownedId') = ?1 ORDER BY sequence DESC LIMIT 1",
                 [owned_id],
-                |row| row.get::<_, Option<String>>(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
-            .map(Option::flatten)
+            .map(Option::unwrap_or_default)
             .map_err(|error| StoreError::sqlite("could not find the session's workflow step", error))
     }
 }
@@ -80,16 +82,17 @@ mod tests {
     }
 
     #[test]
-    fn node_run_for_session_reads_the_latest_workflow_event_of_that_session() {
+    fn workflow_step_for_session_reads_the_latest_workflow_event_of_that_session() {
         let store = store();
         store.lock_write().unwrap().execute_batch(
             r#"INSERT INTO orchestration_events (id, run_id, kind, timestamp, sequence, payload_json) VALUES
-                ('e1','run-1','workflow.node.started','1',1,'{"ownedId":"agent-a","nodeRunId":"run-1:build:1"}'),
-                ('e2','run-1','workflow.node.started','2',2,'{"ownedId":"agent-b","nodeRunId":"run-1:review:1"}'),
-                ('e3','run-1','workflow.node.finished','3',3,'{"ownedId":"agent-a","nodeRunId":"run-1:build:1"}');"#,
+                ('e1','run-1','workflow.node.started','1',1,'{"ownedId":"agent-a","nodeRunId":"run-1:build:1","workflowId":"spec-to-pr"}'),
+                ('e2','run-1','workflow.node.started','2',2,'{"ownedId":"agent-b","nodeRunId":"run-1:review:1","workflowId":"spec-to-pr"}'),
+                ('e3','run-1','workflow.node.finished','3',3,'{"ownedId":"agent-a","nodeRunId":"run-1:build:1","workflowId":"spec-to-pr"}');"#,
         ).unwrap();
-        assert_eq!(store.node_run_for_session("agent-a").unwrap().as_deref(), Some("run-1:build:1"));
-        assert_eq!(store.node_run_for_session("agent-b").unwrap().as_deref(), Some("run-1:review:1"));
-        assert_eq!(store.node_run_for_session("chat").unwrap(), None);
+        let step = |owned_id: &str| store.workflow_step_for_session(owned_id).unwrap();
+        assert_eq!(step("agent-a"), (Some("run-1:build:1".into()), Some("spec-to-pr".into())));
+        assert_eq!(step("agent-b"), (Some("run-1:review:1".into()), Some("spec-to-pr".into())));
+        assert_eq!(step("chat"), (None, None));
     }
 }

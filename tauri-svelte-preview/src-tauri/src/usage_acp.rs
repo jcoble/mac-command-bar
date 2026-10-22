@@ -18,10 +18,15 @@ pub const ACP_SOURCE_KIND: &str = "acp";
 /// write. A stand-in until the provider descriptors carry rates (TSK-1594);
 /// `rebuild_rates` copies it into `usage_rates` at startup.
 pub const SEEDED_RATES: &[(&str, f64, f64, f64, f64)] = &[
+    ("gpt-6.1-sol", 2.0, 10.0, 0.1, 2.5),
     ("gpt-5.6-sol", 5.0, 30.0, 0.5, 6.25), ("codex", 5.0, 30.0, 0.5, 6.25),
     ("gpt-5.6-terra", 2.5, 15.0, 0.25, 3.125), ("gpt-5.6-luna", 1.0, 6.0, 0.1, 1.25),
     ("gpt-5.5", 5.0, 30.0, 0.5, 6.25), ("gpt-5.4", 2.5, 15.0, 0.25, 2.5),
     ("gpt-5.3-codex", 1.75, 14.0, 0.175, 1.75), ("gpt-5.2-codex", 1.75, 14.0, 0.175, 1.75),
+    ("claude-opus-5-5", 4.0, 20.0, 0.2, 5.0),
+    ("claude-sonnet-5-5", 2.0, 10.0, 0.1, 2.5),
+    // Prompts up to 100,000 tokens; longer prompts cost five times as much.
+    ("claude-haiku-5-5", 0.1, 0.5, 0.01, 0.125),
     ("claude-opus-5", 5.0, 25.0, 0.5, 6.25), ("claude-opus-4-8", 5.0, 25.0, 0.5, 6.25),
     ("claude-opus-4.8", 5.0, 25.0, 0.5, 6.25), ("claude-opus-4-7", 5.0, 25.0, 0.5, 6.25),
     ("claude-opus-4.7", 5.0, 25.0, 0.5, 6.25), ("claude-opus-4-6", 5.0, 25.0, 0.5, 6.25),
@@ -43,6 +48,11 @@ pub struct AcpTurn {
     /// The latest `usage_update` cost: the session's running total in USD.
     pub cost_total_usd: Option<f64>,
     pub node_run_id: Option<String>,
+    /// The workflow whose step the session runs, so per-workflow totals find the rows.
+    pub workflow_id: Option<String>,
+    /// The session was loaded or resumed rather than created, so the provider's running
+    /// cost may already include earlier turns; its first ACP turn only sets the baseline.
+    pub resumed: bool,
     /// When the turn's prompt went out. Transcript rows between then and when
     /// the turn's rows are written belong to this turn, and ACP counts them.
     pub occurred_at_micros: i64,
@@ -70,7 +80,8 @@ impl UsageDb {
     /// total, so the turn's share is that total less the session's previous
     /// total; both go on the turn's largest row. A total below the previous one
     /// means the provider restarted its count, so the whole total is the share.
-    /// The session's remaining transcript rows are attributed to it.
+    /// The session's remaining transcript rows are attributed to it (the transcript
+    /// reader's upsert leaves a stored row's owner as it is).
     /// Transcript rows for the same native session written during the turn are
     /// dropped, since ACP counts it; rows of any other turn stay.
     pub fn insert_acp_turn(&self, turn: &AcpTurn) -> Result<usize, String> {
@@ -96,14 +107,11 @@ impl UsageDb {
                 let previous: Option<i64> = transaction.query_row(
                     "SELECT reported_cost_total_micros FROM usage_events WHERE owned_id = ?1 AND source_kind = ?2 AND reported_cost_total_micros IS NOT NULL ORDER BY id DESC LIMIT 1",
                     params![turn.owned_id, ACP_SOURCE_KIND], |row| row.get(0)).optional()?;
-                // A session with transcript history from before its first ACP turn has an
-                // unknown earlier total, so that turn only sets the baseline.
-                let older_history: bool = transaction.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM usage_events WHERE owned_id IN (?1, ?2) AND source_kind <> ?3 AND occurred_at_micros < ?4)",
-                    params![turn.owned_id, source_key, ACP_SOURCE_KIND, turn.occurred_at_micros], |row| row.get(0))?;
+                // A loaded or resumed session's total includes turns from before this one,
+                // so its first ACP turn only sets the baseline.
                 let share = match previous {
                     Some(previous) => Some(if total >= previous { total - previous } else { total }),
-                    None => (!older_history).then_some(total),
+                    None => (!turn.resumed).then_some(total),
                 };
                 Ok((share, total))
             }).transpose().map_err(|error| self.database_error("could not read reported cost", error))?;
@@ -115,12 +123,13 @@ impl UsageDb {
         let written_at = super::now_micros();
         for (index, t) in tokens.iter().enumerate() {
             transaction.execute(
-                "INSERT INTO usage_events (provider, provider_instance_id, owned_id, turn_id, project_id, workspace_id, node_run_id, occurred_at_micros, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, reported_cost_micros, reported_cost_total_micros, source_kind, source_event_id, source_key, inserted_at_micros) VALUES (?1, 'local', ?2, ?3, ?17, ?18, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?16, ?13, ?14, ?15, ?19) ON CONFLICT(provider, provider_instance_id, source_kind, source_event_id) DO NOTHING",
+                "INSERT INTO usage_events (provider, provider_instance_id, owned_id, turn_id, project_id, workspace_id, node_run_id, workflow_id, occurred_at_micros, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, reported_cost_micros, reported_cost_total_micros, source_kind, source_event_id, source_key, inserted_at_micros) VALUES (?1, 'local', ?2, ?3, ?17, ?18, ?4, ?20, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?16, ?13, ?14, ?15, ?19) ON CONFLICT(provider, provider_instance_id, source_kind, source_event_id) DO NOTHING",
                 params![turn.provider, turn.owned_id, turn.turn_id, turn.node_run_id, turn.occurred_at_micros,
                     t.input as i64, t.output as i64, t.cache_read as i64, t.cache_write as i64, t.reasoning as i64, t.model,
                     cost.filter(|_| Some(index) == largest).and_then(|(share, _)| share), ACP_SOURCE_KIND,
                     format!("{}:{}:{}", turn.owned_id, turn.turn_id, t.model), source_key,
-                    cost.filter(|_| Some(index) == largest).map(|(_, total)| total), project_id, turn.cwd, written_at],
+                    cost.filter(|_| Some(index) == largest).map(|(_, total)| total), project_id, turn.cwd, written_at,
+                    turn.workflow_id],
             ).map_err(|error| self.database_error("could not write ACP usage", error))?;
         }
         transaction.execute("DELETE FROM usage_events WHERE owned_id = ?1 AND source_kind <> ?2 AND occurred_at_micros BETWEEN ?3 AND ?4", params![source_key, ACP_SOURCE_KIND, turn.occurred_at_micros, written_at])
@@ -291,17 +300,87 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    // Claude writes a sub-agent's calls to their own transcript file under the parent session id.
+    // The turn's `model_usage` already counts them (Claude's result `modelUsage` is the main
+    // thread's usage plus the sub-agent's), so they are replaced like the main transcript's rows.
+    #[test]
+    fn sub_agent_transcript_rows_of_an_acp_turn_are_replaced_because_its_usage_counts_them() {
+        let (path, db) = open();
+        let start = 1_700_000_000_000_000;
+        let mut sub_agent = transcript_row("sub-agent", "native-1", start + 1);
+        sub_agent.source_key = "sub-agent-file".into();
+        db.insert_events_with_cursor(&[transcript_row("main", "native-1", start + 1), sub_agent], None).unwrap();
+        db.insert_acp_turn(&turn("turn-1", vec![model("claude-opus-5-5", 2, 10, 10, 5)], None)).unwrap();
+        let left: i64 = db.connection().unwrap().query_row("SELECT COUNT(*) FROM usage_events WHERE source_kind = 'claude-jsonl'", [], |row| row.get(0)).unwrap();
+        assert_eq!(left, 0);
+        let _ = std::fs::remove_file(path);
+    }
+
     // A chat started before ACP rows: Claude's running total already includes its earlier turns.
     #[test]
     fn an_older_chat_stays_one_session_and_its_first_acp_turn_only_sets_the_cost_baseline() {
         let (path, db) = open();
         db.insert_events_with_cursor(&[transcript_row("old", "native-1", 1_600_000_000_000_000)], None).unwrap();
-        db.insert_acp_turn(&turn("turn-1", vec![model("claude-opus-5-5", 2, 10, 10, 5)], Some(0.55))).unwrap();
+        let mut first = turn("turn-1", vec![model("claude-opus-5-5", 2, 10, 10, 5)], Some(0.55));
+        first.resumed = true;
+        db.insert_acp_turn(&first).unwrap();
         let mut next = turn("turn-2", vec![model("claude-opus-5-5", 2, 10, 10, 5)], Some(0.60));
         next.occurred_at_micros += 1;
         db.insert_acp_turn(&next).unwrap();
         assert_eq!(rows(&db).iter().map(|row| row.5).collect::<Vec<_>>(), [None, Some(50_000)]);
         assert_eq!(db.read_usage_summary(&UsageFilter::default()).unwrap().session_count, 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    // The provider's running total of a loaded or resumed session includes turns from before
+    // Assembly saw it, whether or not the transcript indexer has read them yet.
+    #[test]
+    fn a_resumed_sessions_first_turn_only_sets_the_cost_baseline_and_a_new_ones_takes_the_total() {
+        let (path, db) = open();
+        let mut resumed = turn("turn-1", vec![model("claude-opus-5-5", 2, 10, 10, 5)], Some(0.55));
+        resumed.resumed = true;
+        db.insert_acp_turn(&resumed).unwrap();
+        let mut fresh = turn("turn-1", vec![model("claude-opus-5-5", 2, 10, 10, 5)], Some(0.05));
+        (fresh.owned_id, fresh.native_session_id) = ("assembly-2".into(), Some("native-2".into()));
+        db.insert_acp_turn(&fresh).unwrap();
+        assert_eq!(rows(&db).iter().map(|row| row.5).collect::<Vec<_>>(), [None, Some(50_000)]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn rows_of_a_workflow_step_carry_its_workflow() {
+        let (path, db) = open();
+        let mut step = turn("turn-1", vec![model("claude-opus-5-5", 2, 10, 10, 5)], None);
+        step.workflow_id = Some("spec-to-pr".into());
+        db.insert_acp_turn(&step).unwrap();
+        let found: i64 = db.connection().unwrap().query_row("SELECT COUNT(*) FROM usage_events WHERE workflow_id = ?1 AND node_run_id = ?2", ["spec-to-pr", "run-1:build:1"], |row| row.get(0)).unwrap();
+        assert_eq!(found, 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn reading_a_transcript_again_keeps_the_assembly_session_as_owner() {
+        let (path, db) = open();
+        db.insert_events_with_cursor(&[transcript_row("old", "native-1", 1_600_000_000_000_000)], None).unwrap();
+        db.insert_acp_turn(&turn("turn-1", vec![model("claude-opus-5-5", 2, 10, 10, 5)], None)).unwrap();
+        db.insert_events_with_cursor(&[transcript_row("old", "native-1", 1_600_000_000_000_000)], None).unwrap();
+        let owner: String = db.connection().unwrap().query_row("SELECT owned_id FROM usage_events WHERE source_event_id = 'old'", [], |row| row.get(0)).unwrap();
+        assert_eq!(owner, "assembly-1");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn the_models_the_agents_send_are_priced() {
+        let (path, db) = open();
+        db.rebuild_rates(SEEDED_RATES).unwrap();
+        let events: Vec<UsageEvent> = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "gpt-6.1-sol"].iter().enumerate().map(|(index, name)| {
+            let mut event = transcript_row(name, "native-9", index as i64 + 1);
+            event.model = name.to_string();
+            event
+        }).collect();
+        db.insert_events_with_cursor(&events, None).unwrap();
+        let rows = db.read_usage_provider_summary(&UsageFilter::default()).unwrap();
+        assert_eq!((rows[0].unpriced_percent, rows[0].estimated_cost_micros), (0, Some(243)));
         let _ = std::fs::remove_file(path);
     }
 

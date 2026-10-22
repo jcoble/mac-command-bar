@@ -2277,9 +2277,8 @@ impl AgentRuntimeManager {
         }
         // An adapter that named an effort control owns the effort from now on.
         let adapter_offers_effort = !started.config.available_efforts.is_empty();
-        let started_new = expected_native_session_id.is_none();
-        if let Some(expected_native_session_id) = expected_native_session_id {
-            if started.native_session_id != expected_native_session_id {
+        if let Some(expected_native_session_id) = &expected_native_session_id {
+            if started.native_session_id != *expected_native_session_id {
                 let _ = self
                     .release_pool_scope(&pool_key, owned_id, Some(&started.native_session_id), true)
                     .await;
@@ -2304,6 +2303,7 @@ impl AgentRuntimeManager {
         }
         session.native_session_id = Some(started.native_session_id.clone());
         session.connection.native_session_id = Some(started.native_session_id);
+        session.turn_usage.resumed = expected_native_session_id.is_some();
         session.adapter_offers_effort = adapter_offers_effort;
         session.config = started.config;
         session.connection.config = session.config.clone();
@@ -2343,7 +2343,7 @@ impl AgentRuntimeManager {
         )?;
         let connection = session.connection.clone();
         drop(sessions);
-        if started_new {
+        if expected_native_session_id.is_none() {
             let transcript = super::history::transcript::discover(provider, connection.native_session_id.as_deref().unwrap_or_default()).ok().flatten();
             if let Err(error) = super::history::track_new_transcript(&self.store, owned_id, transcript.as_ref().map(|location| location.canonical_path.as_path())) { crate::debug_log::stderr_log!("Could not track the new transcript: {error}"); }
         }
