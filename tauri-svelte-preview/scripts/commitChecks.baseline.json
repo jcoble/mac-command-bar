@@ -10,7 +10,7 @@
     "tauri-svelte-preview/scripts/localSourceFs.test.ts": 874,
     "tauri-svelte-preview/scripts/nextTerminalService.test.ts": 1106,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/attachments.rs": 704,
-    "tauri-svelte-preview/src-tauri/src/agent_conversation/manager.rs": 15807,
+    "tauri-svelte-preview/src-tauri/src/agent_conversation/manager.rs": 15805,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/mod.rs": 1418,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/phone/mod.rs": 3000,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/protocol.rs": 954,
