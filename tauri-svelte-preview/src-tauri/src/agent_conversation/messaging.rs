@@ -378,11 +378,8 @@ impl MessagingEndpoint {
             }
             Some("start_session") => {
                 let args = &tool_call["arguments"];
-                let provider = match args["provider"].as_str() {
-                    Some("codex") => AgentConversationProvider::Codex,
-                    Some("claude") => AgentConversationProvider::Claude,
-                    _ => return Err("provider must be codex or claude".into()),
-                };
+                let provider: AgentConversationProvider = serde_json::from_value(args["provider"].clone())
+                    .map_err(|_| "provider must be codex, claude or antigravity")?;
                 // The name goes into message labels, so it is one line.
                 let name = args["name"].as_str().map(str::trim)
                     .filter(|name| !name.is_empty() && !name.chars().any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')))
@@ -512,8 +509,8 @@ impl MessagingEndpoint {
                  "inputSchema":{"type":"object","properties":{}}},
                 {"name":"send_message","description":OWNER_AUTHORITY.to_string() + " Send a message to an Assembly session you may reach (see list_sessions), addressed by its handle (such as brisk-heron), its name, or its owned id; add @machine (brisk-heron@workbox-test) for a session on another machine. A handle never changes when the session is renamed.",
                  "inputSchema":{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}},
-                {"name":"start_session","description":"Start a Codex or Claude helper session. It works in folder (an absolute path on your machine, such as a worktree) or, without one, in your folder. It is listed with your agents, and its final reply is sent to you as a message when it finishes.",
-                 "inputSchema":{"type":"object","properties":{"provider":{"type":"string","enum":["codex","claude"]},
+                {"name":"start_session","description":"Start a Codex, Claude or Antigravity helper session. It works in folder (an absolute path on your machine, such as a worktree) or, without one, in your folder. It is listed with your agents, and its final reply is sent to you as a message when it finishes.",
+                 "inputSchema":{"type":"object","properties":{"provider":{"type":"string","enum":["codex","claude","antigravity"]},
                      "model":{"type":"string"},"prompt":{"type":"string"},"name":{"type":"string"},"folder":{"type":"string"}},"required":["provider","prompt","name"]}},
                 {"name":"workflow_format","description":"Read the reference for writing an Assembly workflow (.assembly/workflows/*.yml).",
                  "inputSchema":{"type":"object","properties":{}}},
