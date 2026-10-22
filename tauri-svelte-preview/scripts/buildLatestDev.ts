@@ -25,11 +25,15 @@ export type BuildLatestOptions = {
   out: (line: string) => void;
 };
 
-/** Waits for the running app to quit (ten minutes at most), then starts the new build. */
+/**
+ * Waits for the running app to quit (ten minutes at most), then starts the new build without the
+ * file watcher, so the next Build latest's pull can't make tauri dev restart the app mid-run.
+ * `pnpm app:dev` started by hand keeps watching.
+ */
 export function relaunchCommand(checkoutRoot: string, appPid: number, logPath: string): Command {
   const script = 'i=0; while kill -0 "$1" 2>/dev/null; do i=$((i+1)); if [ "$i" -gt 600 ]; then '
     + 'echo "Assembly did not quit within 10 minutes; start it with pnpm app:dev" >>"$2"; exit 1; fi; sleep 1; done; '
-    + 'exec pnpm app:dev >>"$2" 2>&1';
+    + 'exec pnpm app:dev --no-watch >>"$2" 2>&1';
   return { file: '/bin/sh', args: ['-c', script, 'sh', String(appPid), logPath], cwd: checkoutRoot };
 }
 

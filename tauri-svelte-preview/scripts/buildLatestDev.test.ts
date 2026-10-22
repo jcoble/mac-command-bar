@@ -103,7 +103,7 @@ test('no saved machines still restarts', async () => {
   assert.equal(relaunched.length, 1);
 });
 
-test('the restart waits for this app to quit, then starts pnpm app:dev into the log', () => {
+test('the restart waits for this app to quit, then starts pnpm app:dev without file watching into the log', () => {
   const command = relaunchCommand('/checkout', 4242, '/logs/build-latest.log');
   assert.equal(command.file, '/bin/sh');
   assert.equal(command.cwd, '/checkout');
@@ -111,7 +111,7 @@ test('the restart waits for this app to quit, then starts pnpm app:dev into the 
   const script = command.args[1];
   assert.equal(command.args[0], '-c');
   assert.match(script, /while kill -0 "\$1"/);
-  assert.match(script, /exec pnpm app:dev >>"\$2" 2>&1$/);
+  assert.match(script, /exec pnpm app:dev --no-watch >>"\$2" 2>&1$/);
   assert.match(script, /-gt 600/, 'gives up after ten minutes if the app never quits');
 });
 
@@ -161,5 +161,35 @@ test('Stop ends the run and what it is running, and nothing is relaunched', asyn
     assert.throws(() => process.kill(-run.pid!, 0), /ESRCH/, 'nothing in the run is left, the hung pull included');
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('dev-app.sh still watches files by default; only the Build latest relaunch passes --no-watch', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-latest-dev-app-'));
+  try {
+    // A copy of the real dev-app.sh with stand-in adapters, and a pnpm that records what it was asked to run.
+    fs.mkdirSync(path.join(dir, 'scripts'));
+    fs.copyFileSync(new URL('./dev-app.sh', import.meta.url), path.join(dir, 'scripts/dev-app.sh'));
+    const adapters = path.join(dir, 'src-tauri/adapters');
+    fs.mkdirSync(adapters, { recursive: true });
+    for (const name of ['manifest.json', 'agy_acp_server.par', 'codex-acp', 'claude-agent-acp', 'agy-acp']) fs.writeFileSync(path.join(adapters, name), '', { mode: 0o755 });
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'pnpm'), '#!/bin/sh\necho "$*"\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'lsof'), '#!/bin/sh\n', { mode: 0o755 });
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+    const devApp = (...args: string[]) => execFileSync('sh', [path.join(dir, 'scripts/dev-app.sh'), ...args], { env, encoding: 'utf8' }).trim();
+    assert.equal(devApp(), 'exec tauri dev', 'pnpm app:dev on its own keeps the file watcher');
+    assert.equal(devApp('--no-watch'), 'exec tauri dev --no-watch');
+    // The relaunch shell, with this app already gone (no process has that pid).
+    const relaunch = relaunchCommand(dir, 999999999, path.join(dir, 'relaunch.log'));
+    execFileSync(relaunch.file, relaunch.args, { cwd: relaunch.cwd, env });
+    assert.equal(fs.readFileSync(path.join(dir, 'relaunch.log'), 'utf8').trim(), 'app:dev --no-watch');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
