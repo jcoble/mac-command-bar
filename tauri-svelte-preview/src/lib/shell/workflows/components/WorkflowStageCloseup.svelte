@@ -15,7 +15,7 @@
   import { Chip, type ChipTone } from '$lib/components/ui/chip/index.js';
   import { readSourceImageFromTauri } from '$lib/tauriSource.ts';
   import { stepGlyph } from '../workflowBoard.ts';
-  import { capDecisions, closeupKind, proofEvidence, reviewGroup, reviewRounds, type WorkflowReviewReport } from '../workflowCloseup.ts';
+  import { capDecisions, closeupKind, proofEvidence, proofImagePaths, reviewGroup, reviewRounds, type WorkflowReviewReport } from '../workflowCloseup.ts';
   import { readWorkflowReviews } from '../workflowService.ts';
   import { workflowErrorText, type WorkflowRunRecord } from '../workflowTypes.ts';
   import StepGlyphIcon from './StepGlyphIcon.svelte';
@@ -70,12 +70,11 @@
 
   const proofNode = $derived(kind === 'proof' ? nodeOf(nodeId) : undefined);
   const proof = $derived(proofNode ? proofEvidence(run, proofNode) : { summary: '', files: [] });
-  const IMAGE = /\.(png|jpe?g|gif|webp)$/i;
   const fileName = (path: string): string => path.split('/').at(-1) ?? path;
 
-  // Pictures of the proof images, only for a run on this Mac; their object URLs are let go with them.
+  // Pictures of the proof images, read from the run's machine; their object URLs are let go with them.
   let pictures = $state<Record<string, string>>({});
-  const images = $derived(machine ? '' : proof.files.filter((file) => IMAGE.test(file)).join('\n'));
+  const images = $derived(proof.files.filter((file) => proofImagePaths([file], machine).length).join('\n'));
   $effect(() => {
     const files = images ? images.split('\n') : [];
     if (!files.length) return;
@@ -92,7 +91,7 @@
   async function loadPictures(files: string[], urls: string[], signal: AbortSignal): Promise<void> {
     for (const file of files) {
       try {
-        const bytes = await readSourceImageFromTauri(file, signal);
+        const bytes = await readSourceImageFromTauri(proofImagePaths([file], machine)[0], signal);
         if (signal.aborted) return;
         const url = URL.createObjectURL(new Blob([bytes as BlobPart]));
         urls.push(url);

@@ -1,7 +1,7 @@
 // The stage close-up: each reviewer of a review group per round with its verdict and
 // findings, the cap decisions, and a proof step's evidence. Logic only.
 import assert from 'node:assert/strict';
-import { capDecisions, closeupKind, parseFinding, proofEvidence, reviewGroup, reviewRounds } from '../src/lib/shell/workflows/workflowCloseup.ts';
+import { capDecisions, closeupKind, parseFinding, proofEvidence, proofImagePaths, reviewGroup, reviewRounds } from '../src/lib/shell/workflows/workflowCloseup.ts';
 import type { WorkflowRunRecord } from '../src/lib/shell/workflows/workflowTypes.ts';
 
 const RUN = 'workflow-run-1';
@@ -90,6 +90,12 @@ const GROUP = run([
 { // proof_evidence_is_the_steps_summary_and_files_resolved_against_the_run_folder
   assert.deepEqual(proofEvidence(GROUP, GROUP.nodes[4]), { summary: 'Shown in the app', files: ['/repo/proof/a.png', '/abs/b.txt'] });
   assert.deepEqual(proofEvidence(GROUP, GROUP.nodes[0]), { summary: '', files: [] });
+}
+
+{ // proof_images_are_read_from_the_machine_that_ran_the_run
+  const files = ['/repo/proof/a.png', '/repo/proof/notes.txt', '/repo/proof/b.JPG'];
+  assert.deepEqual(proofImagePaths(files, null), ['/repo/proof/a.png', '/repo/proof/b.JPG']);
+  assert.deepEqual(proofImagePaths(files, 'workbox test'), ['assembly-remote://workbox%20test/repo/proof/a.png', 'assembly-remote://workbox%20test/repo/proof/b.JPG']);
 }
 
 console.log('workflowCloseup tests passed');

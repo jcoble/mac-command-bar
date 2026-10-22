@@ -7,6 +7,7 @@
  * operation); the cap decisions from the answers in the run's snapshot. The
  * proof step shows what it reported: its summary and its files.
  */
+import { remoteWorkspacePath } from '../../workspacePaths.ts';
 import type { WorkflowNodeRunRecord, WorkflowRunRecord } from './workflowTypes.ts';
 
 /** One stored `report_review` call; `attemptId` is `<run id>:<step>:<attempt>`. */
@@ -113,4 +114,10 @@ export function proofEvidence(run: WorkflowRunRecord, node: WorkflowNodeRunRecor
     summary: typeof output.summary === 'string' ? output.summary : '',
     files: files.map((file) => (file.startsWith('/') || !cwd ? file : `${cwd}/${file}`))
   };
+}
+
+/** The proof images to read, each as a path on the machine that ran the run (`machine`; null for this Mac). */
+export function proofImagePaths(files: string[], machine: string | null): string[] {
+  const images = files.filter((file) => /\.(png|jpe?g|gif|webp)$/i.test(file) && file.startsWith('/'));
+  return machine ? images.map((file) => remoteWorkspacePath(machine, file)) : images;
 }
