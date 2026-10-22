@@ -318,3 +318,14 @@ async fn queued_message_delivers_when_session_goes_quiescent() {
         .unwrap();
     fs::remove_dir_all(fixture.root).unwrap();
 }
+
+/// A model that names the session and then explains itself must not put the
+/// explanation on the rail: only the first line is the name.
+#[test]
+fn a_helper_title_keeps_only_the_first_line_of_the_answer() {
+    assert_eq!(
+        helper_title("Ping Pong Echo Test\n\nThe person asked to reply with PONG").as_deref(),
+        Some("Ping Pong Echo Test")
+    );
+    assert_eq!(helper_title("\n\n  \"Fix rail titles\"  \nWhy").as_deref(), Some("Fix rail titles"));
+}

@@ -5203,10 +5203,10 @@ fn title_can_be_replaced(source: Option<&str>) -> bool {
 
 /// Reads the helper's answer as a name. It is asked for bare words and usually
 /// gives them, but a model that wraps a name in quotation marks anyway must not
-/// put those on the rail.
+/// put those on the rail. Only its first line is the name.
 fn helper_title(answer: &str) -> Option<String> {
-    let trimmed = answer
-        .trim()
+    let first_line = answer.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let trimmed = first_line
         .trim_matches(|character| matches!(character, '"' | '\'' | '\u{201c}' | '\u{201d}'))
         .trim();
     if trimmed.is_empty() {
