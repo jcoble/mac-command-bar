@@ -2,12 +2,12 @@
  * AG-UI contract: the backend's chat chunks, fed through the pinned stock chat
  * client (@tanstack/ai-client) and checked against the @ag-ui/core schemas.
  *
- * `fixtures/agui-chunks.jsonl` holds chunks the backend sent in a real Claude
- * session: two turns, each paused by a permission request and continued after
- * the answer. The recording dropped `parentRunId: null` (the field is omitted
- * on a first run), a stray duplicate run, and machine paths. Any other chunk
- * file, one chunk per line (bare or as `{ "chunk": ... }`), can be passed as an
- * argument and runs through the same cases.
+ * `fixtures/agui-chunks.jsonl` holds the chunks the backend's own projection
+ * writes for its contract scenarios (`cargo test contract_scenarios` with
+ * `AGUI_FIXTURE_OUT` set): permission pauses answered both ways, a question
+ * with a numeric response schema, and a failed turn. Any other chunk file, one
+ * chunk per line (bare or as `{ "chunk": ... }`), can be passed as an argument
+ * and runs through the same cases.
  *
  * A fake backend answers each `send()` with the next recorded run, renamed to
  * the run id the client chose, as the real backend does. Every chunk it
@@ -265,7 +265,7 @@ for (const path of fixtures) {
     assert.ok(runsOf(chunks).length > 0);
   });
 
-  test(`${name}: every recorded pause is a resolvable permission interrupt and locks the composer`, GUARD, async () => {
+  test(`${name}: every recorded pause is a resolvable interrupt and locks the composer`, GUARD, async () => {
     for (const pause of runsOf(chunks).filter((run) => run.paused)) {
       const server = backend([]);
       const { chat, errors } = client(server, pause.chunks[0].threadId!);
@@ -275,8 +275,9 @@ for (const path of fixtures) {
       assertResolvable(chat);
       assert.equal(locked(chat), true, 'an open interrupt locks the composer');
       const { approvals, inputs } = pendingRequestsOf(interruptsOf(chat), pause.chunks[0].threadId!);
-      assert.deepEqual(inputs, []);
-      for (const [index, interrupt] of interruptsOf(chat).entries()) {
+      assert.equal(approvals.length + inputs.length, interruptsOf(chat).length, 'every interrupt is an approval or a question');
+      const permissions = interruptsOf(chat).filter((interrupt) => 'optionId' in ((interrupt.responseSchema as { properties?: object }).properties ?? {}));
+      for (const [index, interrupt] of permissions.entries()) {
         const schema = interrupt.responseSchema as { properties: { optionId: { enum: string[] } } };
         assert.deepEqual(approvals[index].options.map((option) => option.optionId), schema.properties.optionId.enum,
           'the approval panel offers the options the interrupt accepts');
