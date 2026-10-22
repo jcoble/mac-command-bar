@@ -351,6 +351,7 @@ impl View {
             Payload::Connection { state: ConversationConnectionState::Disconnected | ConversationConnectionState::Failed
                 | ConversationConnectionState::Closed, .. } => {
                 // The agent is gone: no answer or reply will come for what is open.
+                self.requests.clear();
                 self.finish(&mut out, thread, TurnState::Interrupted, sequence);
                 custom = true;
             }
@@ -411,6 +412,8 @@ impl View {
         let run_id = self.next_run.take().unwrap_or_else(|| format!("run-{sequence}"));
         out.push(agui::run_started(thread, &run_id, self.next_parent.take().as_deref()));
         self.open_run = Some(run_id);
+        // A failed prompt's error arrives after its turn ended; it is not this run's.
+        self.error = None;
     }
 
     /// A whole-message event: start it once, send only text the view hasn't
@@ -554,9 +557,9 @@ impl View {
         let error = matches!(state, TurnState::Failed)
             .then(|| self.error.take().unwrap_or_else(|| ("turn_failed".into(), "The turn failed".into())));
         let failed = |run: &str| error.as_ref().map(|(code, message)| agui::run_error(thread, run, message, Some(code.as_str())));
-        if let Some(paused) = self.paused_run.take() {
+        // A request still waiting (a child agent's) keeps its pause past the turn.
+        if let Some(paused) = self.paused_run.take_if(|_| self.requests.is_empty()) {
             // The turn ended while it waited, such as on Stop or a failure.
-            self.requests.clear();
             out.push(failed(&paused).unwrap_or_else(|| agui::run_finished(thread, &paused, Some(agui::cancelled()), None)));
         }
         if self.open_run.is_none() && self.next_run.is_some() {

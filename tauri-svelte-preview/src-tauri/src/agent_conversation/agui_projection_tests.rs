@@ -517,9 +517,35 @@ fn only_a_failed_turn_is_a_run_error_and_stop_cancels_the_run() {
     assert_eq!(failed[1]["message"], "The model is overloaded");
     script.send(turn(TurnState::Started));
     script.send(permission("perm-2", ApprovalState::Requested));
+    script.send(permission("perm-2", ApprovalState::Expired));
     let stopped = script.send(turn(TurnState::Interrupted));
     assert_eq!(stopped.len(), 1);
     assert_eq!(stopped[0]["outcome"]["type"], "cancelled");
+}
+
+/// A failed prompt records its turn's end before its error.
+#[test]
+fn an_error_after_a_failed_turn_is_not_carried_into_the_next() {
+    let mut script = Script::open();
+    script.send(turn(TurnState::Started));
+    assert_eq!(types(&script.send(turn(TurnState::Failed))), ["RUN_ERROR"]);
+    script.send(Payload::Error { code: "provider_error".into(), message: "Overloaded".into(), recoverable: true });
+    script.send(turn(TurnState::Started));
+    assert_eq!(script.send(turn(TurnState::Failed))[0]["message"], "The turn failed");
+}
+
+/// A child agent's request outlives its parent's turn (`drain_root_permissions`).
+#[test]
+fn a_request_still_waiting_when_the_turn_ends_keeps_its_pause() {
+    let mut script = Script::open();
+    let mut chunks = script.send(turn(TurnState::Started));
+    chunks.extend(script.send(permission("child-perm", ApprovalState::Requested)));
+    assert!(script.send(turn(TurnState::Completed)).is_empty());
+    script.run("run-2", Some(chunks[0]["runId"].as_str().unwrap()), vec![("child-perm", ResumeStatus::Resolved, json!({ "optionId": "allow-once" }))]).unwrap();
+    let answered = script.send(permission("child-perm", ApprovalState::Accepted));
+    assert_eq!((&answered[0]["runId"], answered[0].get("outcome")), (&chunks[0]["runId"], None));
+    chunks.extend(answered);
+    assert_well_formed(&chunks);
 }
 
 #[test]
@@ -634,7 +660,7 @@ fn contract_scenarios_are_well_formed() {
     let mut other = Script::open();
     let other_run: Vec<Value> = [turn(TurnState::Started), permission("perm-1", ApprovalState::Requested), permission("perm-1", ApprovalState::Accepted),
         delta("msg-3", "Done."), reply("msg-3", "Done."), turn(TurnState::Completed), turn(TurnState::Started),
-        permission("perm-2", ApprovalState::Requested), turn(TurnState::Interrupted)].into_iter().flat_map(|payload| other.send(payload)).collect();
+        permission("perm-2", ApprovalState::Requested), permission("perm-2", ApprovalState::Expired), turn(TurnState::Interrupted)].into_iter().flat_map(|payload| other.send(payload)).collect();
     assert_well_formed(&other_run);
     let mut extra: Vec<String> = other_run.iter().map(|chunk| line("other-surface-and-stop", chunk)).collect();
     let snapshot = [event(10, turn(TurnState::Started)), event(11, delta("msg-4", "Let me check.")), event(12, permission("perm-3", ApprovalState::Requested))];
