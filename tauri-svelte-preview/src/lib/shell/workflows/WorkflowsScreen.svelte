@@ -191,7 +191,7 @@
           {@const task = runTask(openRun)}
           <Breadcrumb.Item>
             <Breadcrumb.Link>
-              {#snippet child({ props })}<button {...props} type="button" class="{props.class} rounded-md outline-none focus-visible:ring-3 focus-visible:ring-ring/50" onclick={() => openRunPage(null)}>Workflows</button>{/snippet}
+              {#snippet child({ props })}<button type="button" class="{props.class} rounded-md outline-none focus-visible:ring-3 focus-visible:ring-ring/50" onclick={() => openRunPage(null)}>Workflows</button>{/snippet}
             </Breadcrumb.Link>
           </Breadcrumb.Item>
           <Breadcrumb.Separator class="flex items-center" />
