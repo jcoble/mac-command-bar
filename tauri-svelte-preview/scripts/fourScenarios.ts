@@ -13,6 +13,8 @@ export function currentRunLink(root: string, worktree: string): string {
   const key = createHash('sha256').update(worktree).digest('hex');
   return path.join(root, `current-${path.basename(worktree)}-${key}`);
 }
+// The workbox build lock: two builds at once, each memory capped (see cargo-slot for the shared build caches).
+const buildLock = '/var/tmp/tsk-1582-lanes/build-lock.sh';
 const ownerDataPaths = [path.join(home, '.local/share/assembly'), path.join(home, '.local/share/dev.blackcolours.MacCommandBarWebviewPreview')];
 
 type ProcessInfo = { name: string; pid: number; startedAt: string; log: string };
@@ -37,6 +39,26 @@ export function parseListeningPorts(ssOutput: string): Set<number> {
     if (Number.isInteger(port)) ports.add(port);
   }
   return ports;
+}
+
+// Pids of every process listening in `ss -H -ltnp` output; 0 for a socket whose process this user cannot see.
+export function parseListeners(ssOutput: string): number[] {
+  return ssOutput.split('\n').filter((l) => l.trim()).flatMap((line) => {
+    const pids = [...line.matchAll(/pid=(\d+)/g)].map((m) => Number(m[1]));
+    return pids.length ? pids : [0];
+  });
+}
+
+type Listener = { pid: number; pgid: number; cwd: string };
+
+// The app must load this worktree's frontend: every listener on the port has to be in this run's Vite
+// process group and run in this worktree's folder. Returns what is wrong, or undefined.
+export function portOwnerProblem(port: number, listeners: Listener[], vite: { pgid: number; folder: string }): string | undefined {
+  if (!listeners.length) return `Nothing is serving port ${port}.`;
+  const foreign = listeners.find((l) => l.pgid !== vite.pgid || l.cwd !== vite.folder);
+  if (!foreign) return undefined;
+  const who = foreign.pid ? `pid ${foreign.pid} (process group ${foreign.pgid}, folder ${foreign.cwd || 'unknown'})` : 'a process this user cannot see';
+  return `Port ${port} is served by ${who}, not this run's Vite (process group ${vite.pgid}, folder ${vite.folder}).`;
 }
 
 export function parseAvailableGb(freeOutput: string): number {
@@ -120,6 +142,12 @@ const newestMtime = (dir: string): number => {
   }
   return newest;
 };
+const listenersOn = (port: number): Listener[] => parseListeners(run('ss', ['-H', '-ltnp', `sport = :${port}`])).map((pid) => {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return { pid, pgid: Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[2]), cwd: fs.readlinkSync(`/proc/${pid}/cwd`) };
+  } catch { return { pid, pgid: 0, cwd: '' }; }
+});
 const owned = (p: { pid: number; pgid: number; startedAt: string }) => ownsGroup(p, groupAlive(p.pgid), startTime(p.pid));
 // Files held open by every process in the given groups; the owner's own app writes its data all the time,
 // so timestamps can't tell us whether the test app touched it.
@@ -200,7 +228,7 @@ async function start(argv: string[]) {
   refuseOwnerData(dataDir, home);
 
   const display = pickFreeDisplay((n) => fs.existsSync(`/tmp/.X${n}-lock`) || fs.existsSync(`/tmp/.X11-unix/X${n}`));
-  const port = pickFreePort(parseListeningPorts(run('ss', ['-H', '-ltn'])));
+  let port = pickFreePort(parseListeningPorts(run('ss', ['-H', '-ltn'])));
 
   fs.mkdirSync(runDir, { recursive: true });
   if (seed && option('--data')) throw new Error('Use either --seed or --data, not both.');
@@ -217,6 +245,19 @@ async function start(argv: string[]) {
   }
   if (!fs.existsSync(dataDir)) throw new Error(`Data folder ${dataDir} does not exist.`);
 
+  const targetDir = process.env.CARGO_TARGET_DIR || claimBuildCache(path.basename(worktree));
+  // tauri dev calls the runner as `<runner> run <cargo options> -- <app arguments>`. It compiles
+  // under the build lock, then `cargo run` only starts what was built (and rebuilds after edits the same way).
+  const runner = path.join(runDir, 'cargo-under-build-lock');
+  fs.writeFileSync(runner, `#!/bin/bash
+set -eu
+[ -x ${buildLock} ] || { echo "No build lock at ${buildLock}; refusing to build outside it." >&2; exit 1; }
+build=()
+for a in "\${@:2}"; do [ "$a" = -- ] && break; build+=("$a"); done
+${buildLock} cargo build "\${build[@]}"
+exec cargo "$@"
+`, { mode: 0o755 });
+
   const launchedAt = Date.now();
   const processes: ProcessInfo[] = [];
   const writeState = () => {
@@ -226,30 +267,58 @@ async function start(argv: string[]) {
     fs.symlinkSync(runDir, currentLink);
   };
   const log = (name: string) => path.join(runDir, `${name}.log`);
+  const fail = async (message: string): Promise<never> => {
+    await stop(['--worktree', worktree]);
+    throw new Error(`${message}\nStopped everything this run started.`);
+  };
 
   const x = `:${display}`;
   processes.push(launch('xvfb', 'Xvfb', [x, '-screen', '0', '1710x990x24', '-nolisten', 'tcp'], runDir, log('xvfb'), process.env));
   writeState();
   for (let i = 0; i < 20 && !probe(['-display', x, '-root']).includes('1710x990'); i += 1) await sleep(500);
 
-  processes.push(launch('vite', 'pnpm', ['dev', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], preview, log('vite'), process.env));
-  writeState();
+  // Another lane can take the port between the free-port check and Vite listening on it; Vite then
+  // exits (strictPort) and the next port is tried. Only a port served by this run's own Vite is used.
+  const ownVite = (vite: ProcessInfo) => ({ pgid: vite.pid, folder: preview });
+  for (let attempt = 1; ; attempt += 1) {
+    const vite = launch('vite', 'pnpm', ['dev', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], preview, log(`vite-${port}`), process.env);
+    processes.push(vite);
+    writeState();
+    let problem = portOwnerProblem(port, listenersOn(port), ownVite(vite));
+    for (let i = 0; problem && groupAlive(vite.pid) && i < 120; i += 1) {
+      await sleep(500);
+      problem = portOwnerProblem(port, listenersOn(port), ownVite(vite));
+    }
+    if (!problem) break;
+    const taken = !groupAlive(vite.pid) && /Port \d+ is already in use/.test(fs.readFileSync(vite.log, 'utf8'));
+    if (!taken || attempt === 10) {
+      await fail(`${groupAlive(vite.pid) ? 'Vite is not serving' : 'Vite exited before serving'} port ${port}. ${problem} See ${vite.log}`);
+    }
+    console.log(`Port ${port} was taken before Vite could listen on it; trying the next port.`);
+    port = pickFreePort(parseListeningPorts(run('ss', ['-H', '-ltn'])), port + 1);
+  }
+  const viteGroup = ownVite(processes[processes.length - 1]);
+  const checkPort = async () => {
+    const problem = portOwnerProblem(port, listenersOn(port), viteGroup);
+    if (problem) await fail(`Refusing to test this app: it would load another frontend. ${problem}`);
+  };
 
   const windowConfig = JSON.stringify({
     build: { devUrl: `http://127.0.0.1:${port}/` },
     app: { windows: [{ label: 'main', title: 'Assembly', width: 1600, height: 990, minWidth: 900, minHeight: 600, url: '/', dragDropEnabled: false }] }
   });
-  const appEnv = { ...process.env, PATH: `${home}/.cargo/bin:${process.env.PATH}`, CARGO_BUILD_JOBS: '4', MSBUILDDISABLENODEREUSE: '1', XDG_DATA_HOME: dataDir, DISPLAY: x, GDK_BACKEND: 'x11', WEBKIT_DISABLE_DMABUF_RENDERER: '1' };
-  processes.push(launch('app', 'pnpm', ['tauri:dev', '--config', 'src-tauri/tauri.dev.attach.conf.json', '--config', windowConfig], preview, log('app'), appEnv));
+  const appEnv = { ...process.env, CARGO_TARGET_DIR: targetDir, PATH: `${home}/.cargo/bin:${process.env.PATH}`, CARGO_BUILD_JOBS: '4', MSBUILDDISABLENODEREUSE: '1', XDG_DATA_HOME: dataDir, DISPLAY: x, GDK_BACKEND: 'x11', WEBKIT_DISABLE_DMABUF_RENDERER: '1' };
+  processes.push(launch('app', 'pnpm', ['tauri:dev', '--config', 'src-tauri/tauri.dev.attach.conf.json', '--config', windowConfig, '--runner', runner], preview, log('app'), appEnv));
   writeState();
 
-  console.log(`Started in ${runDir} (display ${x}, vite port ${port}). Waiting for the Assembly window (first build can take 10+ minutes).`);
-  const app = processes[2];
-  const deadline = Date.now() + 10 * 60_000;
+  console.log(`Started in ${runDir} (display ${x}, vite port ${port}, build cache ${targetDir}). Waiting for the Assembly window (the build waits for a build-lock turn; a first build can take 10+ minutes).`);
+  const app = processes[processes.length - 1];
+  const deadline = Date.now() + 30 * 60_000;
   for (;;) {
+    await checkPort();
     if (probe(['-display', x, '-root', '-tree']).includes('"Assembly"')) break;
-    if (!groupAlive(app.pid)) throw new Error(`The app process exited before a window appeared. See ${app.log}`);
-    if (Date.now() > deadline) throw new Error(`No Assembly window after 10 minutes. See ${app.log}`);
+    if (!groupAlive(app.pid)) await fail(`The app process exited before a window appeared. See ${app.log}`);
+    if (Date.now() > deadline) await fail(`No Assembly window after 30 minutes. See ${app.log}`);
     await sleep(5000);
   }
   const shot = path.join(runDir, '00-started.png');
@@ -259,12 +328,24 @@ async function start(argv: string[]) {
     run('assembly-native-ui', ['shot', shot], { ...process.env, DISPLAY: x });
     if (fs.statSync(shot).size > 20_000) break;
   }
+  await checkPort();
 
   const touched = newestMtime(dataDir) > launchedAt;
   const ownerOpen = ownerFilesIn(openFilesInGroups(processes.map((p) => p.pid)), ownerDataPaths);
   console.log(`Isolation: files written under ${dataDir}: ${touched ? 'yes' : 'NO'}; owner data files open by the test app: ${ownerOpen.length ? ownerOpen.join(', ') : 'none'}`);
   if (!touched || ownerOpen.length) console.log('Isolation check FAILED. Run stop and report this.');
   console.log(`Screenshot: ${shot}\nRun folder: ${runDir}\nDisplay: ${x}\nDrive: DISPLAY=${x} assembly-native-ui shot|click|key ...\nNext: see docs/operations/four-scenario-check.md. Stop with: node --experimental-strip-types tauri-svelte-preview/scripts/fourScenarios.ts stop --worktree ${JSON.stringify(worktree)}`);
+}
+
+function claimBuildCache(lane: string): string {
+  try {
+    const dir = run('cargo-slot', ['claim', lane]).trim();
+    console.log(`CARGO_TARGET_DIR was not set; using build cache ${dir}. Release it with: cargo-slot release ${lane}`);
+    return dir;
+  } catch (error) {
+    const detail = (error as { stderr?: string }).stderr?.trim() || String(error);
+    throw new Error(`CARGO_TARGET_DIR is not set and no shared build cache could be claimed (${detail}). Export CARGO_TARGET_DIR=/var/tmp/<lane>/target and retry.`);
+  }
 }
 
 async function stop(argv: string[]) {
