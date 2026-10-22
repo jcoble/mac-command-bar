@@ -1,0 +1,29 @@
+{"type":"RUN_STARTED","threadId":"0f47d77e-ce94-4753-bccb-23228f82f229","runId":"run-1792617440716-poshk2"}
+{"type":"TOOL_CALL_START","toolCallId":"toolu_015TZTWAZAjwWX8UwbxipWsF","toolCallName":"Write","parentMessageId":"toolu_015TZTWAZAjwWX8UwbxipWsF"}
+{"type":"TOOL_CALL_ARGS","toolCallId":"toolu_015TZTWAZAjwWX8UwbxipWsF","delta":"{\"summary\":null,\"path\":null}"}
+{"type":"TOOL_CALL_END","toolCallId":"toolu_015TZTWAZAjwWX8UwbxipWsF"}
+{"type":"RUN_FINISHED","threadId":"0f47d77e-ce94-4753-bccb-23228f82f229","runId":"run-1792617440716-poshk2","outcome":{"type":"interrupt","interrupts":[{"id":"perm-6320df44-9d22-4faf-a42b-0e572817cbb9","reason":"permission","message":"Write /work/notes/hello.txt","responseSchema":{"type":"object","properties":{"optionId":{"type":"string","enum":["allow-once","allow-with-updates","reject"]}},"required":["optionId"]},"metadata":{"assembly:options":[{"optionId":"allow-once","name":"Yes","kind":"allow_once"},{"optionId":"allow-with-updates","name":"Yes, allow all edits in notes/ during this session","kind":"allow_always"},{"optionId":"reject","name":"No","kind":"reject_once"}],"tanstack:interruptBinding":{"v":1,"kind":"generic","interruptId":"perm-6320df44-9d22-4faf-a42b-0e572817cbb9","interruptedRunId":"run-1792617440716-poshk2","generation":0,"responseSchemaHash":"sha256:282064323ba6a5a4154c4daac8b9abad4a18077d21b4367a57d24eca1823bdd9"}}}]}}
+{"type":"RUN_STARTED","threadId":"0f47d77e-ce94-4753-bccb-23228f82f229","runId":"run-1792617467799-4dl4o4","parentRunId":"run-1792617440716-poshk2"}
+{"type":"TOOL_CALL_RESULT","toolCallId":"toolu_015TZTWAZAjwWX8UwbxipWsF","messageId":"toolu_015TZTWAZAjwWX8UwbxipWsF-result","role":"tool","content":"/work/notes/hello.txt"}
+{"type":"TEXT_MESSAGE_START","messageId":"msg_011CgG5Vye58QoxPsD2EvCGw","role":"assistant"}
+{"type":"TEXT_MESSAGE_CONTENT","messageId":"msg_011CgG5Vye58QoxPsD2EvCGw","delta":"I created `/wo"}
+{"type":"TEXT_MESSAGE_CONTENT","messageId":"msg_011CgG5Vye58QoxPsD2EvCGw","delta":"rk/"}
+{"type":"TEXT_MESSAGE_CONTENT","messageId":"msg_011CgG5Vye58QoxPsD2EvCGw","delta":"notes"}
+{"type":"TEXT_MESSAGE_CONTENT","messageId":"msg_011CgG5Vye58QoxPsD2EvCGw","delta":"/hello.txt`,"}
+{"type":"TEXT_MESSAGE_CONTENT","messageId":"msg_011CgG5Vye58QoxPsD2EvCGw","delta":" and it contains the word `h"}
+{"type":"TEXT_MESSAGE_CONTENT","messageId":"msg_011CgG5Vye58QoxPsD2EvCGw","delta":"ello`."}
+{"type":"TEXT_MESSAGE_END","messageId":"msg_011CgG5Vye58QoxPsD2EvCGw"}
+{"type":"RUN_FINISHED","threadId":"0f47d77e-ce94-4753-bccb-23228f82f229","runId":"run-1792617467799-4dl4o4","metadata":{"tanstack":{"finishReason":"stop"}}}
+{"type":"RUN_STARTED","threadId":"0f47d77e-ce94-4753-bccb-23228f82f229","runId":"run-1792617676602-37ab0e"}
+{"type":"TOOL_CALL_START","toolCallId":"toolu_01LZPYfkFe8Gv57qj2gwmFjW","toolCallName":"Write","parentMessageId":"msg_011CgG5ipxY6z6QBBhwo6JXd"}
+{"type":"TOOL_CALL_ARGS","toolCallId":"toolu_01LZPYfkFe8Gv57qj2gwmFjW","delta":"{\"summary\":null,\"path\":null}"}
+{"type":"TOOL_CALL_END","toolCallId":"toolu_01LZPYfkFe8Gv57qj2gwmFjW"}
+{"type":"RUN_FINISHED","threadId":"0f47d77e-ce94-4753-bccb-23228f82f229","runId":"run-1792617676602-37ab0e","outcome":{"type":"interrupt","interrupts":[{"id":"perm-611fe54f-ba44-48fa-b475-45e5478ed067","reason":"permission","message":"Write /work/notes/hello3.txt","responseSchema":{"type":"object","properties":{"optionId":{"type":"string","enum":["allow-once","allow-with-updates","reject"]}},"required":["optionId"]},"metadata":{"assembly:options":[{"optionId":"allow-once","name":"Yes","kind":"allow_once"},{"optionId":"allow-with-updates","name":"Yes, allow all edits in notes/ during this session","kind":"allow_always"},{"optionId":"reject","name":"No","kind":"reject_once"}],"tanstack:interruptBinding":{"v":1,"kind":"generic","interruptId":"perm-611fe54f-ba44-48fa-b475-45e5478ed067","interruptedRunId":"run-1792617676602-37ab0e","generation":0,"responseSchemaHash":"sha256:282064323ba6a5a4154c4daac8b9abad4a18077d21b4367a57d24eca1823bdd9"}}}]}}
+{"type":"RUN_STARTED","threadId":"0f47d77e-ce94-4753-bccb-23228f82f229","runId":"run-1792617700964-62u24x","parentRunId":"run-1792617676602-37ab0e"}
+{"type":"TOOL_CALL_RESULT","toolCallId":"toolu_01LZPYfkFe8Gv57qj2gwmFjW","messageId":"toolu_01LZPYfkFe8Gv57qj2gwmFjW-result","role":"tool","content":"```\nUser refused permission to run tool\n```","metadata":{"tanstack":{"state":"output-error"}}}
+{"type":"TEXT_MESSAGE_START","messageId":"msg_011CgG5oA5qySydseZFg4om5","role":"assistant"}
+{"type":"TEXT_MESSAGE_CONTENT","messageId":"msg_011CgG5oA5qySydseZFg4om5","delta":"The Write tool was refused"}
+{"type":"TEXT_MESSAGE_CONTENT","messageId":"msg_011CgG5oA5qySydseZFg4om5","delta":", so I didn't create `"}
+{"type":"TEXT_MESSAGE_CONTENT","messageId":"msg_011CgG5oA5qySydseZFg4om5","delta":"hello3.txt`."}
+{"type":"TEXT_MESSAGE_END","messageId":"msg_011CgG5oA5qySydseZFg4om5"}
+{"type":"RUN_FINISHED","threadId":"0f47d77e-ce94-4753-bccb-23228f82f229","runId":"run-1792617700964-62u24x","metadata":{"tanstack":{"finishReason":"stop"}}}
