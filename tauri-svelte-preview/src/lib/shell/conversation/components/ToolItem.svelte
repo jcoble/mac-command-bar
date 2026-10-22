@@ -25,18 +25,18 @@
     onFileLink?(path: string): void;
   } = $props();
 
-  const input = $derived.by(() => {
-    const value = item.metadata?.rawInput ?? (item.toolKind === 'command' ? item.summary : undefined);
-    return value == null ? '' : typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-  });
-  const output = $derived(item.output && item.output !== item.diff ? item.output.trimEnd() : '');
   const detailsOpen = $derived(disclosure?.get(`${item.itemId}:details`) ?? false);
+  /* A closed row shows one line, so the full input and output are formatted only once it opens. */
+  const rawInput = $derived(item.metadata?.rawInput ?? (item.toolKind === 'command' ? item.summary : undefined));
+  const hasOutput = $derived(!!item.output && item.output !== item.diff && /\S/.test(item.output));
+  const input = $derived(!detailsOpen || rawInput == null ? '' : typeof rawInput === 'string' ? rawInput : JSON.stringify(rawInput, null, 2));
+  const output = $derived(detailsOpen && hasOutput ? item.output!.trimEnd() : '');
   const filePath = $derived(toolFilePath(item));
   const fileAction = $derived(item.toolKind === 'file-edit' || (item.toolKind === 'fetch' && !!filePath && !/^https?:/i.test(filePath)));
   const label = $derived(fileAction ? item.toolKind === 'file-edit' ? 'Edited' : 'Read' : item.toolKind === 'command' ? 'Ran' : item.title);
   const shownLines = $derived(detailsOpen ? highlightCode(output, languageForPath(filePath)) : []);
   /* Call arguments remain inspectable even when the tool returns no output. */
-  const expandable = $derived(!!(input || output || item.diff));
+  const expandable = $derived((rawInput != null && rawInput !== '') || hasOutput || !!item.diff);
   const statusLabel = $derived(
     item.state === 'running' ? 'Running' : item.state === 'completed' ? 'Done' : item.state === 'failed' ? 'Failed' : 'Queued'
   );
@@ -47,7 +47,7 @@
    */
   const preview = $derived(
     fileAction && filePath ? filePath.split(/[\\/]/).pop() ?? filePath
-      : (item.summary || output.split('\n', 1)[0] || '').replace(/\s+/g, ' ').trim()
+      : (item.summary || (hasOutput ? item.output!.split('\n', 1)[0] : '')).replace(/\s+/g, ' ').trim()
   );
   const targetUrl = $derived.by(() => {
     const href = filePath ? sanitizeConversationHref(filePath) : null;

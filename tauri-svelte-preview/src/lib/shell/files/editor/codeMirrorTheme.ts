@@ -3,7 +3,7 @@ import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { EditorView } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
 
-import { getMonoFont } from '../../settings/themes/fontRegistry';
+import { getMonoFont } from '../../settings/themes/fontRegistry.ts';
 
 const syntax = HighlightStyle.define([
   { tag: [tags.keyword, tags.modifier], color: '#54b9ff' },
@@ -33,12 +33,19 @@ const defaultAppearance: CodeMirrorAppearance = {
   fontLigatures: false
 };
 
+// CodeMirror adds a theme's style rules to the page and never removes them, so
+// build each distinct appearance once and hand back the same theme after that.
+const themesByAppearance = new Map<string, Extension>();
+
 /** Build the editor chrome from current settings so an open editor repaints live. */
 export function codeMirrorThemeForAppearance(
   appearance: CodeMirrorAppearance = defaultAppearance
 ): Extension {
+  const key = `${appearance.fontFamily}|${appearance.fontSize}|${appearance.lineHeight}|${appearance.fontLigatures}`;
+  const cached = themesByAppearance.get(key);
+  if (cached) return cached;
   const editorFontFamily = getMonoFont(appearance.fontFamily).stack;
-  return [
+  const theme = [
   EditorView.theme(
     {
       '&': {
@@ -89,6 +96,8 @@ export function codeMirrorThemeForAppearance(
   ),
   syntaxHighlighting(syntax)
   ];
+  themesByAppearance.set(key, theme);
+  return theme;
 }
 
 export const codeMirrorTheme = codeMirrorThemeForAppearance();

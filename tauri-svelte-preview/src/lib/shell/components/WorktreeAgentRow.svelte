@@ -24,7 +24,6 @@
 	import type { ChipTone } from "$lib/components/ui/chip/variants.js";
 	import * as Tooltip from "$lib/components/ui/tooltip/index.js";
 	import { AGENT_ICONS, agentDisplayName } from "$lib/shell/agentIcons.ts";
-	import WorkingSpinner from "$lib/shell/components/feedback/WorkingSpinner.svelte";
 	import {
 		deriveSessionPresence,
 		EMPTY_SESSION_PRESENCE_HISTORY,
@@ -260,7 +259,7 @@
 					<span class="age-text">{ageText ?? ""}</span>
 					{#if presence === "working"}
 						<span class="working-mark" role="img" aria-label="Working">
-							<WorkingSpinner size={14} seed={session.ownedId} />
+							<span class="size-[7px] rounded-full bg-primary"></span>
 						</span>
 					{/if}
 				</span>

@@ -4,6 +4,8 @@ use rusqlite::{params, Connection, Params, Row, TransactionBehavior};
 
 use crate::session_store::{Result, SessionStore, StoreError};
 
+mod messages;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageKind {
     Message,
@@ -102,6 +104,7 @@ pub struct TrafficMessage {
 pub struct TrafficQuery<'a> {
     pub run_id: Option<&'a str>,
     pub session: Option<&'a str>,
+    pub qualified_sender: Option<&'a str>,
     pub status: Option<&'a str>,
     pub search: Option<&'a str>,
     pub sort: &'a str,
@@ -109,23 +112,22 @@ pub struct TrafficQuery<'a> {
     pub before_key: Option<&'a str>,
     pub limit: i64,
 }
-
-const MESSAGE_SCOPE: &str = "(?2 IS NULL OR m.from_owned_id = ?2 OR m.to_owned_id = ?2 OR m.run_id IN
+const MESSAGE_SCOPE: &str = "(?2 IS NULL OR m.from_owned_id = ?2 OR m.from_owned_id = ?3 OR m.to_owned_id = ?2 OR m.run_id IN
     (SELECT run_id FROM orchestration_events WHERE json_extract(payload_json,'$.workflowPayload.run.inputSnapshot.started_by')=?2))";
 const RECEIVER: &str = "COALESCE(s.handle || ' · ' || s.title, s.handle, m.to_owned_id)";
 
 fn traffic_sql(sort: &str) -> String {
     let key = match sort { "sender" => "m.sender_name", "receiver" => RECEIVER, _ => "" };
-    let cursor = if key.is_empty() { "(?5 IS NULL OR (m.created_at_ms,m.id)<(?5,?6))".to_string() }
-        else { format!("(?5 IS NULL OR {key}>?7 OR ({key}=?7 AND (m.created_at_ms,m.id)<(?5,?6)))") };
+    let cursor = if key.is_empty() { "(?6 IS NULL OR (m.created_at_ms,m.id)<(?6,?7))".to_string() }
+        else { format!("(?6 IS NULL OR {key}>?8 OR ({key}=?8 AND (m.created_at_ms,m.id)<(?6,?7)))") };
     let order = if key.is_empty() { "m.created_at_ms DESC,m.id DESC".to_string() }
         else { format!("{key} ASC,m.created_at_ms DESC,m.id DESC") };
     format!("SELECT m.id,m.created_at_ms,m.sender_name,m.from_owned_id,m.to_owned_id,{RECEIVER},
         m.body,m.receipt,m.run_id,m.kind FROM workflow_messages m LEFT JOIN sessions s ON s.owned_id=m.to_owned_id
         WHERE m.kind='message' AND (?1 IS NULL OR m.run_id=?1) AND {MESSAGE_SCOPE}
-        AND (?3 IS NULL OR m.receipt=?3) AND (?4 IS NULL OR m.sender_name LIKE ?4 ESCAPE '\\'
-          OR {RECEIVER} LIKE ?4 ESCAPE '\\' OR m.body LIKE ?4 ESCAPE '\\') AND {cursor}
-        ORDER BY {order} LIMIT ?8")
+        AND (?4 IS NULL OR m.receipt=?4) AND (?5 IS NULL OR m.sender_name LIKE ?5 ESCAPE '\\'
+          OR {RECEIVER} LIKE ?5 ESCAPE '\\' OR m.body LIKE ?5 ESCAPE '\\') AND {cursor}
+        ORDER BY {order} LIMIT ?9")
 }
 
 static MESSAGE_LISTENER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
@@ -164,8 +166,9 @@ const SCOPED_DIRECTORY: &str = "SELECT d.* FROM session_directory d
       -- A worker: its own run, and the session that started it (the main orchestrator when the owner did).
       WHEN me.run_id IS NOT NULL THEN d.run_id = me.run_id OR d.owned_id IS COALESCE(me.run_lead,
           (SELECT json_extract(value_json,'$') FROM app_settings WHERE setting_key = 'orchestrator.main'))
-      -- A helper: its parent, and workers of runs it started.
-      WHEN me.helper_of IS NOT NULL THEN d.owned_id = me.helper_of OR (d.run_id IS NOT NULL AND d.run_lead IS ?1)
+      -- A helper: its parent, siblings, and workers of runs it started.
+      WHEN me.helper_of IS NOT NULL THEN d.owned_id = me.helper_of OR d.helper_of = me.helper_of
+          OR (d.run_id IS NOT NULL AND d.run_lead IS ?1)
       -- The main orchestrator: every top-level session, its helpers, and workers of runs it or the owner started.
       WHEN me.orchestrator THEN (d.run_id IS NULL AND d.helper_of IS NULL) OR d.helper_of IS ?1
           OR (d.run_id IS NOT NULL AND (d.run_lead IS ?1 OR d.run_lead IS NULL))
@@ -234,6 +237,15 @@ impl SessionStore {
                     WHEN orchestrator THEN 'orchestrator' ELSE 'top' END
              FROM session_directory WHERE owned_id = ?", [owned_id], |row| row.get(0)).optional())?;
         Ok(role.unwrap_or_else(|| "top".into()))
+    }
+
+    /// The common parent of two helpers, when both belong to that same session.
+    pub fn sibling_parent(&self, from: &str, to: &str) -> Result<Option<String>> {
+        let connection = self.lock()?;
+        db("could not read sibling parent", connection.query_row(
+            "SELECT (SELECT d.helper_of FROM session_directory d JOIN session_directory r ON r.owned_id=?2
+                WHERE d.owned_id=?1 AND d.helper_of IS NOT NULL AND d.helper_of=r.helper_of)",
+            params![from, to], |row| row.get(0)))
     }
 
     /// Helpers of `parent` that are starting, working or waiting on the owner.
@@ -355,77 +367,6 @@ impl SessionStore {
         Ok(group_id)
     }
 
-    pub fn append_message(
-        &self,
-        group_id: &str,
-        from: &str,
-        to: &str,
-        kind: MessageKind,
-        body: &str,
-    ) -> Result<Envelope> {
-        self.append_message_as(group_id, from, to, kind, body, None)
-    }
-
-    /// `append_message` with the sender's label given, for a message from a
-    /// session on another machine, which this machine's directory does not know.
-    pub fn append_message_as(
-        &self,
-        group_id: &str,
-        from: &str,
-        to: &str,
-        kind: MessageKind,
-        body: &str,
-        sender_name: Option<&str>,
-    ) -> Result<Envelope> {
-        let connection = self.lock_write()?;
-        let id = new_id(&connection)?;
-        let created_at_ms = now_ms()?;
-        let (sender_name, run_id): (String, Option<String>) = db("could not name message sender", connection.query_row(
-            // A message takes the sender's run, or else the receiver's, so a reply to a worker
-            // stays with its run. A workflow's own notices come from `workflow:<run id>`.
-            "SELECT COALESCE(?2, d.handle || ' · ' || d.name, ?1),
-                    COALESCE(d.run_id, CASE WHEN ?1 LIKE 'workflow:%' THEN substr(?1, 10) END, r.run_id)
-             FROM (SELECT 1) LEFT JOIN session_directory d ON d.owned_id = ?1
-             LEFT JOIN session_directory r ON r.owned_id = ?3",
-            params![from, sender_name, to], |row| Ok((row.get(0)?, row.get(1)?))))?;
-        db(
-            "could not append the workflow message",
-            connection.execute(
-                "INSERT INTO workflow_messages
-                 (id, group_id, from_owned_id, to_owned_id, sender_name, run_id, kind, body, receipt,
-                  created_at_ms, updated_at_ms)
-                 VALUES (?, NULLIF(?,''), ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
-                params![
-                    id,
-                    group_id,
-                    from,
-                    to,
-                    sender_name,
-                    run_id,
-                    kind.as_str(),
-                    body,
-                    created_at_ms,
-                    created_at_ms
-                ],
-            ),
-        )?;
-        drop(connection);
-        messages_changed();
-        Ok(Envelope {
-            id,
-            group_id: group_id.to_owned(),
-            from_agent: from.to_owned(),
-            to_agent: to.to_owned(),
-            sender_name,
-            run_id,
-            kind,
-            body: body.to_owned(),
-            receipt: Receipt::Queued,
-            created_at_ms,
-            updated_at_ms: created_at_ms,
-        })
-    }
-
     pub fn set_receipt(&self, message_id: &str, receipt: Receipt) -> Result<()> {
         let connection = self.lock_write()?;
         let changed = db(
@@ -493,13 +434,20 @@ impl SessionStore {
     }
 
     pub fn pending_for(&self, to: &str) -> Result<Option<Envelope>> {
+        self.pending_for_sender(to, None)
+    }
+
+    /// Busy helpers read their parent's and siblings' messages; idle sessions read every sender.
+    pub fn pending_for_sender(&self, to: &str, sender: Option<&str>) -> Result<Option<Envelope>> {
         use rusqlite::OptionalExtension;
         let connection = self.lock()?;
         db("could not read target queue", connection.query_row(
             "SELECT id, COALESCE(group_id,''), from_owned_id, to_owned_id, kind, body, receipt,
                     created_at_ms, updated_at_ms, sender_name, run_id FROM workflow_messages
-             WHERE to_owned_id = ? AND receipt = 'queued' ORDER BY created_at_ms,id LIMIT 1",
-            [to], envelope_from_row).optional())
+             WHERE to_owned_id = ?1 AND receipt = 'queued' AND (?2 IS NULL OR from_owned_id = ?2
+                 OR from_owned_id IN (SELECT owned_id FROM session_directory WHERE helper_of = ?2))
+             ORDER BY created_at_ms,id LIMIT 1",
+            params![to, sender], envelope_from_row).optional())
     }
 
     pub fn events_for(&self, group_id: &str, since_ms: Option<i64>) -> Result<Vec<Envelope>> {
@@ -523,7 +471,7 @@ impl SessionStore {
             format!("%{}%", text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
         let mut statement = db("could not prepare the message list", connection.prepare(&sql))?;
         let rows = db("could not list messages", statement.query_map(
-            params![query.run_id, query.session, query.status, pattern,
+            params![query.run_id, query.session, query.qualified_sender, query.status, pattern,
                 query.before.map(|(at, _)| at), query.before.map(|(_, id)| id), query.before_key, query.limit],
             |row| Ok(TrafficMessage {
                 id: row.get(0)?, created_at_ms: row.get(1)?, sender_name: row.get(2)?,
@@ -533,11 +481,11 @@ impl SessionStore {
         db("could not read messages", rows.collect())
     }
 
-    pub fn count_messages(&self, session: &str, after_ms: i64) -> Result<i64> {
+    pub fn count_messages(&self, session: &str, after_ms: i64, sender: Option<&str>) -> Result<i64> {
         let connection = self.lock()?;
         db("could not count messages", connection.query_row(&format!(
             "SELECT COUNT(*) FROM workflow_messages m WHERE m.kind='message' AND m.created_at_ms>?1 AND {MESSAGE_SCOPE}"),
-            params![after_ms, session], |row| row.get(0)))
+            params![after_ms, session, sender], |row| row.get(0)))
     }
 
     pub fn list_open_groups(&self) -> Result<Vec<(String, String, Option<String>, Vec<String>)>> {
@@ -634,329 +582,4 @@ fn envelope_from_row(row: &Row<'_>) -> rusqlite::Result<Envelope> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{MessageKind, Receipt};
-    use crate::session_store::SessionStore;
-
-    fn empty_group(store: &SessionStore) -> String {
-        store
-            .create_group("build", None, &[])
-            .expect("create group")
-    }
-
-    fn append(store: &SessionStore, group: &str, to: &str, body: &str) -> super::Envelope {
-        store
-            .append_message(group, "orchestrator", to, MessageKind::Message, body)
-            .expect("append message")
-    }
-
-    #[test]
-    fn broker_delivers_to_session_outside_any_group() {
-        let store = SessionStore::open_in_memory().unwrap();
-        store.lock_write().unwrap().execute("INSERT INTO sessions
-            (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra)
-            VALUES ('target','codex','/work','ready',0,1,1,'{}')", []).unwrap();
-        let message = store.append_message("", "sender", "target", MessageKind::Message, "hello").unwrap();
-        assert_eq!(store.pending_for("target").unwrap(), Some(message.clone()));
-        store.set_receipt(&message.id, Receipt::Delivered).unwrap();
-        assert!(store.pending_for("target").unwrap().is_none());
-        store.lock_write().unwrap().execute_batch(r#"INSERT INTO sessions
-            (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra)
-            VALUES ('worker','claude','/work','waiting-input',0,1,1,'{}');
-            INSERT INTO orchestration_events (id,run_id,kind,timestamp,sequence,payload_json)
-            VALUES ('e','run-1','workflow.node.started','1',1,
-            '{"ownedId":"worker","nodeId":"build","workflowPayload":{"run":{"inputSnapshot":{"task":{"key":"tsk-1416"}}}}}');"#).unwrap();
-        assert_eq!(store.resolve_session_name("tsk-1416/build").unwrap(), "worker");
-        let message = store.append_message("", "worker", "target", MessageKind::Message, "reply to me").unwrap();
-        assert!(message.sender_name.ends_with(" · tsk-1416/build"), "{}", message.sender_name);
-        assert_eq!(message.run_id.as_deref(), Some("run-1"));
-        // A reply to the worker belongs to the same run, so the run's Messages view shows it.
-        let reply = store.append_message("", "target", "worker", MessageKind::Message, "done").unwrap();
-        assert_eq!(reply.run_id.as_deref(), Some("run-1"));
-        // A workflow's own notice to the session that started it belongs to that run.
-        let notice = store.append_message("", "workflow:run-9", "target", MessageKind::Message, "waiting").unwrap();
-        assert_eq!(notice.run_id.as_deref(), Some("run-9"));
-    }
-
-    #[test]
-    fn session_list_says_where_each_session_came_from() {
-        let store = SessionStore::open_in_memory().unwrap();
-        store.lock_write().unwrap().execute_batch(r#"INSERT INTO sessions
-            (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra) VALUES
-            ('parent','codex','/work','ready',0,1,1,'{}'),
-            ('helper','claude','/work','ready',0,1,1,'{"helperOf":"parent"}'),
-            ('worker','codex','/work','ready',0,1,1,'{}');
-            INSERT INTO orchestration_events (id,run_id,kind,timestamp,sequence,payload_json) VALUES
-            ('e','run-1','workflow.node.started','1',1,
-             '{"ownedId":"worker","nodeId":"build","workflowPayload":{"run":{"definition":{"name":"Fix and review"},"inputSnapshot":{"task":{"key":"TSK-9"},"started_by":"parent"}}}}');"#).unwrap();
-        let listed = store.list_sessions_with_handles().unwrap();
-        let lineage = |id: &str| listed.iter().find(|entry| entry.row.owned_id == id)
-            .map(|entry| (entry.helper_of.clone(), entry.run_id.clone(), entry.run_label.clone())).unwrap();
-        assert_eq!(lineage("parent"), (None, None, None));
-        assert_eq!(lineage("helper"), (Some("parent".into()), None, None));
-        assert_eq!(lineage("worker"), (None, Some("run-1".into()), Some("TSK-9 · Fix and review".into())));
-        // A worker names the session that started its run; any other row names none.
-        let lead = |id: &str| listed.iter().find(|entry| entry.row.owned_id == id).unwrap().run_lead.clone();
-        assert_eq!(lead("worker").as_deref(), Some("parent"));
-        assert_eq!((lead("parent"), lead("helper")), (None, None));
-    }
-
-    #[test]
-    fn every_session_keeps_a_handle_that_outlives_renames() {
-        let store = SessionStore::open_in_memory().unwrap();
-        store.lock_write().unwrap().execute_batch("INSERT INTO sessions
-            (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra,title) VALUES
-            ('a','codex','/work','ready',0,1,1,'{}','Lane A'), ('b','claude','/work','ready',0,2,2,'{}','Lane B');").unwrap();
-        let entries = store.list_directory().unwrap();
-        let handle = entries.iter().find(|entry| entry.owned_id == "a").unwrap().handle.clone();
-        assert!(handle.split('-').count() >= 2 && handle != entries[1].handle, "{handle}");
-        store.lock_write().unwrap().execute("UPDATE sessions SET title='Renamed' WHERE owned_id='a'", []).unwrap();
-        assert_eq!(store.resolve_session_name(&handle).unwrap(), "a");
-        assert_eq!(store.resolve_session_name("a").unwrap(), "a");
-        let message = store.append_message("", "a", "b", MessageKind::Message, "hi").unwrap();
-        assert_eq!(message.sender_name, format!("{handle} · Renamed"));
-        // A reply addressed to the whole label reaches the sender.
-        assert_eq!(store.resolve_session_name(&message.sender_name).unwrap(), "a");
-    }
-
-    #[test]
-    fn a_message_from_another_machine_keeps_its_sender_label() {
-        let store = SessionStore::open_in_memory().unwrap();
-        store.lock_write().unwrap().execute_batch("INSERT INTO sessions
-            (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra,title) VALUES
-            ('here','codex','/work','ready',0,1,1,'{}','Here');").unwrap();
-        let message = store.append_message_as("", "elsewhere", "here", MessageKind::Message, "hi",
-            Some("brisk-heron@workbox-test · There")).unwrap();
-        assert_eq!(message.sender_name, "brisk-heron@workbox-test · There");
-        assert_eq!(store.message_status(&message.id, "elsewhere").unwrap(), "queued");
-    }
-
-    #[test]
-    fn directory_shows_the_session_project_title() {
-        let store = SessionStore::open_in_memory().unwrap();
-        store.lock_write().unwrap().execute_batch("INSERT INTO projects
-            (id,machine,root_path,title,repo_key,created_at) VALUES ('p1','local','/work','demo-repo','k',1);
-            INSERT INTO sessions (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra,project_id)
-            VALUES ('s1','codex','/work','ready',0,1,1,'{}','p1');").unwrap();
-        assert_eq!(store.list_directory().unwrap()[0].project.as_deref(), Some("demo-repo"));
-    }
-
-    #[test]
-    fn retried_worker_name_points_at_the_newest_session() {
-        let store = SessionStore::open_in_memory().unwrap();
-        store.lock_write().unwrap().execute_batch(r#"INSERT INTO sessions
-            (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra) VALUES
-            ('first-try','codex','/work','closed',0,1,1,'{}'), ('second-try','codex','/work','working',0,2,2,'{}');
-            INSERT INTO orchestration_events (id,run_id,kind,timestamp,sequence,payload_json) VALUES
-            ('e1','run-1','workflow.node.started','1',1,'{"ownedId":"first-try","nodeId":"build","workflowPayload":{"run":{"inputSnapshot":{"task":{"key":"tsk-1416"}}}}}'),
-            ('e2','run-1','workflow.node.started','2',2,'{"ownedId":"second-try","nodeId":"build","workflowPayload":{"run":{"inputSnapshot":{"task":{"key":"tsk-1416"}}}}}');"#).unwrap();
-        assert_eq!(store.resolve_session_name("tsk-1416/build").unwrap(), "second-try");
-        assert_eq!(store.resolve_session_name("tsk-1416/build [first-try]").unwrap(), "first-try");
-        let reply = store.append_message("", "second-try", "first-try", MessageKind::Message, "hi").unwrap();
-        assert!(reply.sender_name.ends_with(" · tsk-1416/build"), "{}", reply.sender_name);
-        assert_eq!(store.resolve_session_name(&reply.sender_name).unwrap(), "second-try");
-    }
-
-    #[test]
-    fn orchestrator_comes_from_setting_not_title() {
-        let store = SessionStore::open_in_memory().unwrap();
-        store.lock_write().unwrap().execute_batch(r#"INSERT INTO sessions
-            (owned_id,provider,cwd,title,state,suspended,created_at,last_activity_at,extra) VALUES
-            ('named','codex','/work','orchestrator','ready',0,1,1,'{}'),
-            ('marked','codex','/work','Controller','ready',0,2,2,'{}');"#).unwrap();
-        let marked = |store: &SessionStore| store.list_directory().unwrap().into_iter()
-            .filter(|entry| entry.orchestrator).map(|entry| entry.owned_id).collect::<Vec<_>>();
-        assert!(marked(&store).is_empty(), "a title does not make an orchestrator");
-        store.set_main_orchestrator(Some("marked")).unwrap();
-        assert_eq!(marked(&store), ["marked"]);
-        assert_eq!(store.main_orchestrator().unwrap().map(|(id, _)| id).as_deref(), Some("marked"));
-        store.set_main_orchestrator(None).unwrap();
-        assert!(marked(&store).is_empty());
-        assert_eq!(store.main_orchestrator().unwrap(), None);
-    }
-
-    #[test]
-    fn directory_lookup_uses_owned_event_index() {
-        let store = SessionStore::open_in_memory().unwrap();
-        let connection = store.lock().unwrap();
-        let mut statement = connection.prepare("EXPLAIN QUERY PLAN SELECT name FROM session_directory WHERE owned_id=?").unwrap();
-        let details = statement.query_map(["target"], |row| row.get::<_, String>(3)).unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>().unwrap().join("\n");
-        assert!(details.contains("orchestration_events_owned_idx"), "{details}");
-    }
-
-    #[test]
-    fn list_messages_filters_and_pages_in_sql() {
-        let store = SessionStore::open_in_memory().unwrap();
-        store.lock_write().unwrap().execute_batch("INSERT INTO sessions
-            (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra,title,handle) VALUES
-            ('b','codex','/work','ready',0,1,1,'{}','Lane B','calm-otter');
-            INSERT INTO workflow_messages (id,from_owned_id,to_owned_id,sender_name,run_id,kind,body,receipt,created_at_ms,updated_at_ms) VALUES
-            ('m1','a','b','brisk-heron · A','run-1','message','one','delivered',10,10),
-            ('m2','a','b','brisk-heron · A',NULL,'message','two','queued',20,20),
-            ('m3','c','gone','x · C','run-2','message','three','failed',20,20),
-            ('m4','b','a','calm-otter · Lane B','run-1','message','four','delivered',30,30),
-            ('m5','b','attempt-1','calm-otter · Lane B','run-1','review','{}','delivered',40,40),
-            ('m6','a','b','brisk-heron · A',NULL,'system','joined','delivered',40,40);").unwrap();
-        // Review reports and group bookkeeping are not agent messages, so the owner's view leaves them out.
-        use super::{TrafficMessage, TrafficQuery, traffic_sql};
-        use rusqlite::params;
-        let ids = |page: Vec<TrafficMessage>| page.into_iter().map(|message| message.id).collect::<Vec<_>>();
-        assert_eq!(ids(store.list_messages(&TrafficQuery { limit: 10, ..Default::default() }).unwrap()), ["m4", "m3", "m2", "m1"]);
-        assert_eq!(ids(store.list_messages(&TrafficQuery { run_id: Some("run-1"), limit: 10, ..Default::default() }).unwrap()), ["m4", "m1"]);
-        assert_eq!(ids(store.list_messages(&TrafficQuery { session: Some("b"), limit: 10, ..Default::default() }).unwrap()), ["m4", "m2", "m1"]);
-        // Paging resumes after the last row shown, even between two rows of the same time.
-        let first = store.list_messages(&TrafficQuery { limit: 2, ..Default::default() }).unwrap();
-        assert_eq!(ids(first.clone()), ["m4", "m3"]);
-        let last = first.last().unwrap();
-        assert_eq!(ids(store.list_messages(&TrafficQuery { before: Some((last.created_at_ms, &last.id)), limit: 10, ..Default::default() }).unwrap()), ["m2", "m1"]);
-        let messages = store.list_messages(&TrafficQuery { limit: 10, ..Default::default() }).unwrap();
-        assert_eq!(messages[2].receiver, "calm-otter · Lane B");
-        assert_eq!(messages[1].receiver, "gone");
-        let connection = store.lock().unwrap();
-        let mut statement = connection.prepare(&format!("EXPLAIN QUERY PLAN {}", traffic_sql("time"))).unwrap();
-        let details = statement.query_map(params![None::<String>, None::<String>, None::<String>, None::<String>, None::<i64>, None::<String>, None::<String>, 10], |row| row.get::<_, String>(3)).unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>().unwrap().join("\n");
-        assert!(details.contains("idx_workflow_messages_created"), "{details}");
-        assert!(!details.contains("TEMP B-TREE"), "{details}");
-    }
-
-    #[test]
-    fn list_messages_session_scope_includes_runs_it_started() {
-        let store = SessionStore::open_in_memory().unwrap();
-        store.lock_write().unwrap().execute_batch(r#"INSERT INTO orchestration_events
-            (id,run_id,kind,timestamp,payload_json) VALUES ('e','run-b','run','now',
-            '{"workflowPayload":{"run":{"inputSnapshot":{"started_by":"owner"}}}}');
-            INSERT INTO workflow_messages (id,from_owned_id,to_owned_id,sender_name,run_id,kind,body,receipt,created_at_ms,updated_at_ms)
-            VALUES ('m','worker-a','worker-b','Worker','run-b','message','hello','queued',10,10);"#).unwrap();
-        assert_eq!(store.list_messages(&super::TrafficQuery { session: Some("owner"), limit: 10, ..Default::default() }).unwrap().len(), 1);
-        assert!(store.list_messages(&super::TrafficQuery { session: Some("unrelated"), limit: 10, ..Default::default() }).unwrap().is_empty());
-        let connection = store.lock().unwrap();
-        let plan: String = connection.query_row("EXPLAIN QUERY PLAN SELECT run_id FROM orchestration_events WHERE json_extract(payload_json,'$.workflowPayload.run.inputSnapshot.started_by')='owner'", [], |r| r.get(3)).unwrap();
-        assert!(plan.contains("orchestration_events_started_by_idx"), "{plan}");
-    }
-
-    #[test]
-    fn list_messages_search_sort_status_in_sql() {
-        let store = SessionStore::open_in_memory().unwrap();
-        store.lock_write().unwrap().execute_batch("INSERT INTO workflow_messages
-            (id,from_owned_id,to_owned_id,sender_name,kind,body,receipt,created_at_ms,updated_at_ms) VALUES
-            ('a','a','Receiver','Zebra','message','100% done','queued',30,30),
-            ('b','b','Other','Alpha','message','ordinary','delivered',20,20),
-            ('c','c','Other','Alpha','message','1000 done','queued',10,10);").unwrap();
-        let query = |search| super::TrafficQuery { search, limit: 10, ..Default::default() };
-        for search in ["Zebra", "Receiver", "100%"] {
-            assert_eq!(store.list_messages(&query(Some(search))).unwrap()[0].id, "a");
-            assert_eq!(store.list_messages(&query(Some(search))).unwrap().len(), 1);
-        }
-        let rows = store.list_messages(&super::TrafficQuery { sort: "sender", limit: 10, ..Default::default() }).unwrap();
-        assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["b", "c", "a"]);
-        for (sort, key) in [("sender", "Alpha"), ("receiver", "Other")] {
-            let rows = store.list_messages(&super::TrafficQuery { sort, before_key: Some(key), before: Some((20,"b")), status: Some("queued"), limit: 10, ..Default::default() }).unwrap();
-            assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["c", "a"]);
-        }
-    }
-
-    #[test]
-    fn count_messages_after() {
-        let store = SessionStore::open_in_memory().unwrap();
-        let message = store.append_message("", "sender", "target", MessageKind::Message, "hello").unwrap();
-        assert_eq!(store.count_messages("target", message.created_at_ms - 1).unwrap(), 1);
-        assert_eq!(store.count_messages("sender", message.created_at_ms).unwrap(), 0);
-        assert_eq!(store.count_messages("other", 0).unwrap(), 0);
-    }
-
-    #[test]
-    fn message_listener_fires_on_append_and_receipt() {
-        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
-        let store = Arc::new(SessionStore::open_in_memory().unwrap());
-        let calls = Arc::new(AtomicUsize::new(0));
-        let (observed, count) = (store.clone(), calls.clone());
-        let owner = std::thread::current().id();
-        super::on_messages_changed(move || {
-            // Taking the same database lock proves notification happens after release.
-            if std::thread::current().id() == owner && observed.count_messages("listener-target", 0).unwrap() > 0 { count.fetch_add(1, Ordering::SeqCst); }
-        });
-        let message = store.append_message("", "sender", "listener-target", MessageKind::Message, "hello").unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        store.set_receipt(&message.id, Receipt::Queued).unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        store.set_receipt(&message.id, Receipt::Delivered).unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert!(store.set_receipt(&message.id, Receipt::Failed).is_err());
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn broker_queue_queries_use_target_index() {
-        let store = SessionStore::open_in_memory().unwrap();
-        let connection = store.lock().unwrap();
-        let mut statement = connection.prepare("EXPLAIN QUERY PLAN SELECT id FROM workflow_messages
-            WHERE to_owned_id=? AND receipt='queued' ORDER BY created_at_ms,id LIMIT 1").unwrap();
-        let details = statement.query_map(["target"], |row| row.get::<_, String>(3)).unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>().unwrap().join("\n");
-        assert!(details.contains("idx_workflow_messages_target"), "{details}");
-        assert!(!details.contains("TEMP B-TREE"), "{details}");
-    }
-
-    #[test]
-    fn append_starts_queued_and_events_return_in_order() {
-        let store = SessionStore::open_in_memory().expect("open store");
-        let members = vec!["worker-a".to_owned(), "worker-b".to_owned()];
-        let group = store
-            .create_group("build", Some("orchestrator"), &members)
-            .expect("create group");
-        let first = append(&store, &group, "worker-a", "first");
-        let second = store
-            .append_message(
-                &group,
-                "worker-a",
-                "orchestrator",
-                MessageKind::Status,
-                "second",
-            )
-            .expect("append second message");
-
-        assert_eq!(
-            (first.receipt, second.receipt),
-            (Receipt::Queued, Receipt::Queued)
-        );
-        let bodies: Vec<_> = store
-            .events_for(&group, None)
-            .expect("list events")
-            .into_iter()
-            .map(|event| event.body)
-            .collect();
-        assert_eq!(
-            bodies,
-            vec!["member:worker-a", "member:worker-b", "first", "second"]
-        );
-        assert_eq!(store.list_open_groups().expect("list groups")[0].3, members);
-    }
-
-    #[test]
-    fn terminal_receipts_refuse_change() {
-        let store = SessionStore::open_in_memory().expect("open store");
-        let message = append(&store, &empty_group(&store), "worker-a", "choose");
-        store
-            .set_receipt(&message.id, Receipt::Delivered)
-            .expect("deliver message");
-        assert!(store.set_receipt(&message.id, Receipt::Failed).is_err());
-    }
-
-    #[test]
-    fn pending_returns_only_queued_for_recipient() {
-        let store = SessionStore::open_in_memory().expect("open store");
-        let group = empty_group(&store);
-        let first = append(&store, &group, "worker-a", "first");
-        let delivered = append(&store, &group, "worker-a", "delivered");
-        append(&store, &group, "worker-b", "other recipient");
-        store
-            .set_receipt(&delivered.id, Receipt::Expired)
-            .expect("expire message");
-        assert_eq!(
-            store.pending_for("worker-a").expect("list pending"),
-            Some(first)
-        );
-    }
-}
+mod tests;

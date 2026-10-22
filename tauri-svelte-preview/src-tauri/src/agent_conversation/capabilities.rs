@@ -223,6 +223,53 @@ mod tests {
             .contains("SHA-256"));
     }
 
+    fn effort_option(value: &str, choices: &[&str]) -> AgentConfigOption {
+        AgentConfigOption {
+            id: "effort".into(),
+            label: "Effort".into(),
+            category: "thought_level".into(),
+            description: None,
+            value: Value::String(value.into()),
+            choices: Some(choices.iter().map(|choice| crate::agent_conversation::protocol::AgentConfigOptionChoice {
+                value: Value::String((*choice).into()),
+                label: (*choice).into(),
+                description: None,
+            }).collect()),
+            provider_metadata: None,
+        }
+    }
+
+    // Protects 325d7805c: an adapter's model/effort catalogue is accepted only when
+    // it is coherent, and a bad one never replaces the controls the composer shows.
+    #[test]
+    fn incoherent_config_catalogue_is_rejected_and_keeps_the_previous_controls() {
+        let mut value = capabilities();
+        replace_config_options(&mut value, vec![effort_option("high", &["low", "high"])]).unwrap();
+        assert_eq!(value.revision, 2);
+        for (case, replacement) in [
+            ("selected value is not offered", vec![effort_option("max", &["low", "high"])]),
+            ("no choices at all", vec![effort_option("high", &[])]),
+            ("the same id twice", vec![effort_option("low", &["low"]), effort_option("high", &["high"])]),
+        ] {
+            assert!(replace_config_options(&mut value, replacement).is_err(), "{case}");
+            assert_eq!(value.revision, 2, "{case}: revision is unchanged");
+            assert_eq!(value.config_options, vec![effort_option("high", &["low", "high"])], "{case}");
+        }
+        let mut no_revision = capabilities();
+        no_revision.revision = 0;
+        assert!(validate_capabilities(&no_revision).is_err());
+    }
+
+    // Protects 325d7805c: a requested model or effort must be one the adapter offered.
+    #[test]
+    fn config_change_must_name_an_advertised_choice() {
+        let option = effort_option("high", &["low", "high"]);
+        assert!(validate_config_value(&option, &Value::String("low".into())).is_ok());
+        assert!(validate_config_value(&option, &Value::String("extreme".into())).unwrap_err().contains("effort"));
+        let free_text = AgentConfigOption { choices: None, ..option };
+        assert!(validate_config_value(&free_text, &Value::String("anything".into())).is_ok());
+    }
+
     #[test]
     fn checkout_support_follows_negotiated_resume_for_each_provider() {
         for provider in [AgentConversationProvider::Codex, AgentConversationProvider::Claude, AgentConversationProvider::Antigravity] {

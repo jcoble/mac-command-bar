@@ -529,3 +529,17 @@ export function workflowStepFacts(node: Pick<WorkflowNodeRunRecord, 'structuredO
 export function workflowMachine(machine: string): string | null {
   return machine === 'mac' ? null : machine;
 }
+
+/** An engine refusal, which arrives as `{"kind":…,"detail":…}`, as its own sentence; other errors as they are. */
+export function workflowErrorText(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  try {
+    const { kind, detail } = JSON.parse(text) as { kind?: unknown; detail?: unknown };
+    if (typeof kind !== 'string') return text;
+    if (typeof detail === 'string') return detail;
+    const message = (detail as { message?: unknown } | null)?.message;
+    return typeof message === 'string' ? message : text;
+  } catch {
+    return text;
+  }
+}

@@ -166,3 +166,98 @@ fn two_readers_extending_one_import_at_once_read_each_page_once() {
     assert_eq!(manager.store.history_download_facts(&owned_id, None).unwrap().row_count, 250);
     fs::remove_dir_all(directory).unwrap();
 }
+
+/// A new directory holding a one-line Codex transcript, and a manager with nothing imported yet.
+fn empty_import_manager() -> (std::path::PathBuf, std::path::PathBuf, AgentRuntimeManager) {
+    let directory = std::env::temp_dir().join(format!("begin-import-{}", uuid::Uuid::new_v4()));
+    fs::create_dir(&directory).unwrap();
+    let path = directory.join("rollout.jsonl");
+    fs::write(&path, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"native\",\"cwd\":\"/work\"}}\n").unwrap();
+    let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("sessions.db")).unwrap();
+    (directory, path, manager)
+}
+
+/// Pins f4ccd6d89: resuming a session its own CLI is still running is refused before any row is written, and a session
+/// Assembly has open is not refused (its own adapter's run record would otherwise block it). Runs itself again with HOME
+/// pointing at a folder whose Claude run record names this test's live process, so the owner's home is never read.
+#[tokio::test(flavor = "current_thread")]
+async fn a_session_running_outside_assembly_is_refused_and_leaves_no_row() {
+    const CHILD: &str = "ASSEMBLY_TEST_RUNNING_ELSEWHERE_CHILD";
+    // The History panel (resumeAsAssemblySession) recognises the refusal by these words and holds the card's button.
+    assert!(crate::agent_conversation::history::RUNNING_ELSEWHERE.contains("still running outside Assembly"));
+    if std::env::var_os(CHILD).is_some() {
+        let (directory, path, manager) = empty_import_manager();
+        let refused = manager.begin_import_transcript_session(AgentConversationProvider::Claude, "running-elsewhere", &path, "/work", None, None).await;
+        assert_eq!(refused, Err(crate::agent_conversation::history::RUNNING_ELSEWHERE.to_string()));
+        assert!(manager.store.list_sessions().unwrap().is_empty(), "a refused resume writes no session");
+        let open = crate::agent_conversation::history::begin_import_session(&manager.store, AgentConversationProvider::Claude,
+            "running-elsewhere", &path, "/work", None, None, true);
+        assert!(open.is_ok(), "{open:?}");
+        fs::remove_dir_all(directory).unwrap();
+        return;
+    }
+    let home = std::env::temp_dir().join(format!("running-elsewhere-home-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(home.join(".claude/sessions")).unwrap();
+    fs::write(home.join(".claude/sessions/1.json"), format!(r#"{{"pid":{},"sessionId":"running-elsewhere"}}"#, std::process::id())).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "agent_conversation::manager::tests::import_length::a_session_running_outside_assembly_is_refused_and_leaves_no_row", "--nocapture"])
+        .env("HOME", &home).env(CHILD, "1").output().unwrap();
+    fs::remove_dir_all(home).unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success() && stdout.contains("1 passed"), "{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+}
+
+/// Pins 057af2c01: a session Assembly has open whose transcript grew outside is not read again under it (its saved turns
+/// stay); the person is told to close it first.
+#[tokio::test(flavor = "current_thread")]
+async fn an_open_session_whose_transcript_grew_is_refused_and_keeps_its_turns() {
+    let fixture = fixture_manager_with_acp_session("import_length_open").await;
+    let (transcript, _) = imported_and_grown(&fixture);
+    let store = fixture.manager.store();
+    let head = store.latest_seq(&fixture.owned_id).unwrap();
+    let native = store.get_session(&fixture.owned_id).unwrap().unwrap().native_session_id.unwrap();
+    let refused = fixture.manager.begin_import_transcript_session(AgentConversationProvider::Codex, &native,
+        &transcript, fixture.root.to_str().unwrap(), None, None).await;
+    assert_eq!(refused, Err("Close this session before importing the turns taken outside Assembly.".to_string()));
+    assert_eq!(store.latest_seq(&fixture.owned_id).unwrap(), head, "its saved turns stay");
+    assert_eq!(saved_length(&fixture), Some(16), "the turns taken outside are still waiting to be read");
+}
+
+/// Pins a130f8358: importing a session again files it under the desktop's project only when it has none, so a session
+/// the person already filed elsewhere stays where they put it.
+#[tokio::test(flavor = "current_thread")]
+async fn importing_again_files_a_session_without_a_project_but_keeps_the_one_it_has() {
+    let (directory, path, manager) = empty_import_manager();
+    let import = |project: &str| manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
+        &path, "/work", None, Some(project.to_string()));
+    let (owned_id, _) = crate::agent_conversation::history::begin_import_session(&manager.store, AgentConversationProvider::Codex,
+        "native", &path, "/work", None, None, false).unwrap();
+    let project = || manager.store.get_session(&owned_id).unwrap().unwrap().project_id;
+    assert_eq!(project(), None);
+    assert_eq!(import("desktop").await, Ok((owned_id.clone(), false)));
+    assert_eq!(project().as_deref(), Some("desktop"));
+    assert_eq!(import("other").await, Ok((owned_id.clone(), false)));
+    assert_eq!(project().as_deref(), Some("desktop"));
+    assert_eq!(manager.store.list_sessions().unwrap().len(), 1, "one conversation, one row");
+    fs::remove_dir_all(directory).unwrap();
+}
+
+/// Pins 80db568aa: the History card's title is written with the row (trimmed, at most 200 characters, none when blank),
+/// and the session is dated by when its transcript was last written, not by the clock, so a year-old conversation does
+/// not sort above today's work.
+#[test]
+fn an_imported_session_keeps_its_title_and_is_dated_by_its_transcript() {
+    let (directory, path, manager) = empty_import_manager();
+    let written = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_600_000_000_000);
+    fs::File::options().write(true).open(&path).unwrap().set_modified(written).unwrap();
+    let long = "é".repeat(250);
+    for (native, title, expected) in [("trimmed", "  Fix the rail  ", Some("Fix the rail".to_string())),
+        ("long", long.as_str(), Some("é".repeat(200))), ("blank", "   ", None)] {
+        let (owned_id, _) = crate::agent_conversation::history::begin_import_session(&manager.store, AgentConversationProvider::Codex,
+            native, &path, "/work", Some(title.to_string()), None, false).unwrap();
+        let row = manager.store.get_session(&owned_id).unwrap().unwrap();
+        assert_eq!(row.title, expected, "{native}");
+        assert_eq!((row.created_at_ms, row.last_activity_at_ms), (1_600_000_000_000, 1_600_000_000_000), "{native}");
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
