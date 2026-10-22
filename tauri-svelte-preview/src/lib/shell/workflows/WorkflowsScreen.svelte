@@ -4,20 +4,42 @@
   Opened from the Agents panel's Workflows tab, over the whole frame like the
   Projects screen; the shell under it stays as it was, so Back returns to it.
   The Board shows each run in the column of the step it is at; a card opens
-  that run's page, with its Map and its Cost.
+  that run's page, with its Map and its Cost. On the Map, a step opens its
+  details below it; answers, approvals and retries go through the engine's
+  own commands, and the run that comes back replaces the one shown.
 -->
 <script lang="ts">
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
-  import { onMount } from 'svelte';
+  import CircleStop from '@lucide/svelte/icons/circle-stop';
+  import Pause from '@lucide/svelte/icons/pause';
+  import Play from '@lucide/svelte/icons/play';
+  import { onMount, untrack } from 'svelte';
 
   import * as Breadcrumb from '$lib/components/ui/breadcrumb/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
-  import { listenAgentMessagesChanged } from '$lib/tauriSource.ts';
+  import { Chip } from '$lib/components/ui/chip/index.js';
+  import * as Tabs from '$lib/components/ui/tabs/index.js';
+  import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
+  import { adoptSession } from '$lib/shell/conversation/conversationService.ts';
+  import { listAgentMessagesFromTauri, listenAgentMessagesChanged } from '$lib/tauriSource.ts';
   import { parseRemoteWorkspacePath } from '$lib/workspacePaths.ts';
-  import { listWorkflowRuns } from './workflowService.ts';
-  import { workflowErrorText, type WorkflowRunRecord } from './workflowTypes.ts';
+  import { currentStep, runTask, shortDuration } from './workflowBoard.ts';
+  import {
+    answerWorkflowPause,
+    approveWorkflowGate,
+    cancelWorkflowRun,
+    listWorkflowRunHistory,
+    listWorkflowRuns,
+    pauseWorkflowRun,
+    resumeWorkflowRun,
+    retryWorkflowNode
+  } from './workflowService.ts';
+  import { buildWorkflowTimeline, type WorkflowTimelineItem } from './workflowTimeline.ts';
+  import { workflowErrorText, type WorkflowPauseDecision, type WorkflowRunRecord } from './workflowTypes.ts';
   import WorkflowBoard from './components/WorkflowBoard.svelte';
+  import WorkflowMap from './components/WorkflowMap.svelte';
+  import WorkflowStepPanel from './components/WorkflowStepPanel.svelte';
 
   interface Props {
     /** The active session's project; a remote project's runs are on that machine's engine. */
@@ -32,7 +54,16 @@
   let loaded = $state(false);
   let error = $state('');
   let openRunId = $state<string | null>(null);
+  let runTab = $state('map');
+  let chosenStepId = $state<string | null>(null);
+  let busy = $state(false);
+  let timeline = $state<{ runId: string; items: WorkflowTimelineItem[]; loading: boolean; error: string } | null>(null);
   let now = $state(Date.now());
+  const openRun = $derived(runs.find((run) => run.id === openRunId) ?? null);
+  /** The step whose details show: the one chosen on the Map, else where the run is. */
+  const shownStep = $derived(openRun
+    ? openRun.nodes.find((node) => node.nodeId === chosenStepId) ?? currentStep(openRun) : null);
+  const ENDED = ['completed', 'cancelled', 'failed'];
   /** Ends every read and listener when the screen closes. */
   const stop = new AbortController();
 
@@ -64,6 +95,72 @@
     await reread();
   }
 
+  // The open run's timeline, read again only when the run moves on.
+  const timelineKey = $derived(openRun ? `${openRun.id}\n${openRun.updatedAtMs}` : '');
+  $effect(() => {
+    if (!timelineKey) return;
+    const run = untrack(() => openRun);
+    if (!run) return;
+    const controller = new AbortController();
+    const kept = untrack(() => (timeline?.runId === run.id ? timeline.items : []));
+    timeline = { runId: run.id, items: kept, loading: true, error: '' };
+    void loadTimeline(run, kept, controller.signal);
+    return () => controller.abort();
+  });
+
+  async function loadTimeline(run: WorkflowRunRecord, kept: WorkflowTimelineItem[], signal: AbortSignal): Promise<void> {
+    try {
+      const [history, messages] = await Promise.all([
+        listWorkflowRunHistory(machine, run.id, signal),
+        listAgentMessagesFromTauri({ runId: run.id, machine: machine ?? 'mac', before: null, limit: 200 }, signal)
+      ]);
+      if (!signal.aborted) timeline = { runId: run.id, items: buildWorkflowTimeline(history ?? [], messages ?? [], run), loading: false, error: '' };
+    } catch (cause) {
+      if (!signal.aborted) timeline = { runId: run.id, items: kept, loading: false, error: `Could not load the log: ${workflowErrorText(cause)}` };
+    }
+  }
+
+  const key = (action: string): string => `workflows-screen:${action}:${crypto.randomUUID()}`;
+
+  /** Runs one engine command and shows the run it returns. */
+  async function control(label: string, action: () => Promise<WorkflowRunRecord | null>): Promise<void> {
+    busy = true;
+    error = '';
+    try {
+      const run = await action();
+      if (stop.signal.aborted || !run) return;
+      runs = runs.some((candidate) => candidate.id === run.id)
+        ? runs.map((candidate) => (candidate.id === run.id && run.lastSequence >= candidate.lastSequence ? run : candidate))
+        : [...runs, run];
+    } catch (cause) {
+      if (!stop.signal.aborted) error = `${label}: ${workflowErrorText(cause)}`;
+    } finally {
+      busy = false;
+    }
+  }
+
+  function answer(run: WorkflowRunRecord, nodeId: string, decision: WorkflowPauseDecision): void {
+    void control('Answer', () => answerWorkflowPause({ runId: run.id, nodeId, decision, reply: null, idempotencyKey: key('answer') }, machine));
+  }
+
+  async function openChat(ownedId: string): Promise<void> {
+    try {
+      if (!(await adoptSession(ownedId, stop.signal))) throw new Error('Agent conversation is not available yet.');
+      if (stop.signal.aborted) return;
+      await sessionRowJump(ownedId, 'session');
+      onBack();
+    } catch (cause) {
+      if (!stop.signal.aborted) error = `Could not open the chat: ${workflowErrorText(cause)}`;
+    }
+  }
+
+  function openRunPage(runId: string | null): void {
+    openRunId = runId;
+    chosenStepId = null;
+    runTab = 'map';
+    timeline = null;
+  }
+
   async function read(signal: AbortSignal): Promise<void> {
     try {
       const next = await listWorkflowRuns(machine);
@@ -84,15 +181,34 @@
   role="region"
   aria-label="Workflows"
   data-testid="workflows-screen"
-  onkeydown={(event) => { if (event.key === 'Escape') onBack(); }}
+  onkeydown={(event) => { if (event.key === 'Escape') { if (openRun) openRunPage(null); else onBack(); } }}
 >
   <header class="flex min-w-0 items-center gap-3">
-    <Button variant="ghost" size="sm" onclick={onBack}><ArrowLeft />Back</Button>
-    <Breadcrumb.Root>
-      <Breadcrumb.List class="text-[13px]">
-        <Breadcrumb.Item><Breadcrumb.Page>Workflows</Breadcrumb.Page></Breadcrumb.Item>
+    <Button variant="ghost" size="sm" onclick={() => (openRun ? openRunPage(null) : onBack())}><ArrowLeft />Back</Button>
+    <Breadcrumb.Root class="min-w-0">
+      <Breadcrumb.List class="flex-nowrap text-[13px]">
+        {#if openRun}
+          {@const task = runTask(openRun)}
+          <Breadcrumb.Item>
+            <Breadcrumb.Link>
+              {#snippet child({ props })}<button {...props} type="button" class="{props.class} rounded-md outline-none focus-visible:ring-3 focus-visible:ring-ring/50" onclick={() => openRunPage(null)}>Workflows</button>{/snippet}
+            </Breadcrumb.Link>
+          </Breadcrumb.Item>
+          <Breadcrumb.Separator class="flex items-center" />
+          <Breadcrumb.Item class="min-w-0"><Breadcrumb.Page class="truncate">{task.key ? `${task.key} · ` : ''}{task.title}</Breadcrumb.Page></Breadcrumb.Item>
+        {:else}
+          <Breadcrumb.Item><Breadcrumb.Page>Workflows</Breadcrumb.Page></Breadcrumb.Item>
+        {/if}
       </Breadcrumb.List>
     </Breadcrumb.Root>
+    {#if openRun}
+      <Tabs.Root bind:value={runTab} class="ml-auto">
+        <Tabs.List>
+          <Tabs.Trigger value="map">Map</Tabs.Trigger>
+          <Tabs.Trigger value="cost">Cost</Tabs.Trigger>
+        </Tabs.List>
+      </Tabs.Root>
+    {/if}
   </header>
 
   {#if error}
@@ -101,10 +217,46 @@
     </p>
   {/if}
 
-  {#if loaded && runs.length === 0 && !error}
+  {#if openRun}
+    {@const run = openRun}
+    <div class="flex min-w-0 flex-wrap items-center gap-2">
+      <Chip tone="neutral">{run.definition.name}</Chip>
+      <Chip tone={run.state === 'failed' ? 'bad' : run.state === 'completed' ? 'good' : ENDED.includes(run.state) ? 'neutral' : run.state.startsWith('waiting') ? 'attention' : 'live'}>
+        {run.state} · {shortDuration((ENDED.includes(run.state) ? run.updatedAtMs : now) - run.createdAtMs)}
+      </Chip>
+      <span class="ml-auto flex gap-2">
+        {#if run.state === 'running'}
+          <Button size="sm" variant="ghost" disabled={busy} onclick={() => void control('Pause', () => pauseWorkflowRun({ runId: run.id, idempotencyKey: key('pause') }, machine))}><Pause />Pause after this step</Button>
+        {:else if run.state === 'paused'}
+          <Button size="sm" variant="ghost" disabled={busy} onclick={() => void control('Resume', () => resumeWorkflowRun({ runId: run.id, idempotencyKey: key('resume') }, machine))}><Play />Resume</Button>
+        {/if}
+        {#if !ENDED.includes(run.state)}
+          <Button size="sm" variant="ghost" disabled={busy} onclick={() => void control('Stop', () => cancelWorkflowRun({ runId: run.id, idempotencyKey: key('cancel') }, machine))}><CircleStop />Stop run</Button>
+        {/if}
+      </span>
+    </div>
+    {#if runTab === 'map'}
+      <WorkflowMap {run} {now} selectedId={shownStep?.nodeId ?? null} onSelect={(nodeId) => (chosenStepId = nodeId)} />
+      {#if shownStep}
+        {@const step = shownStep}
+        <WorkflowStepPanel
+          {run}
+          node={step}
+          {now}
+          {busy}
+          local={!machine}
+          timeline={timeline?.runId === run.id ? timeline : { items: [], loading: true, error: '' }}
+          onAnswer={(decision) => answer(run, step.nodeId, decision)}
+          onApprove={() => void control('Approve', () => approveWorkflowGate({ runId: run.id, nodeId: step.nodeId, approval: { approved: true }, idempotencyKey: key('approve') }, machine))}
+          onRetry={() => void control('Retry', () => retryWorkflowNode({ runId: run.id, nodeId: step.nodeId, idempotencyKey: key('retry') }, machine))}
+          onOpenChat={() => void openChat(step.ownedId)}
+        />
+      {/if}
+    {/if}
+  {:else if loaded && runs.length === 0 && !error}
     <p class="text-[13px] text-muted-foreground">No workflow runs yet.</p>
   {:else if runs.length}
-    <WorkflowBoard {runs} {now} costOf={() => ''} onOpen={(runId) => (openRunId = runId)} />
+    <WorkflowBoard {runs} {now} costOf={() => ''} onOpen={openRunPage} />
   {/if}
 </div>
 
