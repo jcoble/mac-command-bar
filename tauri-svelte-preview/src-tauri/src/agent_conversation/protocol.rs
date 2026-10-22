@@ -51,13 +51,9 @@ pub enum AgentRuntimeState {
     Closed,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AgentConversationProvider {
-    Codex,
-    Claude,
-    Antigravity,
-}
+/// A provider id from `providers/descriptors.json`; its methods and serde are in `providers/descriptors.rs`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct AgentConversationProvider(pub(crate) &'static str);
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]

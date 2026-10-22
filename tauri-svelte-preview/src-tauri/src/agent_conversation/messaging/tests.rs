@@ -161,8 +161,8 @@ async fn start_session_rejects_unknown_provider_and_missing_credential() {
         "arguments":{"provider":provider,"name":"Helper","prompt":"Look"}});
     assert_eq!(endpoint.handle("missing", start("codex")).await.unwrap_err(), "Unauthorized");
     endpoint.bind_store(&a.token, &store, None);
-    assert_eq!(endpoint.handle(&a.token, start("gemini")).await.unwrap_err(), "provider must be codex or claude");
-    assert_eq!(endpoint.handle(&a.token, start("codex")).await.unwrap_err(), "Sessions cannot be started from here");
+    assert_eq!(endpoint.handle(&a.token, start("gemini")).await.unwrap_err(), "provider must be codex, claude or antigravity");
+    for provider in ["codex", "antigravity"] { assert_eq!(endpoint.handle(&a.token, start(provider)).await.unwrap_err(), "Sessions cannot be started from here"); }
     let manager = AgentRuntimeManager::default();
     endpoint.bind_store(&a.token, &store, Some(manager));
     let error = endpoint.handle(&a.token, start("claude")).await.unwrap_err();
@@ -530,11 +530,11 @@ async fn messaging_endpoint_answers_mcp_initialize_and_tools_list() {
     assert_eq!(init["result"]["protocolVersion"], "2024-11-05");
     assert_eq!(init["result"]["capabilities"], json!({"tools":{}}));
     let list: Value = call(&c, Some(&c.token), "tools/list", json!({})).await.json().await.unwrap();
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 12);
+    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 13);
     assert_eq!(list["result"]["tools"][0]["name"], "list_sessions");
     assert_eq!(list["result"]["tools"][1]["name"], "send_message");
     assert_eq!(list["result"]["tools"][2]["name"], "start_session");
-    assert_eq!(list["result"]["tools"][10]["name"], "message_status");
+    assert_eq!(list["result"]["tools"][11]["name"], "message_status");
     assert_eq!(call(&c, Some(&c.token), "notifications/initialized", json!({})).await.status(), 202);
 }
 

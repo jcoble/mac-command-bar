@@ -61,12 +61,7 @@ pub struct ProjectedRecord {
 }
 
 pub fn parse_provider(value: &str) -> Result<AgentConversationProvider, String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "codex" => Ok(AgentConversationProvider::Codex),
-        "claude" => Ok(AgentConversationProvider::Claude),
-        "antigravity" => Ok(AgentConversationProvider::Antigravity),
-        _ => Err("Transcript provider is unsupported".to_string()),
-    }
+    AgentConversationProvider::parse(value).ok_or_else(|| "Transcript provider is unsupported".to_string())
 }
 
 /// Whether the agent's own CLI or app is running this session now (two writers); ids are unique across agents, so both are asked.
@@ -79,7 +74,7 @@ pub fn discover(provider: AgentConversationProvider, native_session_id: &str) ->
     let path = match provider {
         AgentConversationProvider::Codex => codex::discover_path(&id),
         AgentConversationProvider::Claude => claude::discover_path(&id)?,
-        AgentConversationProvider::Antigravity => None, // No Antigravity transcript reader yet; parity is tracked by TSK-1297.
+        _ => None, // No transcript reader for this provider (Antigravity: TSK-1297).
     };
     path.map(location).transpose()
 }
@@ -94,7 +89,7 @@ pub fn discover_child(
     let path = match provider {
         AgentConversationProvider::Codex => codex::discover_child_path(&parent_id, &child_id),
         AgentConversationProvider::Claude => claude::discover_child_path(&parent_id, &child_id)?,
-        AgentConversationProvider::Antigravity => None, // No Antigravity transcript reader yet; parity is tracked by TSK-1297.
+        _ => None, // No transcript reader for this provider (Antigravity: TSK-1297).
     };
     path.map(location).transpose()
 }
@@ -110,8 +105,8 @@ pub fn child_watch_directory(
         AgentConversationProvider::Codex => codex::child_watch_directory(&parent_id, &child_id),
         AgentConversationProvider::Claude => claude::child_watch_directory(&parent_id)?
             .ok_or_else(|| format!("Parent transcript {parent_id} was not found")),
-        AgentConversationProvider::Antigravity => { // No Antigravity transcript reader yet; parity is tracked by TSK-1297.
-            Err("Antigravity has no transcript reader yet.".to_string())
+        _ => { // No transcript reader for this provider (Antigravity: TSK-1297).
+            Err(format!("{} has no transcript reader yet.", provider.descriptor().display_name))
         }
     }
 }
@@ -149,7 +144,7 @@ pub fn parse_durable_line(
     match provider {
         AgentConversationProvider::Codex => codex::project(&value, line),
         AgentConversationProvider::Claude => claude::project(&value, line, native_session_id),
-        AgentConversationProvider::Antigravity => Vec::new(), // No Antigravity transcript reader yet; parity is tracked by TSK-1297.
+        _ => Vec::new(), // No transcript reader for this provider (Antigravity: TSK-1297).
     }
 }
 
@@ -167,7 +162,7 @@ pub fn parse_durable_child_line(
         AgentConversationProvider::Claude => {
             claude::project_child(&value, line, parent_native_session_id, child_session_id)
         }
-        AgentConversationProvider::Antigravity => Vec::new(), // No Antigravity transcript reader yet; parity is tracked by TSK-1297.
+        _ => Vec::new(), // No transcript reader for this provider (Antigravity: TSK-1297).
     }
 }
 
@@ -369,7 +364,7 @@ pub fn tool_record(
                 .or_else(|| input.get("cmd"))
                 .and_then(Value::as_str)
                 .and_then(simple_shell_file_path)
-        });
+        }).map(|path| crate::agent_conversation::normalization::tools::paths_in_workdir(&path, input));
     let diff = input
         .get("diff")
         .or_else(|| input.get("patch"))

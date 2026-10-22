@@ -14,7 +14,6 @@ use tokio::io::AsyncWriteExt;
 
 use super::packaged::{self, AdapterPairs, PackagedAdapter};
 use super::ProviderRegistry;
-use crate::agent_conversation::protocol::AgentConversationProvider;
 
 const RELEASE_BASE_URL: &str = "https://github.com/jcoble/mac-command-bar/releases/download/assembly-providers-stable";
 const SIGNING_PUBLIC_KEY: &str = "RWQZvQJuc5RPnp9xO8+V9ppE3cCiodEFHPYqJpIMMVRhAnaxo0udp8xh";
@@ -601,12 +600,8 @@ async fn download_file(
 }
 
 fn running_versions(registry: &ProviderRegistry) -> Result<Vec<(String, String, PathBuf)>, String> {
-    Ok([
-        ("codex", AgentConversationProvider::Codex),
-        ("claude", AgentConversationProvider::Claude),
-        ("antigravity", AgentConversationProvider::Antigravity),
-    ].into_iter().filter_map(|(name, provider)| {
-        registry.manifest(provider).ok().map(|manifest| (name.to_string(), manifest.version, manifest.executable))
+    Ok(super::descriptors::all().iter().filter_map(|descriptor| {
+        registry.manifest(descriptor.provider()).ok().map(|manifest| (descriptor.id.clone(), manifest.version, manifest.executable))
     }).collect())
 }
 
@@ -739,8 +734,8 @@ mod tests {
         }).unwrap()).unwrap();
         std::fs::write(installed.join("codex-acp"), b"damaged").unwrap();
         let registry = ProviderRegistry::bundled_from_environment_at(Some(&directory)).unwrap();
-        assert!(registry.manifest(AgentConversationProvider::Codex).is_err());
-        assert!(registry.manifest(AgentConversationProvider::Claude).is_ok());
+        assert!(registry.manifest(crate::agent_conversation::protocol::AgentConversationProvider::Codex).is_err());
+        assert!(registry.manifest(crate::agent_conversation::protocol::AgentConversationProvider::Claude).is_ok());
         let feed = RemoteManifest { schema_version: 1, target: release_target().unwrap(), adapters: adapters.to_vec() };
         let running = vec![("claude".into(), "1.0.0".into(), installed.join("claude-agent-acp"))];
         let status = status_for(&directory, &feed, &running).await.unwrap();

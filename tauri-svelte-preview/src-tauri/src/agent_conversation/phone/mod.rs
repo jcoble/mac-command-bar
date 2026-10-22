@@ -52,8 +52,8 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 const CHAT_PAGE_BYTES: u32 = 1024 * 1024;
 const LATEST_CHAT_ITEMS: usize = 100;
 const MAX_PUSH_TOKEN_CHARS: usize = 4096;
-/// A tool call opened on the phone sends at most this much output and diff.
-const MAX_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
+/// A tool call opened on the phone sends at most this much output and diff; streamed command output keeps as much.
+pub(super) const MAX_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
 const MAX_TOOL_DIFF_BYTES: usize = 64 * 1024;
 /// A session's changes send at most this much diff; the file list is always whole.
 const MAX_CHANGES_DIFF_BYTES: usize = 256 * 1024;
@@ -1680,7 +1680,7 @@ mod tests {
         assert_eq!(again.json::<Value>().await.unwrap(), json!({"error": "stale"}));
         // The engine takes an answer only from the owner, and recorded this one once.
         let run = state.workflow.get_run(&run_id).unwrap();
-        assert_eq!(run.input_snapshot["answers"], json!([{"step": "checks", "decision": "accept", "reply": null}]));
+        assert_eq!(run.input_snapshot["answers"], json!([{"step": "checks", "decision": "accept", "reply": null, "by": "owner", "why": null}]));
         assert_eq!(serde_json::to_value(run.state).unwrap(), "completed");
     }
 

@@ -12,7 +12,7 @@ import type { WorkflowHistoryRow, WorkflowRunRecord } from './workflowTypes.ts';
 
 export type WorkflowTimelineKind =
   | 'run' | 'start' | 'finish' | 'checks' | 'review' | 'failed' | 'timeout'
-  | 'waiting' | 'owner' | 'redo' | 'message' | 'pr' | 'proof';
+  | 'waiting' | 'owner' | 'orchestrator' | 'redo' | 'message' | 'pr' | 'proof';
 
 export interface WorkflowTimelineItem {
   key: string;
@@ -120,8 +120,9 @@ export function buildWorkflowTimeline(
         break;
       case 'workflow.node.owner-answered': {
         const decision = entry.answer?.decision ?? '';
-        add({ ...base, kind: 'owner', title: `You answered ${step}: ${DECISIONS[decision] ?? decision}`,
-          detail: entry.answer?.reply ? `“${entry.answer.reply}”` : '' });
+        const orchestrator = entry.answer?.by === 'orchestrator';
+        add({ ...base, kind: orchestrator ? 'orchestrator' : 'owner', title: `${orchestrator ? 'Orchestrator' : 'You'} answered ${step}: ${DECISIONS[decision] ?? decision}`,
+          detail: orchestrator ? entry.answer?.why ?? '' : entry.answer?.reply ? `“${entry.answer.reply}”` : '' });
         break;
       }
       case 'workflow.gate.decided':
