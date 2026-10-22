@@ -1,7 +1,7 @@
 // The Workflows screen's two pure functions: which Board column a run sits in, and where
 // each step's box goes on the Map. Logic only.
 import assert from 'node:assert/strict';
-import { boardColumn, costText, stepGlyph } from '../src/lib/shell/workflows/workflowBoard.ts';
+import { blockedBy, boardColumn, boardSummary, clockTicks, costText, loopLabel, runTone, stepGlyph } from '../src/lib/shell/workflows/workflowBoard.ts';
 import { layoutWorkflowMap } from '../src/lib/shell/workflows/workflowMapLayout.ts';
 import type { WorkflowNodeState, WorkflowRunRecord, WorkflowRunState } from '../src/lib/shell/workflows/workflowTypes.ts';
 
@@ -36,8 +36,8 @@ function run(state: WorkflowRunState, states: Partial<Record<string, WorkflowNod
   assert.equal(boardColumn(run('running', { 'code-review': 'waiting-approval' })), 'needs-you');
   assert.equal(boardColumn(run('completed', { merge: 'completed' })), 'done');
   assert.equal(boardColumn(run('cancelled', { build: 'cancelled' })), 'done');
-  // A failed run stays in the column of the step that failed, so it reads as stuck there.
-  assert.equal(boardColumn(run('failed', { build: 'completed', checks: 'failed' })), 'check');
+  // A failed run needs the owner's Retry, so it waits in Needs you.
+  assert.equal(boardColumn(run('failed', { build: 'completed', checks: 'failed' })), 'needs-you');
   // A paused run stays where it is.
   assert.equal(boardColumn(run('paused', { build: 'completed', checks: 'completed', 'code-review': 'ready' })), 'check');
 }
@@ -88,6 +88,49 @@ function run(state: WorkflowRunState, states: Partial<Record<string, WorkflowNod
   assert.equal(costText([row(null, 740_000)]), '$0.74 est.');
   assert.equal(costText([row(null, null)]), '');
   assert.equal(costText([]), '');
+}
+
+{ // the_board_header_counts_in_plain_english
+  assert.equal(boardSummary(1, 1, 1), '1 run · 1 active · 1 needs you');
+  assert.equal(boardSummary(39, 0, 19), '39 runs · 0 active · 19 need you');
+}
+
+{ // a_step_after_a_failed_one_is_blocked_by_it
+  const failed = run('failed', { spec: 'completed', 'spec-review': 'completed', build: 'failed' });
+  assert.equal(blockedBy(failed, 'proof')?.nodeId, 'build');
+  assert.equal(blockedBy(failed, 'checks')?.nodeId, 'build');
+  // A step that ran, or one that only waits for steps still to come, is not blocked.
+  assert.equal(blockedBy(failed, 'spec'), null);
+  assert.equal(blockedBy(run('running', { spec: 'running' }), 'build'), null);
+}
+
+{ // the_clock_runs_while_any_shown_run_is_live
+  const live = { ...run('paused', {}), id: 'a' } as WorkflowRunRecord;
+  const ended = { ...run('failed', { build: 'failed' }), id: 'b' } as WorkflowRunRecord;
+  // A paused run, or one with no step running, still counts its time.
+  assert.equal(clockTicks([live, ended], null), true);
+  assert.equal(clockTicks([live, ended], 'a'), true);
+  assert.equal(clockTicks([live, ended], 'b'), false);
+  assert.equal(clockTicks([ended], null), false);
+}
+
+{ // a_paused_run_has_its_own_tone
+  assert.deepEqual(
+    (['running', 'paused', 'waiting-input', 'failed', 'completed', 'cancelled'] as WorkflowRunState[]).map(runTone),
+    ['live', 'neutral', 'attention', 'bad', 'good', 'neutral']
+  );
+}
+
+{ // a_loop_label_counts_the_rounds_the_engine_counts
+  const looped = (rounds: unknown[] | undefined, limits?: Record<string, unknown>) => ({
+    ...run('waiting-input', { 'code-review': 'waiting-input' }),
+    inputSnapshot: rounds ? { rounds: { 'code-review': rounds } } : {},
+    definition: { ...run('running', {}).definition, limits }
+  }) as unknown as WorkflowRunRecord;
+  assert.equal(loopLabel(looped(undefined), 'code-review', 'build'), 'sends back to build');
+  assert.equal(loopLabel(looped([['a']]), 'code-review', 'build'), 'round 1 of 5');
+  // The stopping round is recorded too, so "Stopped after 1 round" reads round 1 of 1.
+  assert.equal(loopLabel(looped([['a'], ['a']], { max_rounds: 1 }), 'code-review', 'build'), 'round 1 of 1');
 }
 
 console.log('workflow screens tests passed');

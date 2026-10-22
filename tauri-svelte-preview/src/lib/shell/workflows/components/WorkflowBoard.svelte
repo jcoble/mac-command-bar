@@ -1,6 +1,6 @@
 <!--
   WorkflowBoard.svelte — every run as a card in the column of the step it is
-  at, Needs you first. Columns are at least 150px wide and scroll sideways in
+  at, Needs you first (a failed run waits there for a Retry). Columns are at least 150px wide and scroll sideways in
   a narrow window. Filters narrow the cards by workflow and by who started the run.
 -->
 <script lang="ts">
@@ -8,7 +8,7 @@
   import { Chip, type ChipTone } from '$lib/components/ui/chip/index.js';
   import { FilterPills } from '$lib/components/ui/filter-pills/index.js';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
-  import { BOARD_COLUMNS, currentStep, runTask, shortDuration, stepGlyph, type BoardColumnId } from '../workflowBoard.ts';
+  import { BOARD_COLUMNS, boardSummary, currentStep, runTask, shortDuration, stepGlyph, type BoardColumnId } from '../workflowBoard.ts';
   import { workflowErrorText, type WorkflowRunRecord } from '../workflowTypes.ts';
   import { projectColumn, projectIndex, projectProgress, sliceCount } from '../workflowProject.ts';
   import StepGlyphIcon from './StepGlyphIcon.svelte';
@@ -71,7 +71,7 @@
 <div class="flex min-w-0 items-center gap-3">
   <FilterPills label="Filter runs" {groups} value={filters} onChange={(next) => (filters = next)} />
   <p class="ml-auto text-[13px] text-muted-foreground tabular-nums">
-    {shown.length} runs · {active} active · {byColumn.get('needs-you')?.length ?? 0} need you
+    {boardSummary(shown.length, active, byColumn.get('needs-you')?.length ?? 0)}
   </p>
 </div>
 
@@ -79,7 +79,8 @@
   {#each BOARD_COLUMNS as column (column.id)}
     {@const cards = byColumn.get(column.id) ?? []}
     <section class="flex min-w-[150px] flex-1 flex-col gap-2" aria-label={column.label}>
-      <h3 class="flex items-baseline gap-1.5 text-[13px] font-semibold" class:text-[var(--color-attention)]={column.id === 'needs-you' && cards.length > 0}>
+      <!-- Pinned while the board scrolls down. -->
+      <h3 class="sticky top-0 z-10 flex items-baseline gap-1.5 bg-[var(--color-bg)] py-1 text-[13px] font-semibold" class:text-[var(--color-attention)]={column.id === 'needs-you' && cards.length > 0}>
         {column.label}<span class="font-normal text-muted-foreground tabular-nums">{cards.length}</span>
       </h3>
       {#each cards as run (run.id)}

@@ -52,9 +52,9 @@ const other = run('o', 'TSK-9', 'running', 5, { parent_task: 'TSK-1' }, { build:
   ]);
   assert.deepEqual([progress.done, progress.total], [1, 3]);
   assert.equal(sliceCount(progress), '1 / 3 slices');
-  // The current slice is the first not merged: here the failed one, so the project card sits where it failed.
+  // The current slice is the first not merged: here the failed one, so the project card waits in Needs you.
   assert.equal(progress.current?.key, 'TSK-1602');
-  assert.equal(projectColumn(project, projectIndex([project, merged, failed, queued])), 'check');
+  assert.equal(projectColumn(project, projectIndex([project, merged, failed, queued])), 'needs-you');
 }
 
 { // a_slice_run_again_shows_its_latest_run

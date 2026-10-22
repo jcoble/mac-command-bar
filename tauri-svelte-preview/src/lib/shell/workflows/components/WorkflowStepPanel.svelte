@@ -16,7 +16,7 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import * as Tabs from '$lib/components/ui/tabs/index.js';
   import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
-  import { shortDuration, stepGlyph } from '../workflowBoard.ts';
+  import { blockedBy, shortDuration, stepGlyph } from '../workflowBoard.ts';
   import type { WorkflowTimelineItem } from '../workflowTimeline.ts';
   import { workflowErrorText, workflowStepFacts, type WorkflowNodeRunRecord, type WorkflowPauseDecision, type WorkflowRunRecord } from '../workflowTypes.ts';
   import StepGlyphIcon from './StepGlyphIcon.svelte';
@@ -43,7 +43,7 @@
 
   let tab = $state('what');
   const definition = $derived(run.definition.nodes.find((item) => item.id === node.nodeId));
-  const glyph = $derived(stepGlyph(node));
+  const glyph = $derived(blockedBy(run, node.nodeId) ? 'blocked' : stepGlyph(node));
   const facts = $derived(workflowStepFacts(node));
   const output = $derived((node.structuredOutput ?? {}) as Record<string, unknown>);
   const duration = $derived(node.startedAtMs
@@ -53,7 +53,8 @@
 
   const STATE_WORDS: Record<typeof glyph, string> = {
     passed: 'Passed', running: 'Running', 'sent-back': 'Sent back, waiting to run again', failed: 'Failed', stopped: 'Stopped',
-    'needs-you': 'Waiting for you', waiting: 'Waiting for the steps it needs', skipped: 'Skipped'
+    'needs-you': 'Waiting for you', waiting: 'Waiting for the steps it needs', skipped: 'Skipped',
+    blocked: 'Blocked by a failed step'
   };
 
   const links = $derived([

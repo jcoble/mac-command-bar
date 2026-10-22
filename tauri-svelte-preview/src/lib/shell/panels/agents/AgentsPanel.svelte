@@ -1,4 +1,9 @@
 <!-- Agents > Session owns the list and one bounded child transcript. -->
+<script lang="ts" module>
+  /** The tab last picked, so the panel comes back on it after a full screen (Workflows) unmounts it. */
+  let lastView: 'session' | 'workflows' | 'messages' | 'inbox' = 'session';
+</script>
+
 <script lang="ts">
   import { createChatUI, UIProvider } from '@tanstack/ai-svelte/ui';
   import ConversationMessageParts from '$lib/shell/conversation/components/ConversationMessageParts.svelte';
@@ -66,7 +71,7 @@
     onOpenWorkflows: () => void;
   }
   let { visible, root, ownedId, messagesUnread, onMessagesSeen, onShowRunMessages, onOpenWorkflows }: Props = $props();
-  let view = $state<'session' | 'workflows' | 'messages' | 'inbox'>('session');
+  let view = $state(lastView);
   let inboxStepCount = $state(0);
   let transcriptState = $state<'loading' | 'unavailable' | 'ready' | 'error'>('unavailable');
   let transcriptError = $state('');
@@ -284,7 +289,7 @@
       size="sm"
       aria-label="Agent view"
       class="w-full"
-      onValueChange={(value) => (view = value as typeof view)}
+      onValueChange={(value) => (view = lastView = value as typeof view)}
     />
   </div>
 

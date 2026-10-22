@@ -16,6 +16,7 @@
   import Play from '@lucide/svelte/icons/play';
   import { onMount, untrack } from 'svelte';
 
+  import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import * as Breadcrumb from '$lib/components/ui/breadcrumb/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
@@ -24,7 +25,7 @@
   import { adoptSession } from '$lib/shell/conversation/conversationService.ts';
   import { listAgentMessagesFromTauri, listenAgentMessagesChanged } from '$lib/tauriSource.ts';
   import { parseRemoteWorkspacePath } from '$lib/workspacePaths.ts';
-  import { costText, currentStep, runTask, shortDuration } from './workflowBoard.ts';
+  import { clockTicks, costText, currentStep, runTask, runTone, shortDuration } from './workflowBoard.ts';
   import {
     answerWorkflowPause,
     approveWorkflowGate,
@@ -67,6 +68,8 @@
   /** The review or proof step shown up close instead of the Map. */
   let closeupId = $state<string | null>(null);
   let busy = $state(false);
+  /** An action that waits for the owner to confirm it: stopping a run, or retrying a merge. */
+  let confirming = $state<{ title: string; text: string; label: string; act: () => void } | null>(null);
   let timeline = $state<{ runId: string; items: WorkflowTimelineItem[]; loading: boolean; error: string } | null>(null);
   let now = $state(Date.now());
   /** Usage rows of every run, for the board's costs; read when the board shows. */
@@ -83,9 +86,8 @@
   /** Ends every read and listener when the screen closes. */
   const stop = new AbortController();
 
-  // One clock for every elapsed time on screen; it runs only while a running run or step is shown.
-  const ticking = $derived(runs.some((run) => run.nodes.some((node) => node.state === 'running' || node.state === 'starting')
-    && (openRunId === null || openRunId === run.id)));
+  // One clock for every elapsed time on screen; it runs only while a run that has not ended is shown.
+  const ticking = $derived(clockTicks(runs, openRunId));
   $effect(() => {
     if (!ticking) return;
     now = Date.now();
@@ -185,6 +187,14 @@
     }
   }
 
+  /** Escape goes back one level, wherever focus is; a dialog or menu that handled it first keeps it. */
+  function onKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    if (closeupId) closeupId = null;
+    else if (openRun) openRunPage(null);
+    else onBack();
+  }
+
   const key = (action: string): string => `workflows-screen:${action}:${crypto.randomUUID()}`;
 
   /** Runs one engine command and shows the run it returns. */
@@ -242,14 +252,9 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div
-  class="workflows-screen"
-  role="region"
-  aria-label="Workflows"
-  data-testid="workflows-screen"
-  onkeydown={(event) => { if (event.key === 'Escape') { if (closeupId) closeupId = null; else if (openRun) openRunPage(null); else onBack(); } }}
->
+<svelte:window onkeydown={onKeydown} />
+
+<div class="workflows-screen" role="region" aria-label="Workflows" data-testid="workflows-screen">
   <header class="flex min-w-0 items-center gap-3">
     <Button variant="ghost" size="sm" onclick={() => (closeupId ? (closeupId = null) : openRun ? openRunPage(null) : onBack())}><ArrowLeft />Back</Button>
     <Breadcrumb.Root class="min-w-0">
@@ -299,8 +304,8 @@
     {@const run = openRun}
     <div class="flex min-w-0 flex-wrap items-center gap-2">
       <Chip tone="neutral">{run.definition.name}</Chip>
-      <Chip tone={run.state === 'failed' ? 'bad' : run.state === 'completed' ? 'good' : ENDED.includes(run.state) ? 'neutral' : run.state.startsWith('waiting') ? 'attention' : 'live'}>
-        {run.state} · {shortDuration((ENDED.includes(run.state) ? run.updatedAtMs : now) - run.createdAtMs)}
+      <Chip tone={runTone(run.state)}>
+        {#if run.state === 'paused'}<Pause aria-hidden="true" />{/if}{run.state} · {shortDuration((ENDED.includes(run.state) ? run.updatedAtMs : now) - run.createdAtMs)}
       </Chip>
       <span class="ml-auto flex gap-2">
         {#if run.state === 'running'}
@@ -309,7 +314,10 @@
           <Button size="sm" variant="ghost" disabled={busy} onclick={() => void control('Resume', () => resumeWorkflowRun({ runId: run.id, idempotencyKey: key('resume') }, machine))}><Play />Resume</Button>
         {/if}
         {#if !ENDED.includes(run.state)}
-          <Button size="sm" variant="ghost" disabled={busy} onclick={() => void control('Stop', () => cancelWorkflowRun({ runId: run.id, idempotencyKey: key('cancel') }, machine))}><CircleStop />Stop run</Button>
+          <Button size="sm" variant="ghost" disabled={busy} onclick={() => (confirming = {
+            title: 'Stop this run?', text: 'The step that is running stops and the run ends.', label: 'Stop run',
+            act: () => void control('Stop', () => cancelWorkflowRun({ runId: run.id, idempotencyKey: key('cancel') }, machine))
+          })}><CircleStop />Stop run</Button>
         {/if}
       </span>
     </div>
@@ -328,7 +336,12 @@
           timeline={timeline?.runId === run.id ? timeline : { items: [], loading: true, error: '' }}
           onAnswer={(decision) => answer(run, step.nodeId, decision)}
           onApprove={() => void control('Approve', () => approveWorkflowGate({ runId: run.id, nodeId: step.nodeId, approval: { approved: true }, idempotencyKey: key('approve') }, machine))}
-          onRetry={() => void control('Retry', () => retryWorkflowNode({ runId: run.id, nodeId: step.nodeId, idempotencyKey: key('retry') }, machine))}
+          onRetry={() => {
+            const retry = () => void control('Retry', () => retryWorkflowNode({ runId: run.id, nodeId: step.nodeId, idempotencyKey: key('retry') }, machine));
+            // A merge step acts outside the app, so retrying it asks first.
+            if (/merge/.test(step.nodeId)) confirming = { title: `Retry ${step.nodeId}?`, text: 'The step runs again and can merge the pull request.', label: 'Retry', act: retry };
+            else retry();
+          }}
           onOpenChat={() => void openChat(step.ownedId)}
           onCloseup={closeupKind(run, step.nodeId) ? () => (closeupId = step.nodeId) : null}
         />
@@ -344,6 +357,19 @@
     <WorkflowBoard {runs} {now} {costOf} onOpen={openRunPage} />
   {/if}
 </div>
+
+<AlertDialog.Root open={confirming !== null} onOpenChange={(next) => { if (!next) confirming = null; }}>
+  <AlertDialog.Content class="data-[size=default]:sm:max-w-md">
+    <AlertDialog.Header>
+      <AlertDialog.Title>{confirming?.title}</AlertDialog.Title>
+      <AlertDialog.Description>{confirming?.text}</AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer class="bg-transparent">
+      <AlertDialog.Cancel size="sm">Cancel</AlertDialog.Cancel>
+      <AlertDialog.Action size="sm" variant="destructive" onclick={() => { confirming?.act(); confirming = null; }}>{confirming?.label}</AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
 
 <style>
   .workflows-screen {
