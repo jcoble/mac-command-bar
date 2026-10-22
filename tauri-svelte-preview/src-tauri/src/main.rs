@@ -3719,7 +3719,7 @@ fn main() {
             agent_conversation::remote::connect_remote_assembly,
             agent_conversation::remote::install_flow::install_remote_assembly,
             #[cfg(debug_assertions)] agent_conversation::remote::deploy_remote_backend_dev,
-            #[cfg(debug_assertions)] commands::build_latest::build_latest_dev,
+            #[cfg(debug_assertions)] commands::build_latest::build_latest_dev, #[cfg(debug_assertions)] commands::build_latest::stop_build_latest_dev,
             agent_conversation::remote::read_remote_backend_statuses,
             agent_conversation::remote::uninstall_remote_assembly,
             agent_conversation::remote::cancel_remote_connection,

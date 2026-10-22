@@ -137,6 +137,15 @@ async function main(): Promise<void> {
     process.stdout.write(`${line}\n`);
     appendFileSync(logPath, `${line}\n`);
   };
+  // Stop (the app sends SIGTERM to this process group) and the time limit end the whole run: this
+  // script and the git, pnpm, cargo or ssh it is running. The limit lives here because the run
+  // outlives the app when Assembly is quit halfway through.
+  const end = (line: string) => {
+    out(line);
+    try { process.kill(-process.pid, 'SIGKILL'); } catch { process.exit(1); }
+  };
+  process.on('SIGTERM', () => end('Stopped.'));
+  setTimeout(() => end('Failed: timed out after 60 minutes.'), 60 * 60 * 1000).unref();
   // A dry run reads the checkout for real and prints every command that would change something.
   const readOnly = (args: string[]) => args.includes('--show-current') || args.includes('--porcelain') || args.includes('rev-parse');
   const ok = await buildLatestDev({

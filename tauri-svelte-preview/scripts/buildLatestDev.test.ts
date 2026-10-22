@@ -127,3 +127,39 @@ test('drops the variables cargo run set for the app, so the build matches tauri 
     'CARGO_PRIMARY_PACKAGE', 'CARGO_TERM_PROGRESS_WHEN', 'CARGO_TERM_PROGRESS_WIDTH'
   ]);
 });
+
+test('Stop ends the run and what it is running, and nothing is relaunched', async () => {
+  const { execFileSync, spawn } = await import('node:child_process');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'build-latest-stop-'));
+  try {
+    const scripts = path.join(repo, 'tauri-svelte-preview/scripts');
+    fs.mkdirSync(scripts, { recursive: true });
+    for (const name of ['buildLatestDev.ts', 'deployRemoteBackendDev.ts']) fs.copyFileSync(new URL(`./${name}`, import.meta.url), path.join(scripts, name));
+    const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' });
+    git('init', '-q', '-b', 'main');
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'add', '.');
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'scripts');
+    // The pull hangs on a "network" that never answers, the way a stuck pull or deploy would.
+    git('remote', 'add', 'origin', 'ssh://example.invalid/repo.git');
+    const log = path.join(repo, 'build-latest.log');
+    const run = spawn(process.execPath, ['--experimental-strip-types', path.join(scripts, 'buildLatestDev.ts'), '--pid', '1', '--log', log], {
+      detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_SSH_COMMAND: 'sleep 60' }
+    });
+    let output = '';
+    await new Promise<void>((resolve) => run.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      if (output.includes('[1/4] Pulling main')) resolve();
+    }));
+    // What the app's Stop does: SIGTERM to the run's process group.
+    process.kill(-run.pid!, 'SIGTERM');
+    const code = await new Promise((resolve) => run.on('close', (exitCode, signal) => resolve(exitCode ?? signal)));
+    assert.notEqual(code, 0);
+    assert.match(fs.readFileSync(log, 'utf8'), /Stopped\.\n$/);
+    assert.throws(() => process.kill(-run.pid!, 0), /ESRCH/, 'nothing in the run is left, the hung pull included');
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});

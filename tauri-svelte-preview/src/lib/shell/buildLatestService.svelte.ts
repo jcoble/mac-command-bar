@@ -34,3 +34,10 @@ export async function startBuildLatest(): Promise<void> {
     apply({ done: true, error: error instanceof Error ? error.message : String(error) });
   }
 }
+
+/** Ends the run; the script stops what it is running and reports "Stopped.". */
+export async function stopBuildLatest(): Promise<void> {
+  if (buildLatestState.phase !== 'running') return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('stop_build_latest_dev');
+}

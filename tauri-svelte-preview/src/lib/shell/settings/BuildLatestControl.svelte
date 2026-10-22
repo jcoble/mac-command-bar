@@ -3,7 +3,7 @@
 <script lang="ts">
   import { Button } from '$lib/components/ui/button/index.js';
   import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
-  import { buildLatestState, startBuildLatest } from '$lib/shell/buildLatestService.svelte';
+  import { buildLatestState, startBuildLatest, stopBuildLatest } from '$lib/shell/buildLatestService.svelte';
   import { openPathFromTauri } from '$lib/tauriSource';
 
   const busy = $derived(buildLatestState.phase === 'running' || buildLatestState.phase === 'restarting');
@@ -11,6 +11,9 @@
 
 <div class="flex flex-col items-end gap-1.5">
   <div class="flex items-center gap-2">
+    {#if buildLatestState.phase === 'running'}
+      <Button variant="ghost" size="sm" onclick={() => void stopBuildLatest()}>Stop</Button>
+    {/if}
     {#if buildLatestState.logPath}
       <Button variant="ghost" size="sm" onclick={() => void openPathFromTauri(buildLatestState.logPath)}>Open log</Button>
     {/if}
