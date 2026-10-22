@@ -156,9 +156,11 @@ pub fn start_acp_usage(path: std::path::PathBuf, store: std::sync::Arc<mcb_core:
     if let Err(error) = UsageDb::open(&path).and_then(|db| db.rebuild_rates(crate::usage_db::acp::SEEDED_RATES)) {
         crate::debug_log::stderr_log!("Could not load usage rates: {error}");
     }
-    crate::agent_conversation::manager::turn_usage::set_turn_usage_listener(std::sync::Arc::new(move |mut turn| {
-        let (path, store) = (path.clone(), store.clone());
-        tauri::async_runtime::spawn_blocking(move || {
+    // One writer, fed in the order turns finish: each turn's cost is measured from the
+    // session's previous row, so the rows must be written in that order.
+    let (sender, turns) = std::sync::mpsc::channel::<crate::usage_db::acp::AcpTurn>();
+    std::thread::spawn(move || {
+        for mut turn in turns {
             turn.node_run_id = store.node_run_for_session(&turn.owned_id).unwrap_or_else(|error| {
                 crate::debug_log::stderr_log!("Could not find the session's workflow step: {error}");
                 None
@@ -166,7 +168,10 @@ pub fn start_acp_usage(path: std::path::PathBuf, store: std::sync::Arc<mcb_core:
             if let Err(error) = UsageDb::open(&path).and_then(|db| db.insert_acp_turn(&turn)) {
                 crate::debug_log::stderr_log!("Could not store turn usage: {error}");
             }
-        });
+        }
+    });
+    crate::agent_conversation::manager::turn_usage::set_turn_usage_listener(std::sync::Arc::new(move |turn| {
+        let _ = sender.send(turn);
     }));
 }
 
