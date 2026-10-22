@@ -33,6 +33,7 @@ mod notion_oauth;
 mod notion_tasks;
 mod product_identity;
 mod project_folders;
+mod proof_mode;
 mod projection_streams;
 mod resources;
 mod resources_disk;
@@ -3330,8 +3331,8 @@ fn shutdown_agent_runtimes_on_exit(manager: &agent_conversation::manager::AgentR
 
 fn main() {
     install_panic_hook();
-    if let Err(error) = agent_conversation::messaging::endpoint() {
-        crate::debug_log::stderr_log!("Assembly messaging endpoint failed: {error}");
+    if let Err(error) = proof_mode::start_from_process().and_then(|()| agent_conversation::messaging::endpoint().map(drop)) {
+        crate::debug_log::stderr_log!("Assembly could not start: {error}");
         std::process::exit(1);
     }
     if std::env::args().any(|argument| argument == "--assembly-server") {
@@ -3469,7 +3470,7 @@ fn main() {
             agent_conversation::messaging::endpoint()?
                 .set_relay(remote_connection.message_relay(agent_conversation::remote::LOCAL_MACHINE));
             agent_conversation::messaging::endpoint()?.set_workflow(workflow_engine.clone());
-            if !remote_connection.is_configured() {
+            if !remote_connection.is_configured() && proof_mode::active().is_none() {
                 if let Some(profiles) = agent_runtime.read_app_setting(
                     agent_conversation::remote::REMOTE_ASSEMBLY_PROFILES_SETTING_KEY,
                 )? {
@@ -3561,7 +3562,7 @@ fn main() {
             }));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(proof_mode::guard(tauri::generate_handler![
             read_backend_capabilities,
             list_installed_font_families,
             list_source_files,
@@ -3704,7 +3705,7 @@ fn main() {
             watch_workflow_runs,
             create_workflow_run,
             get_workflow_run,
-            workflow_history,
+            workflow_history, workflow_review_reports,
             list_workflow_files,
             list_owner_inbox,
             answer_workflow_pause,
@@ -3804,7 +3805,7 @@ fn main() {
             agent_conversation::handoff::handoff_agent_conversation,
             agent_conversation::providers::cli_updates::check_provider_clis,
             agent_conversation::providers::cli_updates::update_provider_cli,
-            agent_conversation::providers::updates::check_provider_updates,
+            agent_conversation::providers::updates::check_provider_updates, agent_conversation::providers::descriptors::list_provider_descriptors,
             agent_conversation::providers::updates::install_provider_updates,
             agent_conversation::providers::updates::restart_for_provider_updates,
             terminal::commands::start_terminal_session,
@@ -3852,7 +3853,7 @@ fn main() {
             helper::test_helper,
             continue_app_exit,
             cancel_app_exit
-        ])
+        ]))
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. }
                 if window.label() == "main" && window.state::<ExitRequestGuard>().hold() =>
@@ -7113,9 +7114,8 @@ mod tests {
         ));
         let native = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
         let handler = native
-            .split_once(".invoke_handler(tauri::generate_handler![")
-            .expect("main must register a Tauri invoke handler")
-            .1
+            .split_once(".invoke_handler(proof_mode::guard(tauri::generate_handler![")
+            .expect("main must register a Tauri invoke handler").1
             .split_once("])")
             .expect("Tauri invoke handler must have a closing delimiter")
             .0;

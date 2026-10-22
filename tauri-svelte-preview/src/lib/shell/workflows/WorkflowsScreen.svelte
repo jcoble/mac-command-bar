@@ -46,6 +46,8 @@
   import WorkflowProject from './components/WorkflowProject.svelte';
   import { projectIndex, projectProgress } from './workflowProject.ts';
   import WorkflowStepPanel from './components/WorkflowStepPanel.svelte';
+  import WorkflowStageCloseup from './components/WorkflowStageCloseup.svelte';
+  import { closeupKind } from './workflowCloseup.ts';
 
   interface Props {
     /** The active session's project; a remote project's runs are on that machine's engine. */
@@ -62,6 +64,8 @@
   let openRunId = $state<string | null>(null);
   let runTab = $state('map');
   let chosenStepId = $state<string | null>(null);
+  /** The review or proof step shown up close instead of the Map. */
+  let closeupId = $state<string | null>(null);
   let busy = $state(false);
   let timeline = $state<{ runId: string; items: WorkflowTimelineItem[]; loading: boolean; error: string } | null>(null);
   let now = $state(Date.now());
@@ -215,6 +219,7 @@
   function openRunPage(runId: string | null): void {
     openRunId = runId;
     chosenStepId = null;
+    closeupId = null;
     runTab = 'map';
     timeline = null;
     runUsage = null;
@@ -243,10 +248,10 @@
   role="region"
   aria-label="Workflows"
   data-testid="workflows-screen"
-  onkeydown={(event) => { if (event.key === 'Escape') { if (openRun) openRunPage(null); else onBack(); } }}
+  onkeydown={(event) => { if (event.key === 'Escape') { if (closeupId) closeupId = null; else if (openRun) openRunPage(null); else onBack(); } }}
 >
   <header class="flex min-w-0 items-center gap-3">
-    <Button variant="ghost" size="sm" onclick={() => (openRun ? openRunPage(null) : onBack())}><ArrowLeft />Back</Button>
+    <Button variant="ghost" size="sm" onclick={() => (closeupId ? (closeupId = null) : openRun ? openRunPage(null) : onBack())}><ArrowLeft />Back</Button>
     <Breadcrumb.Root class="min-w-0">
       <Breadcrumb.List class="flex-nowrap text-[13px]">
         {#if openRun}
@@ -257,7 +262,17 @@
             </Breadcrumb.Link>
           </Breadcrumb.Item>
           <Breadcrumb.Separator class="flex items-center" />
-          <Breadcrumb.Item class="min-w-0"><Breadcrumb.Page class="truncate">{task.key ? `${task.key} · ` : ''}{task.title}</Breadcrumb.Page></Breadcrumb.Item>
+          {#if closeupId}
+            <Breadcrumb.Item class="min-w-0">
+              <Breadcrumb.Link>
+                {#snippet child({ props })}<button type="button" class="{props.class} truncate rounded-md outline-none focus-visible:ring-3 focus-visible:ring-ring/50" onclick={() => (closeupId = null)}>{task.key ? `${task.key} · ` : ''}{task.title}</button>{/snippet}
+              </Breadcrumb.Link>
+            </Breadcrumb.Item>
+            <Breadcrumb.Separator class="flex items-center" />
+            <Breadcrumb.Item class="shrink-0"><Breadcrumb.Page>{openRun.definition.nodes.find((item) => item.id === closeupId)?.title || closeupId}</Breadcrumb.Page></Breadcrumb.Item>
+          {:else}
+            <Breadcrumb.Item class="min-w-0"><Breadcrumb.Page class="truncate">{task.key ? `${task.key} · ` : ''}{task.title}</Breadcrumb.Page></Breadcrumb.Item>
+          {/if}
         {:else}
           <Breadcrumb.Item><Breadcrumb.Page>Workflows</Breadcrumb.Page></Breadcrumb.Item>
         {/if}
@@ -298,8 +313,10 @@
         {/if}
       </span>
     </div>
-    {#if runTab === 'map'}
-      <WorkflowMap {run} {now} selectedId={shownStep?.nodeId ?? null} onSelect={(nodeId) => (chosenStepId = nodeId)} />
+    {#if runTab === 'map' && closeupId}
+      <WorkflowStageCloseup {run} nodeId={closeupId} {machine} />
+    {:else if runTab === 'map'}
+      <WorkflowMap {run} {now} selectedId={shownStep?.nodeId ?? null} onSelect={(nodeId) => (chosenStepId = nodeId)} onCloseup={(nodeId) => (closeupId = nodeId)} />
       {#if shownStep}
         {@const step = shownStep}
         <WorkflowStepPanel
@@ -313,6 +330,7 @@
           onApprove={() => void control('Approve', () => approveWorkflowGate({ runId: run.id, nodeId: step.nodeId, approval: { approved: true }, idempotencyKey: key('approve') }, machine))}
           onRetry={() => void control('Retry', () => retryWorkflowNode({ runId: run.id, nodeId: step.nodeId, idempotencyKey: key('retry') }, machine))}
           onOpenChat={() => void openChat(step.ownedId)}
+          onCloseup={closeupKind(run, step.nodeId) ? () => (closeupId = step.nodeId) : null}
         />
       {/if}
     {:else if runTab === 'project' && openProject}

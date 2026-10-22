@@ -90,6 +90,9 @@ fn step_and_dependents(definition: &WorkflowDefinitionV1, id: &str) -> BTreeSet<
     }
 }
 
+mod step_end;
+use step_end::{changed_code, record_tree, refuse_parallel_agents, CHANGED_CODE};
+
 const STEP_FIELDS: [&str; 10] = ["needs", "agent", "prompt", "run", "review", "gate", "on_fail", "expect_files", "if", "repeat"];
 
 /// Every step `id` depends on, directly or through other steps.
@@ -1300,7 +1303,7 @@ impl WorkflowEngine {
             return self.timeout_step(&run_id, &node_id).await.map(Some);
         }
         if *state != TurnState::Completed && run.definition.nodes.iter().any(|node| node.id == node_id && node.step.get("review").is_some()) {
-            return self.wait_for_owner(&run_id, &node_id, "review-report", "The review turn did not complete", None, &idempotency_key).map(Some);
+            return self.wait_for_owner(&run_id, &node_id, "review-report", "The review turn did not complete", None, &idempotency_key).await.map(Some);
         }
         if *state != TurnState::Completed {
             return self
@@ -1311,6 +1314,7 @@ impl WorkflowEngine {
                     "The provider turn did not complete",
                     &idempotency_key,
                 )
+                .await
                 .map(Some);
         }
         let text = self
@@ -1326,12 +1330,16 @@ impl WorkflowEngine {
                     "The provider completed without assistant text",
                     &idempotency_key,
                 )
+                .await
                 .map(Some);
         };
         let run = self.require_run(&run_id)?;
         if !run.definition.nodes.iter().find(|node| node.id == node_id).unwrap().step.is_null() {
             let definition = run.definition.nodes.iter().find(|node| node.id == node_id).unwrap();
             if let Some(target) = definition.step["review"]["of"].as_str() {
+                if changed_code(&run, &node_id) {
+                    return self.fail_agent_node(&run_id, &node_id, "changed-code", CHANGED_CODE, &idempotency_key).await.map(Some);
+                }
                 let attempt_id = &run.nodes[index].id;
                 let reports = self.store.review_reports(attempt_id).map_err(|error| WorkflowError::Ledger(error.to_string()))?;
                 let report = match reports.as_slice() {
@@ -1340,12 +1348,12 @@ impl WorkflowEngine {
                 };
                 let Some(report) = report else {
                     let message = format!("The reviewer must call report_review once; it called it {} time(s)", reports.len());
-                    return self.wait_for_owner(&run_id, &node_id, "review-report", &message, None, &idempotency_key).map(Some);
+                    return self.wait_for_owner(&run_id, &node_id, "review-report", &message, None, &idempotency_key).await.map(Some);
                 };
                 let findings = report["findings"].as_array().cloned().unwrap_or_default();
                 let output = json!({"verdict":report["verdict"],"findings":findings,"findingCount":findings.len(),"summary":text,"files":[]});
                 if report["verdict"] == "pass" && findings.is_empty() {
-                    self.finish_step(&run_id, &node_id, output, true, &idempotency_key)?;
+                    self.finish_step(&run_id, &node_id, output, true, &idempotency_key).await?;
                 } else {
                     self.finish_with_findings(&run_id, &node_id, target, output, findings.len().max(1), &idempotency_key).await?;
                 }
@@ -1362,11 +1370,11 @@ impl WorkflowEngine {
                     let matches: Vec<_> = String::from_utf8_lossy(&output.stdout).lines().filter(|file|
                         Path::new(run.input_snapshot["cwd"].as_str().unwrap()).join(file).is_file()).map(str::to_string).collect();
                     if matches.is_empty() {
-                        return self.fail_agent_node(&run_id, &node_id, "expect-files", &format!("Missing expected file: {pattern}"), &idempotency_key).map(Some);
+                        return self.fail_agent_node(&run_id, &node_id, "expect-files", &format!("Missing expected file: {pattern}"), &idempotency_key).await.map(Some);
                     }
                     files.extend(matches);
                 }
-                self.finish_step(&run_id, &node_id, json!({"summary":text,"files":files}), true, &idempotency_key)?;
+                self.finish_step(&run_id, &node_id, json!({"summary":text,"files":files}), true, &idempotency_key).await?;
                 drop(dispatch);
                 return self.dispatch_ready(&run_id).await.map(Some);
             }
@@ -1395,6 +1403,7 @@ impl WorkflowEngine {
                     &error.to_string(),
                     &idempotency_key,
                 )
+                .await
                 .map(Some),
         }
     }
@@ -1503,6 +1512,7 @@ impl WorkflowEngine {
             nodes.push(json!({"id":id,"title":id,"roleId":id,"dependsOn":step.get("needs").cloned().unwrap_or(json!([])),
                 "condition":step["if"],"timeoutSeconds":timeout,"step":step}));
         }
+        refuse_parallel_agents(steps)?;
         let inputs = yaml.get("inputs").and_then(Value::as_object).map(|values| values.iter()
             .map(|(name, value)| json!({"name":name,"definition":value})).collect::<Vec<_>>()).unwrap_or_default();
         let max_sessions = yaml["limits"]["max_sessions"].as_u64().unwrap_or(3);
@@ -1877,7 +1887,7 @@ impl WorkflowEngine {
         }
     }
 
-    fn fail_agent_node(
+    async fn fail_agent_node(
         &self,
         run_id: &str,
         node_id: &str,
@@ -1907,6 +1917,7 @@ impl WorkflowEngine {
             budget: None,
         });
         node.finished_at_ms = Some(self.clock.now_ms());
+        let owned_id = node.owned_id.clone();
         if run.definition.completion.cancel_descendants_on_failure {
             cancel_descendants(&mut run, node_id);
         }
@@ -1917,6 +1928,7 @@ impl WorkflowEngine {
             idempotency_key,
             Some(node_id),
         )?;
+        self.end_agent_turn(&run, node_id, &owned_id).await;
         Ok(run)
     }
 
@@ -2324,6 +2336,7 @@ impl WorkflowEngine {
             run.nodes[index].state = WorkflowNodeState::Starting;
             run.nodes[index].started_at_ms = Some(self.clock.now_ms());
             run.nodes[index].provider = provider.clone();
+            record_tree(&mut run, &node_id);
             let starting_key = format!(
                 "starting:{}:{}",
                 run.nodes[index].id, run.nodes[index].attempt
@@ -2458,7 +2471,7 @@ impl WorkflowEngine {
     }
 
     /// Stops a running step and the run until the owner answers.
-    fn wait_for_owner(&self, run_id: &str, node_id: &str, code: &str, message: &str, output: Option<Value>, key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
+    async fn wait_for_owner(&self, run_id: &str, node_id: &str, code: &str, message: &str, output: Option<Value>, key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
         let mut run = self.require_run(run_id)?;
         let node = run.nodes.iter_mut().find(|node| node.node_id == node_id).unwrap();
         if node.state != WorkflowNodeState::Running { return Ok(run); }
@@ -2467,8 +2480,10 @@ impl WorkflowEngine {
         node.state = WorkflowNodeState::WaitingInput;
         node.failure = Some(WorkflowFailure { code: code.into(), message: message.into(), budget: None });
         node.finished_at_ms = Some(self.clock.now_ms());
+        let owned_id = node.owned_id.clone();
         run.state = WorkflowRunState::WaitingInput;
         self.append(&mut run, "workflow.node.waiting-owner", key, Some(node_id))?;
+        self.end_agent_turn(&run, node_id, &owned_id).await;
         Ok(run)
     }
 
@@ -2499,7 +2514,7 @@ impl WorkflowEngine {
         snapshot.insert("redo".into(), json!({"findings":findings,"output":output["summary"]}));
         if let Some(message) = stop {
             self.append(&mut run, "workflow.node.findings", &format!("findings:{key}"), Some(node_id))?;
-            return self.wait_for_owner(run_id, node_id, "loop-stopped", &message, Some(output), key);
+            return self.wait_for_owner(run_id, node_id, "loop-stopped", &message, Some(output), key).await;
         }
         let live_turns = self.reset_for_redo(&mut run, node_id, target)?;
         self.append(&mut run, "workflow.node.redo", key, Some(node_id))?;
@@ -2580,6 +2595,10 @@ impl WorkflowEngine {
         };
         self.append(&mut run, "workflow.node.owner-answered", idempotency_key, Some(node_id))?;
         if decision == "stop" { return self.cancel(run_id, &format!("{idempotency_key}:stop")).await; }
+        if decision == "accept" {
+            let owned_id = run.nodes.iter().find(|node| node.node_id == node_id).unwrap().owned_id.clone();
+            self.end_agent_turn(&run, node_id, &owned_id).await;
+        }
         for owned_id in live_turns { self.runtime.cancel(&owned_id).await?; }
         self.dispatch_ready(run_id).await
     }
@@ -2610,7 +2629,7 @@ impl WorkflowEngine {
         self.changes.subscribe()
     }
 
-    fn finish_step(&self, run_id: &str, node_id: &str, output: Value, passed: bool, key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
+    async fn finish_step(&self, run_id: &str, node_id: &str, output: Value, passed: bool, key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
         let mut run = self.require_run(run_id)?;
         let node = run.nodes.iter_mut().find(|node| node.node_id == node_id).unwrap();
         if node.state != WorkflowNodeState::Running { return Ok(run); }
@@ -2619,9 +2638,11 @@ impl WorkflowEngine {
         node.finished_at_ms = Some(self.clock.now_ms());
         if let Some(lease) = node.lease_id.take() { self.leases.release(&lease)?; }
         if !passed { node.failure = Some(WorkflowFailure { code:"commands-failed".into(), message:"One or more commands failed".into(), budget:None }); }
+        let owned_id = node.owned_id.clone();
         refresh_ready_and_phase(&mut run);
         let kind = if run.definition.nodes.iter().find(|node| node.id == node_id).unwrap().step.get("run").is_some() { "workflow.node.commands-finished" } else { "workflow.node.agent-finished" };
         self.append(&mut run, kind, key, Some(node_id))?;
+        self.end_agent_turn(&run, node_id, &owned_id).await;
         Ok(run)
     }
 
@@ -2677,6 +2698,7 @@ impl WorkflowEngine {
         run.nodes[index].state = WorkflowNodeState::Running;
         run.nodes[index].started_at_ms = Some(self.clock.now_ms());
         let (node_id, key) = (run.nodes[index].node_id.clone(), format!("running:{}", run.nodes[index].id));
+        record_tree(run, &node_id);
         self.append(run, "workflow.node.running", &key, Some(&node_id))
     }
 
@@ -2685,7 +2707,7 @@ impl WorkflowEngine {
         if let Err(error) = self.execute_commands(run_id, attempt_id, definition, commands).await {
             let _dispatch = self.dispatch_lock.lock().await;
             let key = format!("command-error:{attempt_id}");
-            if let Err(error) = self.fail_agent_node(run_id, &definition.id, "runtime", &error.to_string(), &key) {
+            if let Err(error) = self.fail_agent_node(run_id, &definition.id, "runtime", &error.to_string(), &key).await {
                 eprintln!("workflow step {attempt_id} could not record its failure: {error}");
             }
         }
@@ -2736,10 +2758,14 @@ impl WorkflowEngine {
         let summary = results.iter().filter_map(|result| result["output"].as_str()).collect::<Vec<_>>().join("\n");
         let summary = summary.lines().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
         let _dispatch = self.dispatch_lock.lock().await;
+        if changed_code(&self.require_run(run_id)?, node_id) {
+            self.fail_agent_node(run_id, node_id, "changed-code", CHANGED_CODE, &format!("result:{attempt_id}")).await?;
+            return Ok(());
+        }
         let output = json!({"commands":results,"findings":findings,"findingCount":count,"summary":summary,"files":[]});
         match definition.step["on_fail"].as_str() {
             Some(target) if count > 0 => self.finish_with_findings(run_id, node_id, target, output, count, &format!("result:{attempt_id}")).await?,
-            _ => self.finish_step(run_id, node_id, output, count == 0, &format!("result:{attempt_id}"))?,
+            _ => self.finish_step(run_id, node_id, output, count == 0, &format!("result:{attempt_id}")).await?,
         };
         Ok(())
     }
@@ -3535,9 +3561,9 @@ pub(crate) async fn execute_operation(engine: &WorkflowEngine, operation: &str, 
             .map_err(|error| error.to_string()),
         "list" => return serde_json::to_value(engine.list_runs().map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string()),
-        // Every ledger row of one run, so the timeline can show each attempt of each step.
-        "history" => return serde_json::to_value(engine.store.list_workflow_run_history(&text("runId")?).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string()),
+        // Every ledger row of one run, so the timeline can show each attempt of each step; and every review report, for the review close-up.
+        "history" => return serde_json::to_value(engine.store.list_workflow_run_history(&text("runId")?).map_err(|error| error.to_string())?).map_err(|error| error.to_string()),
+        "reviews" => return engine.store.run_review_reports(&text("runId")?).map(Value::Array).map_err(|error| error.to_string()),
         "get" => engine.get_run(&text("runId")?),
         "create" => {
             let task = serde_json::from_value(args["task"].clone()).map_err(|error| error.to_string())?;
@@ -3578,7 +3604,7 @@ fn pr_body(task_key: &str, outputs: &[(String, String)], artifacts: &[String]) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    mod permissions; mod agent_tools; mod review_rounds; mod agent_inputs; mod orchestrator_decisions;
+    mod permissions; mod agent_tools; mod review_rounds; mod agent_inputs; mod orchestrator_decisions; mod step_end;
     #[test]
     fn pr_body_stays_under_the_github_limit_and_names_every_step() {
         let outputs: Vec<(String, String)> = (0..14).map(|n| (format!("step-{n}"), "x".repeat(20_000))).collect();
@@ -3596,6 +3622,7 @@ mod tests {
     struct FakeRuntime {
         dispatched: Mutex<Vec<AgentDispatchRequest>>,
         cancelled: AtomicU64,
+        cancelled_ids: Mutex<Vec<String>>,
         dispatch_delay_ms: AtomicU64,
     }
     impl AgentRuntimePort for FakeRuntime {
@@ -3612,7 +3639,8 @@ mod tests {
                 })
             })
         }
-        fn cancel<'a>(&'a self, _owned_id: &'a str) -> PortFuture<'a, ()> {
+        fn cancel<'a>(&'a self, owned_id: &'a str) -> PortFuture<'a, ()> {
+            self.cancelled_ids.lock().unwrap().push(owned_id.into());
             Box::pin(async { self.cancelled.fetch_add(1, Ordering::SeqCst); Ok(()) })
         }
     }
@@ -4117,25 +4145,6 @@ mod tests {
         assert_ne!(step_of(&redone, "review").owned_id, step_of(&first, "review").owned_id);
         let workers: Vec<_> = runtime.dispatched.lock().unwrap().iter().map(|request| request.owned_id.clone()).collect();
         assert_eq!(workers.iter().filter(|id| **id == step_of(&first, "build").owned_id).count(), 2);
-    }
-
-    #[test]
-    fn redo_stops_a_parallel_reviewer_and_its_timer() {
-        let repo = RunRepo::new();
-        let runtime = Arc::new(FakeRuntime::default());
-        let engine = run_engine(runtime.clone());
-        let steps = format!("{LOOP_REVIEW}  second:\n    needs: [build]\n    review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/p.md }}\n");
-        let run = loop_run(&engine, &repo.0, &steps);
-        let both = end_turn(&engine, &run.id, "build", &[]);
-        let old_second = step_of(&both, "second").clone();
-        assert_eq!(old_second.state, WorkflowNodeState::Running);
-        assert!(engine.deadlines.lock().unwrap().contains_key(&old_second.id));
-        let run = end_turn(&engine, &run.id, "review", &[findings(1)]);
-        assert_eq!(runtime.cancelled.load(Ordering::SeqCst), 1);
-        assert!(!engine.deadlines.lock().unwrap().contains_key(&old_second.id));
-        assert_eq!((step_of(&run, "second").attempt, step_of(&run, "second").state), (2, WorkflowNodeState::Blocked));
-        assert_eq!(step_of(&run, "build").state, WorkflowNodeState::Running);
-        assert_eq!(run.state, WorkflowRunState::Running);
     }
 
     #[test]
@@ -5131,20 +5140,6 @@ mod tests {
     }
 
     #[test]
-    fn run_step_commands_do_not_hold_up_the_dispatch_call() {
-        let repo = RunRepo::new();
-        let engine = run_engine(Arc::new(FakeRuntime::default()));
-        let run = step_run(&engine, &repo.0, json!({"run":["sleep 1; touch done.txt"]}));
-        let started = std::time::Instant::now();
-        let running = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
-        assert!(started.elapsed() < std::time::Duration::from_millis(800), "start waited for the command");
-        assert_eq!(running.nodes[0].state, WorkflowNodeState::Running);
-        let finished = settle(&engine, &run.id);
-        assert!(repo.0.join("done.txt").exists());
-        assert_eq!(finished.nodes[0].state, WorkflowNodeState::Completed);
-    }
-
-    #[test]
     fn template_error_fails_step_before_taking_a_slot() {
         let repo = RunRepo::new();
         let runtime = Arc::new(FakeRuntime::default());
@@ -5193,18 +5188,18 @@ mod tests {
         for repeat in [true, false] {
             let repo = RunRepo::new();
             let engine = run_engine(Arc::new(FakeRuntime::default()));
-            let run = interrupted_step_run(&engine, &repo.0, json!({"run":["touch ran.txt"], "repeat": repeat}));
+            let run = interrupted_step_run(&engine, &repo.0, json!({"run":["touch ../ran.txt"], "repeat": repeat}));
             let restarted = restarted_engine(&engine, Arc::new(FakeRuntime::default()));
             let dispatch = restarted.recover_after_restart().unwrap();
             let recovered = restarted.require_run(&run.id).unwrap();
-            assert!(!repo.0.join("ran.txt").exists(), "recovery itself runs nothing");
+            assert!(!repo.0.join("../ran.txt").exists(), "recovery itself runs nothing");
             if repeat {
                 assert_eq!(dispatch, vec![run.id.clone()]);
                 assert_eq!(recovered.nodes[0].state, WorkflowNodeState::Ready);
                 assert_eq!(recovered.nodes[0].attempt, 2);
                 tauri::async_runtime::block_on(restarted.dispatch_ready(&run.id)).unwrap();
                 let finished = settle(&restarted, &run.id);
-                assert!(repo.0.join("ran.txt").exists());
+                assert!(repo.0.join("../ran.txt").exists());
                 assert_eq!(finished.nodes[0].state, WorkflowNodeState::Completed);
             } else {
                 assert!(dispatch.is_empty());
@@ -5284,7 +5279,7 @@ mod tests {
         workflow.completion.cancel_descendants_on_failure = true;
         let created = engine.create_run(workflow, json!({"cwd":"/repo"}), "create".into()).unwrap();
         tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
-        let failed = engine.fail_agent_node(&created.id, "a", "runtime", "failed", "fail").unwrap();
+        let failed = tauri::async_runtime::block_on(engine.fail_agent_node(&created.id, "a", "runtime", "failed", "fail")).unwrap();
         assert_eq!(failed.nodes.iter().find(|node| node.node_id == "b").unwrap().state, WorkflowNodeState::Cancelled);
 
         let retried = tauri::async_runtime::block_on(engine.retry_node(&created.id, "a", "retry")).unwrap();

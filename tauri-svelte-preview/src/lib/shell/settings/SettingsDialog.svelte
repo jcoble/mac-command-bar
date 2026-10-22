@@ -10,7 +10,10 @@
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import Type from '@lucide/svelte/icons/type';
   import Server from '@lucide/svelte/icons/server';
+  import Puzzle from '@lucide/svelte/icons/puzzle';
   import RemoteConnections from '../connections/RemoteConnections.svelte';
+  import ProviderList from './ProviderList.svelte';
+  import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import Download from '@lucide/svelte/icons/download';
 
   import { Button } from '$lib/components/ui/button/index.js';
@@ -120,6 +123,7 @@
     { id: 'connections', group: 'Application', label: 'Connections', icon: Server },
     { id: 'updates', group: 'Application', label: 'Updates', icon: Download },
     { id: 'agents', group: 'Application', label: 'Agents', icon: Sparkles },
+    { id: 'plugins', group: 'Application', label: 'Plugins and Providers', icon: Puzzle },
     { id: 'helper', group: 'Application', label: 'Utility model', icon: Sparkles }
   ];
 
@@ -134,24 +138,18 @@
       description: 'Minutes to wait on this machine; 0 means Never.', keywords: 'agents helpers sessions minutes done never' },
     { id: 'helpers_per_session', section: 'agents', card: 'Helper sessions', title: 'Helpers per session',
       description: 'Maximum unfinished helpers for each session on this machine.', keywords: 'agents helpers sessions limit' },
+    { id: 'providers', section: 'plugins', card: 'Providers', title: 'Providers',
+      description: 'Each agent Assembly can run, its sign-in state and models.', keywords: 'claude codex antigravity models sign in acp' },
+    { id: 'api-endpoints', section: 'plugins', card: 'API endpoints', title: 'API endpoints',
+      description: 'API models reached through an endpoint.', keywords: 'api keys keyring grok openrouter ollama' },
+    { id: 'plugins', section: 'plugins', card: 'Plugins', title: 'Plugins',
+      description: 'Installed plugins.', keywords: 'plugins tools extensions' },
     { id: 'remote-connections', section: 'connections', card: 'Remote machines', title: 'Saved connections',
       description: 'Connect or disconnect an Assembly backend.', keywords: 'ssh workbox server remote reconnect' },
-    {
-      id: 'theme',
-      section: 'appearance',
-      card: 'Colors',
-      title: 'Theme',
-      description: 'Overall color scheme for the app.',
-      keywords: 'dark light palette houston'
-    },
-    {
-      id: 'ui-font',
-      section: 'appearance',
-      card: 'Text',
-      title: 'Interface font',
-      description: 'The face for labels, menus and messages.',
-      keywords: 'typeface family inter manrope figtree sans'
-    },
+    { id: 'theme', section: 'appearance', card: 'Colors', title: 'Theme',
+      description: 'Overall color scheme for the app.', keywords: 'dark light palette houston' },
+    { id: 'ui-font', section: 'appearance', card: 'Text', title: 'Interface font',
+      description: 'The face for labels, menus and messages.', keywords: 'typeface family inter manrope figtree sans' },
     {
       id: 'mono-font',
       section: 'appearance',
@@ -782,7 +780,7 @@
               </div>
               <!-- The Helper section has nothing in the settings store to put
                    back, so it is not offered a reset it could not carry out. -->
-              {#if shownSection.id !== 'agents' && shownSection.id !== 'helper' && shownSection.id !== 'updates' && shownSection.id !== 'connections'}
+              {#if shownSection.id !== 'agents' && shownSection.id !== 'helper' && shownSection.id !== 'updates' && shownSection.id !== 'connections' && shownSection.id !== 'plugins'}
                 <Button
                   variant="ghost"
                   size="sm"
@@ -800,7 +798,9 @@
                 <h3 class="text-muted-foreground px-1 text-[12px] font-medium">{card.name}</h3>
                 <div class="border-border/70 bg-card rounded-xl border">
                   {#each card.rowIds as id (id)}
-                    {#if id === 'remote-connections'}
+                    {#if id === 'providers'}<ProviderList />
+                    {:else if id === 'api-endpoints' || id === 'plugins'}<EmptyState title={id === 'plugins' ? 'No plugins installed' : 'No API endpoints'} class="py-5" />
+                    {:else if id === 'remote-connections'}
                       <RemoteConnections onConnected={(profile) => onRemoteConnected?.(profile.id)} />
                     {:else if id === 'theme'}
                       {@render settingRow(id, themeControl)}

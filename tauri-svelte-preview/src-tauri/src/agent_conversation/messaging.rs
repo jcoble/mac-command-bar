@@ -392,6 +392,7 @@ impl MessagingEndpoint {
                     "helper" => return Err("helpers cannot start helpers".into()),
                     _ => {}
                 }
+                crate::proof_mode::refuse("Starting helpers")?;
                 let helper_limit = store.get_app_setting("helpers_per_session").map_err(|error| error.to_string())?
                     .map(|value| serde_json::from_str::<i64>(&value)).transpose()
                     .map_err(|error| format!("helpers_per_session must be an integer: {error}"))?.unwrap_or(5);
@@ -435,6 +436,7 @@ impl MessagingEndpoint {
             }
             Some("start_workflow") => {
                 if role == "worker" { return Err("workflow workers cannot start sessions or runs".into()); }
+                crate::proof_mode::refuse("Starting workflow runs")?;
                 let engine = self.workflow()?;
                 let args = &tool_call["arguments"];
                 let path = args["path"].as_str().ok_or("path must be a workflow file relative to your project")?;

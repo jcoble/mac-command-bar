@@ -156,6 +156,7 @@ pub(super) fn write_attachment_chunk(
 }
 
 pub(super) async fn execute_server_command(state: &ServerState, upload: &Arc<Mutex<Option<PendingAttachment>>>, command: RemoteCommand, progress: crate::agent_conversation::providers::updates::ProgressSink) -> Result<RemoteResponse, String> {
+    command.refuse_in_proof_mode()?;
     let vault = state.data_dir.join("conversation-attachments");
     let command = match command {
         RemoteCommand::AttachmentChunk { upload_id, owned_id, mime_type, first, last, bytes } => {
