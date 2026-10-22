@@ -4,9 +4,10 @@
  *
  * Every palette follows the theme it belongs to: `background` and
  * `cursorAccent` are the theme's `--color-surface` (the Terminal tab's panel),
- * `foreground` and `selectionForeground` are `--color-text`, and
- * `selectionBackground` is `--color-text-selection`, so selected terminal text
- * looks like selected text anywhere else in the app.
+ * `foreground` is `--color-text`, and `selectionBackground` is
+ * `--color-text-selection`, so selected terminal text looks like selected
+ * text anywhere else in the app. `selectionForeground` is `--color-text`, or
+ * white where that falls short of 4.5:1 on the highlighter.
  *
  * Every slot except `selectionBackground` goes into Ghostty's WASM terminal
  * through `parseColorToHex`, which reads `#hex` and `rgb()` only and turns any
@@ -73,7 +74,7 @@ export const DRACULA_TERMINAL: TerminalTheme = {
   cursor: '#f8f8f2',
   cursorAccent: '#282a36',
   selectionBackground: 'rgba(255, 121, 198, 0.6)',
-  selectionForeground: '#f8f8f2',
+  selectionForeground: '#ffffff',
   black: '#000000',
   red: '#ff5555',
   green: '#50fa7b',
@@ -82,7 +83,7 @@ export const DRACULA_TERMINAL: TerminalTheme = {
   magenta: '#ff79c6',
   cyan: '#8be9fd',
   white: '#bbbbbb',
-  brightBlack: '#555555',
+  brightBlack: '#6272a4',
   brightRed: '#ff5555',
   brightGreen: '#50fa7b',
   brightYellow: '#f1fa8c',
@@ -98,7 +99,7 @@ export const TOKYO_NIGHT_TERMINAL: TerminalTheme = {
   cursor: '#7aa2f7',
   cursorAccent: '#1a1b26',
   selectionBackground: 'rgba(187, 154, 247, 0.55)',
-  selectionForeground: '#c0caf5',
+  selectionForeground: '#ffffff',
   black: '#15161e',
   red: '#f7768e',
   green: '#9ece6a',
@@ -107,7 +108,7 @@ export const TOKYO_NIGHT_TERMINAL: TerminalTheme = {
   magenta: '#bb9af7',
   cyan: '#7dcfff',
   white: '#a9b1d6',
-  brightBlack: '#414868',
+  brightBlack: '#737aa2',
   brightRed: '#f7768e',
   brightGreen: '#9ece6a',
   brightYellow: '#e0af68',
