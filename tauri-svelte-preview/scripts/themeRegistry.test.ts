@@ -235,8 +235,11 @@ function readDeclarations(css: string): Map<string, string> {
 // other form becomes black. selectionBackground is only a canvas fill, so it
 // may be the theme's rgba() highlighter.
 {
+  // Ghostty takes its palette only when a terminal is made, so the Terminal tab
+  // is remade, from the saved theme, whenever the theme changes.
   const source = read(GHOSTTY_FACTORY_PATH);
-  assert.match(source, /theme:\s*\{ \.\.\.currentTheme\(\)\.terminal \}/);
+  assert.match(source, /theme:\s*\{ \.\.\.getTheme\(settings\.appearance\.themeId\)\.terminal \}/);
+  assert.match(read('src/lib/shell/components/RightPanel.svelte'), /\{#key settings\.appearance\.themeId\}[\s\S]*?<WorkspaceTerminal /);
   for (const theme of THEMES) {
     for (const [slot, value] of Object.entries(theme.terminal)) {
       if (slot === 'selectionBackground') continue;
