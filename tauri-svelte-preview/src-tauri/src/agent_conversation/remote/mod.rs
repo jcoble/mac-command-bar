@@ -75,7 +75,7 @@ const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_SERVER_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const ATTACHMENT_CHUNK_BYTES: usize = 128 * 1024;
 const OUTBOUND_FRAME_CAPACITY: usize = 8;
-static MESSAGE_CHANGES: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
+pub(super) static MESSAGE_CHANGES: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
     std::sync::LazyLock::new(|| tokio::sync::watch::channel(0).0);
 static MESSAGES_CHANGED_SINK: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 const REPLAY_PAGE_BYTES: u32 = 1024 * 1024;
