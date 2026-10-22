@@ -262,6 +262,62 @@ mod tests {
         assert_eq!((owned.as_str(), step), ("owned-tag", None));
     }
 
+    fn seeded(signal: Signal, name: &str, owned: &str, attributes: Value) -> Record {
+        Record { signal, name: name.into(), time_ms: 1_000, end_ms: None, trace_id: None, span_id: None, parent_span_id: None,
+            unit: None, value: None, service: None, session_id: None, owned_id: Some(owned.into()),
+            attributes: attributes.as_object().unwrap().clone() }
+    }
+
+    fn span(name: &str, id: &str, parent: Option<&str>, (start, end): (i64, i64), attributes: Value) -> Record {
+        Record { trace_id: Some("trace-1".into()), span_id: Some(id.into()), parent_span_id: parent.map(str::to_string),
+            time_ms: start, end_ms: Some(end), ..seeded(Signal::Span, name, "owned-b", attributes) }
+    }
+
+    fn view(connection: &Connection, sql: &str) -> Vec<Vec<Option<i64>>> {
+        let mut statement = connection.prepare(sql).unwrap();
+        let columns = statement.column_count();
+        statement.query_map([], |row| (0..columns).map(|i| row.get(i)).collect()).unwrap().map(Result::unwrap).collect()
+    }
+
+    #[test]
+    fn report_views_add_up_cost_tokens_latency_and_tool_time() {
+        let path = database("views");
+        let mut store = OtelStore::open(&path).unwrap();
+        let steps = Lookups {
+            owned_for_session: Box::new(|_| None),
+            step_for_owned: Box::new(|owned| Some(("run-1".to_string(), if owned == "owned-a" { "step-a" } else { "step-b" }.to_string()))),
+        };
+        let call = |input: i64, output: i64, cost: i64, duration: i64, ttft: i64| json!({"model": "m1", "input_tokens": input,
+            "output_tokens": output, "cache_read_tokens": 100, "cache_creation_tokens": 50, "cost_usd_micros": cost,
+            "duration_ms": duration, "ttft_ms": ttft});
+        store.insert(&[
+            seeded(Signal::Log, "claude_code.api_request", "owned-a", call(10, 5, 1000, 2000, 500)),
+            seeded(Signal::Log, "claude_code.api_request", "owned-a", call(20, 10, 3000, 4000, 1500)),
+            seeded(Signal::Log, "claude_code.assistant_response", "owned-a", json!({"model": "m1"})),
+            seeded(Signal::Log, "claude_code.tool_result", "owned-a", json!({"tool_name": "Bash", "duration_ms": "300"})),
+            seeded(Signal::Metric, "claude_code.cost.usage", "owned-a", json!({"model": "m1"})),
+            // TanStack AI's chat span repeats its iterations' usage, so only the iteration counts.
+            span("chat m2", "s1", None, (0, 1000), json!({"gen_ai.request.model": "m2", "gen_ai.usage.input_tokens": 7,
+                "gen_ai.usage.output_tokens": 3, "gen_ai.usage.cost": 0.002})),
+            span("chat m2 #1", "s2", Some("s1"), (0, 900), json!({"gen_ai.request.model": "m2", "gen_ai.usage.input_tokens": 7,
+                "gen_ai.usage.output_tokens": 3, "gen_ai.usage.cost": 0.002})),
+            span("execute_tool search", "s3", Some("s2"), (100, 350), json!({"gen_ai.tool.name": "search", "gen_ai.operation.name": "execute_tool"})),
+        ], &steps).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        let measures = "model_calls, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_micros, model_ms, avg_call_ms, slowest_call_ms, avg_ttft_ms, tool_calls, tool_ms";
+        let n = |values: [i64; 12]| values.map(|value| (value >= 0).then_some(value)).to_vec();
+        let step_a = n([2, 30, 15, 200, 100, 4000, 6000, 3000, 4000, 1000, 1, 300]);
+        let step_b = n([1, 7, 3, -1, -1, 2000, 900, 900, 900, -1, 1, 250]);
+        assert_eq!(view(&connection, &format!("SELECT {measures} FROM otel_report_by_step ORDER BY node_run_id")), [step_a.clone(), step_b.clone()]);
+        assert_eq!(view(&connection, &format!("SELECT {measures} FROM otel_report_by_session ORDER BY owned_id")), [step_a.clone(), step_b.clone()]);
+        assert_eq!(view(&connection, &format!("SELECT {measures} FROM otel_report_by_run")), [n([3, 37, 18, 200, 100, 6000, 6900, 2300, 4000, 1000, 2, 550])]);
+        assert_eq!(view(&connection, &format!("SELECT {measures} FROM otel_report_by_model ORDER BY model")),
+            [n([2, 30, 15, 200, 100, 4000, 6000, 3000, 4000, 1000, 0, -1]), n([1, 7, 3, -1, -1, 2000, 900, 900, 900, -1, 0, -1])]);
+        let keys: Vec<(String, String)> = connection.prepare("SELECT run_id, node_run_id FROM otel_report_by_step ORDER BY node_run_id").unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(keys, [("run-1".into(), "step-a".into()), ("run-1".into(), "step-b".into())]);
+    }
+
     #[test]
     fn rows_older_than_the_cutoff_are_deleted() {
         let path = database("retention");
