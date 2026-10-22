@@ -2,7 +2,7 @@ name: Dev pipeline
 inputs:
   task: { description: Notion task, required: true }
   i_merge: { description: "I'll merge", default: false }
-limits: { max_sessions: 3, step_timeout_minutes: 60, max_rounds: 8 }
+limits: { max_sessions: 3, step_timeout_minutes: 60, max_rounds: 6 }
 steps:
   recon: { agent: { provider: claude, model: sonnet }, prompt: prompts/recon.md }
   spec: { needs: [recon], agent: { provider: claude, model: opus }, prompt: prompts/spec.md }
