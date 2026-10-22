@@ -370,6 +370,10 @@ fn a_running_call_streams_its_output_and_ends_with_the_closed_row_only() {
     let replayed = script.send(Payload::Tool { item_id: "tool-2".into(), name: "Edit".into(), state: ToolState::Completed,
         summary: None, output: None, path: None, diff: None, has_detail: true, added: Some(1), removed: Some(0) });
     assert_eq!(content(replayed.last().unwrap())["hasDetail"], json!(true));
+    // Imported history sends the finished call's output in a later event with no name.
+    let imported = script.send(Payload::Tool { item_id: "tool-2".into(), name: String::new(), state: ToolState::Completed,
+        summary: None, output: Some("2 files".into()), path: None, diff: None, has_detail: false, added: None, removed: None });
+    assert_eq!((types(&imported), content(&imported[0])["hasDetail"].clone()), (vec!["TOOL_CALL_RESULT"], json!(true)));
 }
 
 #[test]

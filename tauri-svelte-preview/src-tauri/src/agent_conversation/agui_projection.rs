@@ -454,17 +454,18 @@ impl View {
     /// latest ones and the native call as its result, which the client draws the row from.
     fn tool(&mut self, out: &mut Vec<Value>, event: &AgentConversationEvent, id: &str, name: &str, state: ToolState, fields: [&Option<String>; 4]) {
         let [summary, path, output, diff] = fields;
-        if self.ended.contains(id) { return; }
+        if self.ended.contains(id) { // Imported history sends a finished call's output in an event of its own.
+            if output.is_some() || diff.is_some() || matches!(event.payload, Payload::Tool { has_detail: true, .. }) {
+                out.push(agui::tool_result(id, &serde_json::to_string(&tool_call::without_details(event.clone()).payload).unwrap_or_default(), state == ToolState::Failed));
+            }
+            return;
+        }
         let call = self.tools.entry(id.to_string()).or_insert_with(|| {
             out.push(agui::tool_start(id, name, Some(id), facts(event, "mcp-tool")));
             OpenCall::default()
         });
         let first = call.args.is_empty();
-        for (key, value) in [("summary", summary), ("path", path)] {
-            if let Some(value) = value {
-                call.args.insert(key.into(), json!(value));
-            }
-        }
+        for (key, value) in [("summary", summary), ("path", path)] { if let Some(value) = value { call.args.insert(key.into(), json!(value)); } }
         call.output = output.clone().or(call.output.take());
         call.diff = diff.clone().or(call.diff.take());
         if first && !call.args.is_empty() {
