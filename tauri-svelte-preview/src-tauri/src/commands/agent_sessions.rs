@@ -7,8 +7,8 @@ use crate::agent_conversation::manager::AgentRuntimeManager;
 use crate::agent_conversation::remote::RemoteConnectionManager;
 
 /// The scan with each session's project group on it, matched in SQL against the projects this Mac registered for `machine`.
-fn grouped(store: &SessionStore, machine: &str, mut sessions: Vec<AgentSessionRecord>) -> Result<Vec<AgentSessionRecord>, String> {
-    crate::project_folders::attach_scanned_project_groups(store, machine, &mut sessions)?;
+fn grouped(store: &SessionStore, machine: &str, mut sessions: Vec<AgentSessionRecord>, common_dir: impl Fn(&str) -> Option<String>) -> Result<Vec<AgentSessionRecord>, String> {
+    crate::project_folders::attach_scanned_project_groups(store, machine, &mut sessions, common_dir)?;
     Ok(sessions)
 }
 
@@ -21,9 +21,11 @@ pub(crate) async fn list_agent_sessions(
 ) -> Result<Vec<AgentSessionRecord>, String> {
     let store = manager.store_handle();
     if let Some(profile) = remote_profile_id {
-        return grouped(&store, &profile, remote.scan_transcripts(&profile, None).await?);
+        let roots = store.project_roots(&profile).map_err(|error| error.to_string())?;
+        let (sessions, common_dirs) = remote.scan_transcripts(&profile, None, roots).await?;
+        return grouped(&store, &profile, sessions, |folder| common_dirs.get(folder).cloned());
     }
-    tauri::async_runtime::spawn_blocking(move || grouped(&store, "local", scan_sessions()))
+    tauri::async_runtime::spawn_blocking(move || grouped(&store, "local", scan_sessions(), crate::project_folders::git_common_dir))
         .await
         .map_err(|error| format!("Agent session scan task failed: {error}"))?
 }
@@ -34,7 +36,7 @@ pub(crate) async fn list_agent_sessions_for_project(
     project_path: String,
 ) -> Result<Vec<AgentSessionRecord>, String> {
     let store = manager.store_handle();
-    tauri::async_runtime::spawn_blocking(move || grouped(&store, "local", scan_sessions_for_project(&project_path)))
+    tauri::async_runtime::spawn_blocking(move || grouped(&store, "local", scan_sessions_for_project(&project_path), crate::project_folders::git_common_dir))
         .await
         .map_err(|error| format!("Agent session scan task failed: {error}"))?
 }
@@ -49,9 +51,11 @@ pub(crate) async fn read_agent_session_details(
 ) -> Result<Vec<AgentSessionRecord>, String> {
     let store = manager.store_handle();
     if let Some(profile) = remote_profile_id {
-        return grouped(&store, &profile, remote.scan_transcripts(&profile, Some(log_path)).await?);
+        let roots = store.project_roots(&profile).map_err(|error| error.to_string())?;
+        let (sessions, common_dirs) = remote.scan_transcripts(&profile, Some(log_path), roots).await?;
+        return grouped(&store, &profile, sessions, |folder| common_dirs.get(folder).cloned());
     }
-    tauri::async_runtime::spawn_blocking(move || grouped(&store, "local", scan_session_details(&log_path)))
+    tauri::async_runtime::spawn_blocking(move || grouped(&store, "local", scan_session_details(&log_path), crate::project_folders::git_common_dir))
         .await
         .map_err(|error| format!("Agent session detail task failed: {error}"))?
 }
@@ -88,9 +92,21 @@ mod tests {
         let store = SessionStore::open_in_memory().unwrap();
         store.insert_or_get_project(&project("on-mac", "local")).unwrap();
         store.insert_or_get_project(&project("on-box", "box")).unwrap();
-        let key = |machine: &str, folder: &str| grouped(&store, machine, vec![scanned(folder)]).unwrap()[0].project_group_key.clone();
+        let key = |machine: &str, folder: &str| grouped(&store, machine, vec![scanned(folder)], |_| None).unwrap()[0].project_group_key.clone();
         assert_eq!(key("box", "/work/edi/sub"), "project:on-box");
         assert_eq!(key("local", "/work/edi/sub"), "project:on-mac");
         assert_eq!(key("box", "/elsewhere"), "none");
+    }
+
+    #[test]
+    fn a_remote_worktree_groups_under_the_project_whose_repository_it_shares() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.insert_or_get_project(&project("a-local", "local")).unwrap();
+        store.insert_or_get_project(&project("on-box", "box")).unwrap();
+        // The git common dirs that machine reported for the scanned folders and for this Mac's project roots there.
+        let common_dir = |folder: &str| matches!(folder, "/work/edi" | "/work/worktrees/edi/fix").then(|| "/work/edi/.git".to_string());
+        let key = |folder: &str| grouped(&store, "box", vec![scanned(folder)], common_dir).unwrap()[0].project_group_key.clone();
+        assert_eq!(key("/work/worktrees/edi/fix"), "project:on-box");
+        assert_eq!(key("/work/worktrees/other"), "none");
     }
 }

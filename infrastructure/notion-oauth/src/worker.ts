@@ -5,8 +5,7 @@ interface D1RunResult {
 }
 
 interface D1FirstRow {
-  verifier_hash: string;
-  encrypted_token: string | null;
+  encrypted_token: string;
 }
 
 interface D1Statement {
@@ -34,6 +33,7 @@ interface StartRequest {
 interface ClaimRequest {
   state: string;
   verifier: string;
+  claimCode: string;
 }
 
 interface NotionTokenResponse {
@@ -52,10 +52,15 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-function callbackPage(title: string, message: string, success: boolean): Response {
+// `appLink` is built only from validated identifiers, so it needs no escaping.
+function callbackPage(title: string, message: string, success: boolean, appLink = ''): Response {
   const color = success ? '#65d6bd' : '#ff7b72';
+  const refresh = appLink ? `<meta http-equiv="refresh" content="0;url=${appLink}">` : '';
+  const button = appLink
+    ? `<p style="margin:1.25rem 0 0"><a href="${appLink}" style="color:#65d6bd">Open Assembly</a></p>`
+    : '';
   return new Response(
-    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${title}</title><body style="margin:0;background:#111318;color:#f4f5f7;font:16px system-ui;display:grid;min-height:100vh;place-items:center"><main style="max-width:34rem;padding:2rem"><div style="width:.75rem;height:.75rem;border-radius:50%;background:${color};margin-bottom:1rem"></div><h1 style="font-size:1.5rem;margin:0 0 .75rem">${title}</h1><p style="color:#b9bec8;line-height:1.55;margin:0">${message}</p></main></body></html>`,
+    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">${refresh}<title>${title}</title><body style="margin:0;background:#111318;color:#f4f5f7;font:16px system-ui;display:grid;min-height:100vh;place-items:center"><main style="max-width:34rem;padding:2rem"><div style="width:.75rem;height:.75rem;border-radius:50%;background:${color};margin-bottom:1rem"></div><h1 style="font-size:1.5rem;margin:0 0 .75rem">${title}</h1><p style="color:#b9bec8;line-height:1.55;margin:0">${message}</p>${button}</main></body></html>`,
     { status: success ? 200 : 400, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } }
   );
 }
@@ -85,9 +90,14 @@ async function startOAuth(request: Request, env: Environment): Promise<Response>
 
   const now = Math.floor(Date.now() / 1000);
   await discardExpired(env, now);
-  await env.OAUTH_DB.prepare(
-    'INSERT OR REPLACE INTO oauth_attempts (state, verifier_hash, encrypted_token, expires_at) VALUES (?, ?, NULL, ?)'
-  ).bind(body.state, body.verifierHash, now + ATTEMPT_LIFETIME_SECONDS).run();
+  // A plain INSERT: a state already in use is refused, never replaced.
+  try {
+    await env.OAUTH_DB.prepare(
+      'INSERT INTO oauth_attempts (state, verifier_hash, encrypted_token, expires_at) VALUES (?, ?, NULL, ?)'
+    ).bind(body.state, body.verifierHash, now + ATTEMPT_LIFETIME_SECONDS).run();
+  } catch {
+    return json({ error: 'This login was already started' }, 409);
+  }
 
   const authorizeUrl = new URL('https://api.notion.com/v1/oauth/authorize');
   authorizeUrl.searchParams.set('client_id', env.NOTION_CLIENT_ID);
@@ -120,34 +130,46 @@ async function notionCallback(request: Request, env: Environment): Promise<Respo
     return callbackPage('Notion was not connected', 'Notion rejected the login. Return to Assembly and try again.', false);
   }
 
+  // The token is released only to a claim that also carries this code. The
+  // code goes to the app through its deep link from this browser, so whoever
+  // started the flow, if not this browser's owner, never sees it.
+  const claimCode = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('');
   const encryptedToken = await encryptToken(tokenPayload.access_token, env.TOKEN_ENCRYPTION_KEY);
   const result = await env.OAUTH_DB.prepare(
-    'UPDATE oauth_attempts SET encrypted_token = ? WHERE state = ? AND expires_at >= ?'
-  ).bind(encryptedToken, state, now).run();
+    'UPDATE oauth_attempts SET encrypted_token = ?, claim_code_hash = ? WHERE state = ? AND expires_at >= ? AND encrypted_token IS NULL'
+  ).bind(encryptedToken, await sha256Hex(claimCode), state, now).run();
   if (result.meta.changes !== 1) {
     return callbackPage('This login expired', 'Return to Assembly and start a new Notion connection.', false);
   }
-  return callbackPage('Notion connected', 'You can close this page and return to Assembly.', true);
+  return callbackPage(
+    'Notion approved',
+    'Assembly is opening to finish connecting. If it does not, use the link below.',
+    true,
+    `assembly://notion-oauth?state=${state}&amp;code=${claimCode}`
+  );
 }
 
 async function claimOAuth(request: Request, env: Environment): Promise<Response> {
   const body = await readJson<ClaimRequest>(request);
-  if (!body || !identifierPattern.test(body.state) || !identifierPattern.test(body.verifier)) {
+  if (
+    !body ||
+    !identifierPattern.test(body.state) ||
+    !identifierPattern.test(body.verifier) ||
+    !identifierPattern.test(body.claimCode)
+  ) {
     return json({ error: 'Invalid login claim' }, 400);
   }
 
+  // One statement checks the verifier and the claim code and removes the
+  // attempt, so a token can be claimed once.
   const now = Math.floor(Date.now() / 1000);
   const attempt = await env.OAUTH_DB.prepare(
-    'SELECT verifier_hash, encrypted_token FROM oauth_attempts WHERE state = ? AND expires_at >= ?'
-  ).bind(body.state, now).first<D1FirstRow>();
-  if (!attempt || attempt.verifier_hash !== await sha256Hex(body.verifier)) {
-    return json({ error: 'Login expired' }, 410);
-  }
-  if (!attempt.encrypted_token) return json({ status: 'pending' }, 202);
+    'DELETE FROM oauth_attempts WHERE state = ? AND verifier_hash = ? AND claim_code_hash = ? AND expires_at >= ? RETURNING encrypted_token'
+  ).bind(body.state, await sha256Hex(body.verifier), await sha256Hex(body.claimCode), now).first<D1FirstRow>();
+  if (!attempt) return json({ error: 'Login expired' }, 410);
 
   const token = await decryptToken(attempt.encrypted_token, env.TOKEN_ENCRYPTION_KEY);
-  await env.OAUTH_DB.prepare('DELETE FROM oauth_attempts WHERE state = ?').bind(body.state).run();
-  return json({ status: 'connected', accessToken: token });
+  return json({ accessToken: token });
 }
 
 export default {

@@ -50,7 +50,7 @@
     {:else if item.kind === 'command'}<CommandItem {item} onFileLink={openFileLink} />
     {:else if item.kind === 'file'}<FileChangeItem {item} onFileLink={openFileLink} />
     {:else if item.kind === 'fileEdits'}<FileEditsItem {item} onFileLink={openFileLink} />
-    {:else if item.kind === 'tool'}<ConversationToolUI itemId={item.itemId} onFileLink={openFileLink} />
+    {:else if item.kind === 'tool'}<ConversationToolUI itemId={item.itemId} {item} onFileLink={openFileLink} />
     {:else if item.kind === 'subagent'}<SubagentSection {item} />
     {:else if item.kind === 'approval'}<ApprovalItem {item} onDecision={onApprovalDecision} />
     {:else if item.kind === 'input'}<UserInputItem {item} />

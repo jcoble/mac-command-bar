@@ -5137,11 +5137,11 @@ mod tests {
     /// asked, and says why in words rather than looking broken.
     #[test]
     fn a_read_mode_workspace_starts_no_language_server() {
+        let _test_lock = supercharged_test_lock();
         let root = unique_lsp_temp_root("mcb-lsp-read-mode");
         std::fs::write(root.join("App.csproj"), "<Project />").unwrap();
         let root_text = root.display().to_string();
         set_language_intelligence(&root_text, false);
-
         let registry = SourceLspRegistry::default();
         assert_eq!(
             registry.warm_running_servers_for_root(&root_text).unwrap(),
@@ -5155,7 +5155,7 @@ mod tests {
         assert_eq!(registry.session_count().unwrap(), 0);
         assert!(registry.running_language_server_processes().is_empty());
 
-        let status = read_source_lsp_status_sync(root.clone(), "csharp".to_string()).unwrap();
+        let status = read_source_lsp_status_sync(root.clone(), "typescript".to_string()).unwrap();
         assert_eq!(status.state, LanguageServerState::Disabled.as_str());
         assert_eq!(status.detail.as_deref(), Some(READ_MODE_DETAIL));
 
@@ -5170,9 +5170,9 @@ mod tests {
     /// reason rather than a control that appears to do nothing.
     #[test]
     fn starting_a_language_with_no_server_says_so() {
+        let _test_lock = supercharged_test_lock();
         let root = unique_lsp_temp_root("mcb-lsp-no-server");
         let root_text = root.display().to_string();
-
         let registry = SourceLspRegistry::default();
         assert_eq!(
             registry
@@ -5190,9 +5190,9 @@ mod tests {
     /// gate held rather than starting a second Roslyn through the legacy pool.
     #[test]
     fn starting_csharp_reports_its_gates_instead_of_starting_a_second_roslyn() {
+        let _test_lock = supercharged_test_lock();
         let root = unique_lsp_temp_root("mcb-lsp-csharp-gate");
         let root_text = root.display().to_string();
-
         let registry = SourceLspRegistry::default();
         assert_eq!(
             registry
@@ -5219,10 +5219,10 @@ mod tests {
     /// nobody switched on starts nothing, whatever the language.
     #[test]
     fn a_read_mode_workspace_starts_nothing_when_asked_directly() {
+        let _test_lock = supercharged_test_lock();
         let root = unique_lsp_temp_root("mcb-lsp-start-read-mode");
         let root_text = root.display().to_string();
         set_language_intelligence(&root_text, false);
-
         let registry = SourceLspRegistry::default();
         assert_eq!(
             registry
@@ -5565,7 +5565,6 @@ mod tests {
             ("rust", "rust-analyzer", "rust", "rust-analyzer", &[]),
             ("rs", "rust-analyzer", "rust", "rust-analyzer", &[]),
         ];
-
         for (language, server_name, language_id, command, args) in cases {
             let status = read_source_lsp_status_sync(root.clone(), (*language).to_string())
                 .expect("target LSP status");
@@ -5596,7 +5595,6 @@ mod tests {
                 server_spec_for_language(language).is_none(),
                 "{language} should not advertise a native LSP adapter yet"
             );
-
             let status = read_source_lsp_status_sync(PathBuf::from("."), language.to_string())
                 .expect("unsupported language status");
             assert_eq!(status.language, language);
@@ -6653,6 +6651,7 @@ mod tests {
 
     #[test]
     fn a_real_server_answers_several_questions_asked_at_once() {
+        let _test_lock = supercharged_test_lock();
         // The pipe-level test above proves questions can overlap. This proves the whole
         // path does it against a server that really exists — one server started, four
         // questions in the air, four right answers — and covers the new symbol list the
@@ -6661,7 +6660,6 @@ mod tests {
             crate::debug_log::stderr_log!("skipping: typescript-language-server is not installed");
             return;
         }
-
         let root = unique_lsp_temp_root("mcb-ts-lsp-at-once");
         std::fs::write(
             root.join("tsconfig.json"),
@@ -6766,13 +6764,13 @@ mod tests {
 
     #[test]
     fn typescript_language_server_smoke_reads_intelligence_actions() {
+        let _test_lock = supercharged_test_lock();
         if resolve_server_for_language("typescript").is_none() {
             crate::debug_log::stderr_log!(
                 "skipping TypeScript LSP smoke: typescript-language-server not found"
             );
             return;
         }
-
         let root = unique_lsp_temp_root("mcb-ts-lsp-smoke");
         std::fs::write(
             root.join("tsconfig.json"),
@@ -6874,13 +6872,13 @@ mod tests {
 
     #[test]
     fn switching_active_workspace_replaces_the_previous_server() {
+        let _test_lock = supercharged_test_lock();
         if resolve_server_for_language("typescript").is_none() {
             crate::debug_log::stderr_log!(
                 "skipping LSP dedupe smoke: typescript-language-server not found"
             );
             return;
         }
-
         let registry = SourceLspRegistry::default();
         let make_root = |label: &str,
                          symbol: &str|
@@ -6988,7 +6986,6 @@ mod tests {
         // start every language server the app happens to support.
         let registry = SourceLspRegistry::default();
         let root = unique_lsp_temp_root("mcb-lsp-warm-noop");
-
         let warmed = registry
             .warm_running_servers_for_root(&root.display().to_string())
             .expect("warm with empty registry");
@@ -7021,7 +7018,6 @@ mod tests {
         let marker = root.join("App.csproj");
         std::fs::write(&marker, "<Project />").unwrap();
         let canonical_root = normalized_lsp_root(&root.display().to_string()).unwrap();
-
         assert_eq!(
             registry
                 .preload_languages_for_root(&canonical_root)
@@ -7042,6 +7038,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_native_csharp_ensure_calls_share_one_canonical_root_endpoint() {
+        let _test_lock = supercharged_test_lock();
         if resolve_server_for_language("csharp").is_none() {
             crate::debug_log::stderr_log!(
                 "skipping native C# endpoint coalescing: roslyn-language-server not found"
@@ -7075,13 +7072,11 @@ mod tests {
         assert_eq!(locked(&registry.native_csharp_sessions).len(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
-
     #[test]
     fn legacy_warm_does_not_start_a_second_roslyn_for_csharp_workspace() {
         let registry = SourceLspRegistry::default();
         let root = unique_lsp_temp_root("mcb-lsp-csharp-warm");
         std::fs::write(root.join("App.csproj"), "<Project />").unwrap();
-
         let warmed = registry
             .warm_running_servers_for_root(&root.display().to_string())
             .expect("legacy warm C# workspace");
@@ -7094,13 +7089,13 @@ mod tests {
 
     #[test]
     fn warm_moves_the_single_workspace_slot_to_the_active_root() {
+        let _test_lock = supercharged_test_lock();
         if resolve_server_for_language("typescript").is_none() {
             crate::debug_log::stderr_log!(
                 "skipping LSP warm smoke: typescript-language-server not found"
             );
             return;
         }
-
         let registry = SourceLspRegistry::default();
         let make_root = |label: &str,
                          symbol: &str|
@@ -7183,13 +7178,13 @@ mod tests {
 
     #[test]
     fn javascript_language_server_smoke_reads_intelligence_actions() {
+        let _test_lock = supercharged_test_lock();
         if resolve_server_for_language("javascript").is_none() {
             crate::debug_log::stderr_log!(
                 "skipping JavaScript LSP smoke: typescript-language-server not found"
             );
             return;
         }
-
         let root = unique_lsp_temp_root("mcb-js-lsp-smoke");
         std::fs::write(
             root.join("jsconfig.json"),
@@ -7278,6 +7273,7 @@ mod tests {
 
     #[test]
     fn rust_language_server_smoke_reads_intelligence_actions() {
+        let _test_lock = supercharged_test_lock();
         if resolve_server_for_language("rust").is_none() {
             crate::debug_log::stderr_log!("skipping Rust LSP smoke: rust-analyzer not found");
             return;
@@ -7286,7 +7282,6 @@ mod tests {
             crate::debug_log::stderr_log!("skipping Rust LSP smoke: {reason}");
             return;
         }
-
         let root = unique_lsp_temp_root("mcb-rust-lsp-smoke");
         let source_dir = root.join("src");
         std::fs::create_dir_all(&source_dir).unwrap();
@@ -7386,28 +7381,15 @@ mod tests {
 
     #[test]
     fn svelte_language_server_smoke_reads_document_symbols_when_available() {
+        let _test_lock = supercharged_test_lock();
         if resolve_server_for_language("svelte").is_none() {
             crate::debug_log::stderr_log!("skipping Svelte LSP smoke: svelteserver not found");
             return;
         }
-
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("tauri preview root")
-            .to_path_buf();
-        // A real server is what this test is about, so the workspace is in full
-        // mode — the mode a person would have put it in to get these answers.
-        set_language_intelligence(&root.display().to_string(), true);
-        let file_path = root.join("src/lib/shell/files/components/CodeMirrorSourceEditor.svelte");
-        let content = match std::fs::read_to_string(&file_path) {
-            Ok(content) => content,
-            Err(error) => {
-                crate::debug_log::stderr_log!(
-                    "skipping Svelte LSP smoke: could not read fixture component: {error}"
-                );
-                return;
-            }
-        };
+        let root = unique_lsp_temp_root("mcb-svelte-lsp-smoke");
+        let file_path = root.join("App.svelte");
+        let content = "<script lang=\"ts\">\nfunction currentThemeKey(): string { return 'light'; }\nconst themeKey = currentThemeKey();\n</script>\n<p>{themeKey}</p>\n".to_string();
+        std::fs::write(&file_path, &content).unwrap();
         let line_count = content.lines().count().max(1);
         let definition_line = content
             .lines()
@@ -7421,8 +7403,8 @@ mod tests {
             .expect("currentThemeKey use");
         let preview = SourceLspPreview {
             path: file_path.display().to_string(),
-            relative_path: "src/lib/shell/files/components/CodeMirrorSourceEditor.svelte".to_string(),
-            file_name: "CodeMirrorSourceEditor.svelte".to_string(),
+            relative_path: "App.svelte".to_string(),
+            file_name: "App.svelte".to_string(),
             language: "svelte".to_string(),
             byte_count: content.len() as u64,
             content,
@@ -7442,8 +7424,8 @@ mod tests {
         match registry.find_symbols(preview.clone(), request) {
             Ok(symbols) => {
                 assert!(
-                symbols.iter().any(|symbol| symbol.name == "configureCodeLens"),
-                "expected Svelte document symbols to include configureCodeLens; got {symbols:?}"
+                symbols.iter().any(|symbol| symbol.name == "currentThemeKey"),
+                "expected Svelte document symbols to include currentThemeKey; got {symbols:?}"
             )
             }
             Err(error) => {
@@ -7455,7 +7437,7 @@ mod tests {
         let navigation_request = SourceLspLookupRequest {
             root: root.display().to_string(),
             line: use_line,
-            column: 30,
+            column: 20,
             limit: Some(100),
         };
         let definitions = registry
@@ -7478,10 +7460,13 @@ mod tests {
             }),
             "expected currentThemeKey references to include line {use_line}; got {references:?}"
         );
+        drop(registry);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn csharp_language_server_smoke_reads_intelligence_actions() {
+        let _test_lock = supercharged_test_lock();
         if env::var_os("MCB_RUN_CSHARP_LSP_SMOKE").is_none() {
             crate::debug_log::stderr_log!(
                 "skipping C# LSP smoke: set MCB_RUN_CSHARP_LSP_SMOKE=1 to enable"
@@ -7494,7 +7479,6 @@ mod tests {
             );
             return;
         }
-
         let root = unique_lsp_temp_root("mcb-cs-lsp-smoke");
         let outcome = run_csharp_language_server_smoke(&root);
         let _ = std::fs::remove_dir_all(root);
