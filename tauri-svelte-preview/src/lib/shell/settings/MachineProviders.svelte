@@ -33,7 +33,8 @@
       }
       if (stop.signal.aborted) return;
       summaries = list;
-      const cwd = profile ? profile.defaultCwd : await homeDir();
+      // A saved machine's default folder is usually blank; every remote backend is Linux, so /tmp exists.
+      const cwd = profile ? profile.defaultCwd || '/tmp' : await homeDir();
       for (const summary of list) if (summary.adapterVersion) void check(summary.id, cwd);
     } catch (error) {
       if (!stop.signal.aborted) loadError = message(error);
