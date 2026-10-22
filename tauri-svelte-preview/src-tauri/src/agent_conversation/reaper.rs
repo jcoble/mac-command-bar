@@ -31,7 +31,7 @@ impl InstanceIdentity {
         format!("{}:{}", self.pid, self.start_time_micros)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn from_marker(value: &str) -> Option<Self> {
         let (pid, start_time_micros) = value.split_once(':')?;
         Some(Self {
@@ -192,6 +192,7 @@ fn reap_candidate_processes(
     term_grace: Duration,
 ) -> Vec<u32> {
     let process_table = all_process_snapshots();
+    let own_group = unsafe { libc::getpgrp() } as u32;
     let mut seen_groups = HashSet::new();
     let mut reaped = Vec::new();
 
@@ -199,12 +200,15 @@ fn reap_candidate_processes(
         let Some(snapshot) = process_snapshot(pid) else {
             continue;
         };
-        if snapshot.process_group_id != pid || !seen_groups.insert(pid) {
+        // Any member stands for its group, so one whose leader exited (an orphaned `cmd &`) is still found.
+        let group = snapshot.process_group_id;
+        if group == own_group || seen_groups.contains(&group) {
             continue;
         }
         let Some(marker) = read_adapter_marker(pid) else {
             continue;
         };
+        seen_groups.insert(group);
         if live_session_ids.contains(&marker.session_id)
             || !marker_has_dead_owner(&marker, &snapshot, current_instance)
         {
@@ -221,19 +225,19 @@ fn reap_candidate_processes(
 
         let group_size = process_table
             .iter()
-            .filter(|process| process.process_group_id == pid)
+            .filter(|process| process.process_group_id == group)
             .count()
             .max(1);
-        if signal_group(pid, libc::SIGTERM) {
-            wait_for_group_exit(pid, term_grace);
-            if process_group_is_alive(pid) {
-                signal_group(pid, libc::SIGKILL);
+        if signal_group(group, libc::SIGTERM) {
+            wait_for_group_exit(group, term_grace);
+            if process_group_is_alive(group) {
+                signal_group(group, libc::SIGKILL);
             }
             stderr_log!(
-                "startup adapter reaper: root pid {pid}, group size {group_size}, session {}",
+                "startup adapter reaper: group {group}, group size {group_size}, session {}",
                 marker.session_id
             );
-            reaped.push(pid);
+            reaped.push(group);
         }
     }
 
@@ -405,7 +409,22 @@ fn read_adapter_marker(pid: u32) -> Option<AdapterMarker> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+/// The same environment marker as on macOS, read from `/proc`; a background child inherits it.
+#[cfg(target_os = "linux")]
+fn read_adapter_marker(pid: u32) -> Option<AdapterMarker> {
+    let environment = fs::read(format!("/proc/{pid}/environ")).ok()?;
+    let value = |name: &str| environment.split(|byte| *byte == 0)
+        .filter_map(|entry| std::str::from_utf8(entry).ok())
+        .find_map(|entry| entry.strip_prefix(name).and_then(|value| value.strip_prefix('=')).map(str::to_string));
+    let session_id = value(SESSION_MARKER_ENV).filter(|id| !id.is_empty())?;
+    let owner = match value(OWNER_INSTANCE_ENV) {
+        Some(value) => Some(InstanceIdentity::from_marker(&value)?),
+        None => None,
+    };
+    Some(AdapterMarker { session_id, legacy: owner.is_none(), owner })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn read_adapter_marker(_pid: u32) -> Option<AdapterMarker> {
     None
 }
@@ -531,7 +550,7 @@ mod tests {
         false
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn reaper_kills_marked_group_with_dead_owner() {
         let current = current_identity();
@@ -545,6 +564,35 @@ mod tests {
 
         assert_eq!(reaped, vec![group.pid()]);
         assert!(wait_for_exit(&mut group));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_orphaned_background_child_is_reaped_on_linux() {
+        let current = current_identity();
+        let dead_owner = InstanceIdentity {
+            pid: current.pid,
+            start_time_micros: current.start_time_micros.saturating_sub(1),
+        };
+        // The shell exits at once, leaving `sleep` in a group whose leader is gone.
+        let output = Command::new("sh")
+            .args(["-c", "sleep 600 >/dev/null 2>&1 & echo $!"])
+            .env(SESSION_MARKER_ENV, "reaper-orphan")
+            .env(OWNER_INSTANCE_ENV, dead_owner.marker())
+            .process_group(0)
+            .output()
+            .expect("test shell should run");
+        let sleep: u32 = String::from_utf8_lossy(&output.stdout).trim().parse().unwrap();
+        let alive = |pid: u32| fs::read_to_string(format!("/proc/{pid}/stat"))
+            .is_ok_and(|stat| !stat.contains(") Z "));
+        assert!(alive(sleep));
+
+        let reaped = reap_candidate_processes(&[sleep], &current, &HashSet::new(), TEST_GRACE);
+
+        let gone = (0..40).any(|_| { thread::sleep(Duration::from_millis(25)); !alive(sleep) });
+        if !gone { unsafe { libc::kill(sleep as i32, libc::SIGKILL); } }
+        assert_eq!(reaped.len(), 1);
+        assert!(gone, "the orphaned sleep {sleep} is still running");
     }
 
     #[test]

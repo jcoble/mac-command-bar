@@ -109,7 +109,7 @@ fn a_worker_with_no_step_permission_starts_in_auto_under_a_starter_in_default() 
 fn yaml_agent_permission_reaches_the_role() {
     let (root, _) = yaml_fixture("agent-permission");
     let path = Path::new(".assembly/workflows/demo.yml");
-    std::fs::write(root.join(path), "name: Permissions\nsteps:\n  explicit:\n    agent: { provider: claude, permission: bypassPermissions }\n    prompt: prompts/build.md\n  omitted:\n    agent: { provider: claude }\n    prompt: prompts/build.md\n").unwrap();
+    std::fs::write(root.join(path), "name: Permissions\nsteps:\n  explicit:\n    agent: { provider: claude, permission: bypassPermissions }\n    prompt: prompts/build.md\n  omitted:\n    needs: [explicit]\n    agent: { provider: claude }\n    prompt: prompts/build.md\n").unwrap();
     let definition = WorkflowEngine::validate_file(&root, path).unwrap();
     let role = |id: &str| definition.roles.iter().find(|role| role.id == id).unwrap();
     assert_eq!(role("explicit").permission_policy.value.as_deref(), Some("bypassPermissions"));
