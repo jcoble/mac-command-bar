@@ -10,7 +10,7 @@
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { cn } from '$lib/utils.js';
   import { answerQuestion, questionState } from '../workflows/ownerInboxActions.ts';
-  import type { BoardQuestion, MachineBoard } from './boardSource.ts';
+  import { answerBoardQuestion, type BoardQuestion, type MachineBoard } from './boardSource.ts';
   import { isFoldOpen, readFolds, writeFolds } from './boardQuestionFolds.ts';
 
   interface Props {
@@ -74,6 +74,17 @@
     }
   }
 
+  /** A live session is told "Q<n>: dismissed"; an ended one can't be, so the question is only marked. */
+  async function dismiss(row: Row): Promise<void> {
+    if (!ended(row)) return send(row, 'dismissed');
+    onError('');
+    try {
+      await answerBoardQuestion(row.machine, row.q.id, row.q.asked_at_ms, 'dismissed', Date.now());
+    } catch (cause) {
+      onError(`Q${row.q.id}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  }
+
   function keydown(event: KeyboardEvent, row: Row): void {
     const text = drafts[row.id]?.trim();
     if (event.key === 'Enter' && text) void send(row, text);
@@ -123,7 +134,7 @@
                 {/if}
                 <Button size="sm" variant="secondary" disabled={locked} onclick={() => void send(row, 'no')}>No</Button>
                 <Button size="sm" variant="secondary" disabled={locked} onclick={() => void send(row, 'explain more', false)}>Explain more</Button>
-                <Button size="sm" variant="secondary" disabled={locked} onclick={() => void send(row, 'dismissed')}>Dismiss</Button>
+                <Button size="sm" variant="secondary" disabled={status.busy} onclick={() => void dismiss(row)}>Dismiss</Button>
                 <Button size="sm" variant="secondary" onclick={() => onOpenSession(q.session_owned_id)}><ExternalLink />Open</Button>
               </div>
             {/if}
