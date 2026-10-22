@@ -50,6 +50,13 @@ for (const adapter of manifest.adapters) {
   for (const file of adapter.files) {
     assert.equal(await sha256(new URL(file.path, adapterDir)), file.sha256);
   }
+  // The Codex and Claude runtimes are Deno binaries, not Bun ones.
+  for (const file of adapter.files) {
+    if (!file.path.endsWith('-acp-runtime')) continue;
+    const bytes = await readFile(new URL(file.path, adapterDir));
+    assert.ok(bytes.includes('DENO_'), `${file.path} is not a Deno binary`);
+    assert.ok(!bytes.includes('Bun v'), `${file.path} still contains the Bun runtime`);
+  }
   const initialized = await initialize(adapter);
   assert.equal(initialized.result.agentInfo.version, adapter.version);
 }
@@ -58,7 +65,8 @@ const releaseTarget = process.arch === 'arm64'
   ? 'aarch64-apple-darwin'
   : 'x86_64-apple-darwin';
 await execFileAsync(process.execPath, [
-  new URL('prepareProviderReleaseAssets.mjs', import.meta.url).pathname,
+  '--experimental-strip-types',
+  new URL('prepareProviderReleaseAssets.ts', import.meta.url).pathname,
   releaseTarget
 ]);
 const releaseDir = new URL(`../provider-release/${releaseTarget}/`, import.meta.url);
