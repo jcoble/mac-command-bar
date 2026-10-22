@@ -207,9 +207,12 @@ look for new small things.
 ## Reaching Jesse
 
 - A question for Jesse, or a blocker you can't get around, goes on the Build Board right away
-  (`board_update`), with enough context to answer without reading the chat. No answer in 20
-  minutes: send a desktop notification. Still none 10 minutes later: send a phone notification.
-  Keep working on anything that isn't blocked.
+  (`board_update`), with enough context to answer without reading the chat; the board notifies his
+  desktop. Only the main orchestrator messages his phone (`notify: true`), for anything reasonable
+  (a question, something ready to test, a blocker, a finished batch, an emergency), not for routine
+  progress; every other session posts to the Build Board, which notifies his desktop. Until he
+  answers a board question, his phone gets at most 3 of these in 30 minutes and 5 in an hour. A
+  task blocked on him goes on hold; keep working on everything else.
 - Anything he needs to stay caught up (PR ready, check failed, blocker, change from plan, refused
   action) goes on the board in the same turn. Mark questions answered when they are. Helpers
   can't post; they tell their orchestrator.

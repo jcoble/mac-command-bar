@@ -108,7 +108,7 @@ async function requestNotificationPermission(): Promise<boolean> {
   return (await plugin.requestPermission()) === 'granted';
 }
 
-const sendSystemNotification: SessionNotificationSender = async (notification) => {
+export const sendSystemNotification: SessionNotificationSender = async (notification) => {
   if (!(await notificationPermissionGranted())) return;
   const plugin = await loadNotificationPlugin();
   plugin.sendNotification(notification);

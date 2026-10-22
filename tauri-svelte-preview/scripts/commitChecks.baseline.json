@@ -13,7 +13,7 @@
     "tauri-svelte-preview/src-tauri/src/agent_conversation/attachments.rs": 704,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/manager.rs": 15756,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/mod.rs": 1418,
-    "tauri-svelte-preview/src-tauri/src/agent_conversation/phone/mod.rs": 2966,
+    "tauri-svelte-preview/src-tauri/src/agent_conversation/phone/mod.rs": 2930,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/protocol.rs": 954,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/providers/acp_client.rs": 2703,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/providers/updates.rs": 1028,
