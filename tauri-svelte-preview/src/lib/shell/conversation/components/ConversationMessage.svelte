@@ -9,6 +9,7 @@
   import { parseSafeMarkdown, type SafeInlinePart, type SafeMarkdownBlock } from '$lib/shell/conversation/conversationMessageSafety.ts';
   import { trackConversationMessageRenderer } from '$lib/shell/resourceDiagnostics.svelte.ts';
   import CodeBlock from './CodeBlock.svelte';
+  import { debugOff } from '$lib/shell/conversation/debugOff.ts';
 
   interface Props {
     text: string;
@@ -59,7 +60,8 @@
     data-testid="conversation-message-body"
     bind:this={bodyHost}
   >
-    {#each blocks as block, blockIndex}{@render node(block, blockIndex === 0)}{/each}
+    <!-- The memory hunt's `markdown` switch draws the text as it came; `code` draws code blocks as plain text. -->
+    {#if debugOff('markdown')}<p>{text}</p>{:else}{#each blocks as block, blockIndex}{@render node(block, blockIndex === 0)}{/each}{/if}
   </div>
   {#if folded}
     <div class="fold-row">
@@ -81,7 +83,8 @@
 <!-- Blocks nest: a list item can hold a list, a quote can hold anything. This
      renders one block and calls itself for whatever is underneath it. -->
 {#snippet node(block: SafeMarkdownBlock, first = false)}
-  {#if block.kind === 'code'}
+  {#if block.kind === 'code' && debugOff('code')}<pre>{block.value}</pre>
+  {:else if block.kind === 'code'}
     <CodeBlock value={block.value} info={block.language} />
   {:else if block.kind === 'heading'}
     <h3 class={`heading level-${Math.min(block.level, 4)}`} data-testid="conversation-markdown-heading">{#each block.parts as part}{@render inline(part)}{/each}</h3>

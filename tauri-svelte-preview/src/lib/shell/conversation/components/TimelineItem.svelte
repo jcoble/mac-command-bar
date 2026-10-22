@@ -20,6 +20,7 @@
   import ErrorItem from './ErrorItem.svelte';
   import CompactionItem from './CompactionItem.svelte';
   import { trackConversationTimelineItem } from '$lib/shell/resourceDiagnostics.svelte.ts';
+  import { debugOff } from '$lib/shell/conversation/debugOff.ts';
 
   interface Props {
     item: ConversationDisplayItem;
@@ -34,7 +35,9 @@
   // heading any more. It stays accepted only so the timeline that still passes
   // it keeps type-checking; the container drops it in its own pass.
   let { item, onApprovalDecision, onFileLink, onPlanOpen }: Props = $props();
-  const visible = $derived(conversationItemHasVisibleContent(item));
+  // The memory hunt's `activity` switch leaves out thinking, plan, task and compaction rows; `tool-output` the diff panels.
+  const switchedOff = $derived((debugOff('activity') && ['reasoning', 'plan', 'tasks', 'compaction'].includes(item.kind)) || (debugOff('tool-output') && item.kind === 'file'));
+  const visible = $derived(!switchedOff && conversationItemHasVisibleContent(item));
   const fileLinkProvenance = $derived(conversationFileLinkProvenance(item));
   const openFileLink = (path: string): void => onFileLink?.(path, fileLinkProvenance);
   onMount(trackConversationTimelineItem);
@@ -50,6 +53,7 @@
     {:else if item.kind === 'command'}<CommandItem {item} onFileLink={openFileLink} />
     {:else if item.kind === 'file'}<FileChangeItem {item} onFileLink={openFileLink} />
     {:else if item.kind === 'fileEdits'}<FileEditsItem {item} onFileLink={openFileLink} />
+    {:else if item.kind === 'tool' && debugOff('tools')}<div>{item.title}</div>
     {:else if item.kind === 'tool'}<ConversationToolUI itemId={item.itemId} {item} onFileLink={openFileLink} />
     {:else if item.kind === 'subagent'}<SubagentSection {item} />
     {:else if item.kind === 'approval'}<ApprovalItem {item} onDecision={onApprovalDecision} />

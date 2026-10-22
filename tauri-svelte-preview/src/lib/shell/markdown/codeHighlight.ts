@@ -17,6 +17,7 @@ export {
 
 import { hasGrammar, highlightSource, plainHighlightedLines } from './syntaxTokens.ts';
 import type { HighlightedLine } from './syntaxTokens.ts';
+import { debugOff } from '../conversation/debugOff.ts';
 
 /** Anything longer than this stays plain: colouring it costs more than it helps. */
 const MAX_HIGHLIGHT_CHARS = 40_000;
@@ -103,7 +104,7 @@ export function fenceLanguage(info: string): string {
  * plain rendering.
  */
 export function highlightCode(value: string, language: string): HighlightedLine[] {
-  if (!hasGrammar(language) || value.length > MAX_HIGHLIGHT_CHARS) {
+  if (debugOff('code') || !hasGrammar(language) || value.length > MAX_HIGHLIGHT_CHARS) {
     return plainHighlightedLines(value);
   }
   const key = `${language}\n${value}`;

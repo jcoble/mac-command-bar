@@ -31,6 +31,9 @@ const tailwindHasPattern = /\b(?:(?:group|peer)-)?has-(?:\[[^\]\r\n]+\]|[A-Za-z]
 const endlessAnimationPattern = /\banimation(?:-iteration-count)?(?:\|important)?\s*(?::|=\s*\{?\s*["'`]?)(?:[^;{}"'`<>]|\{[^{}"'`<>]*\}|(["'])[\w-]*\1)*?(?<![\w-])infinite(?![\w-])|\banimate-(?:spin|pulse|ping|bounce)\b/gi;
 
 const allowedHits = new Set([
+  // The memory hunt's measured run (TSK-1299) waits between chat switches; the page's signal ends the wait.
+  "src/lib/shell/conversation/debugOff.ts:setTimeout:await new Promise<void>((resolve) => { const timer = setTimeout(resolve, ms); signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); });",
+  "src/lib/shell/conversation/debugOff.ts:new Promise:await new Promise<void>((resolve) => { const timer = setTimeout(resolve, ms); signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); });",
   'src/lib/shell/components/UtilityStrip.svelte:setInterval:const refreshInterval = window.setInterval(() => {',
   'src/lib/shell/components/UtilityStrip.svelte:clearInterval:window.clearInterval(refreshInterval);',
   // One fifteen-second interval for every rail row's age label; it skips hidden windows and unmounting clears it.

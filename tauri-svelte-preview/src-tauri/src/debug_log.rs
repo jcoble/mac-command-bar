@@ -67,6 +67,28 @@ fn open_file_mirror(path: &PathBuf) -> io::Result<File> {
     OpenOptions::new().create(true).append(true).open(path)
 }
 
+/// The memory hunt's switches (TSK-1299), read from the environment the app was started with:
+/// `ASSEMBLY_DEBUG_OFF` names the chat parts to leave out, `ASSEMBLY_DEBUG_SWITCH_SESSIONS` the chats
+/// to switch between. A `mark` goes to the backend log, where the measuring script waits for it.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DebugOff {
+    off: String,
+    switch_sessions: String,
+}
+
+#[tauri::command]
+pub(crate) fn debug_off(mark: Option<String>) -> DebugOff {
+    if let Some(mark) = mark {
+        stderr_log!("assembly-debug: {mark}");
+    }
+    let read = |name| std::env::var(name).unwrap_or_default();
+    DebugOff {
+        off: read("ASSEMBLY_DEBUG_OFF"),
+        switch_sessions: read("ASSEMBLY_DEBUG_SWITCH_SESSIONS"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{install_file_mirror, write_line, write_line_to, MAX_LOG_BYTES};
@@ -140,5 +162,18 @@ mod tests {
         );
         assert!(fs::metadata(&path).unwrap().len() < MAX_LOG_BYTES);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn debug_off_returns_the_memory_hunt_switches_from_the_environment() {
+        std::env::set_var("ASSEMBLY_DEBUG_OFF", "tools,markdown");
+        std::env::set_var("ASSEMBLY_DEBUG_SWITCH_SESSIONS", "a1,b2");
+        let read = super::debug_off(Some("ready".to_string()));
+        assert_eq!(read.off, "tools,markdown");
+        assert_eq!(read.switch_sessions, "a1,b2");
+        std::env::remove_var("ASSEMBLY_DEBUG_OFF");
+        std::env::remove_var("ASSEMBLY_DEBUG_SWITCH_SESSIONS");
+        let read = super::debug_off(None);
+        assert_eq!((read.off.as_str(), read.switch_sessions.as_str()), ("", ""));
     }
 }

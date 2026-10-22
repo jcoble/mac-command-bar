@@ -37,7 +37,7 @@
 	import PullRequestWorkspace from "$lib/shell/git/github/PullRequestWorkspace.svelte";
 	import RightPanel from "$lib/shell/components/RightPanel.svelte";
 	import RightPanelTabs from "$lib/shell/components/RightPanelTabs.svelte";
-	import { registerSessionRowJumpTarget } from "$lib/shell/components/sessionRowJump.ts";
+	import { registerSessionRowJumpTarget } from "$lib/shell/components/sessionRowJump.ts"; import { loadDebugOff, runDebugSwitches } from "$lib/shell/conversation/debugOff.ts";
 	import SessionsColumn from "$lib/shell/components/SessionsColumn.svelte";
 	import ShellFrame from "$lib/shell/components/ShellFrame.svelte";
 	import ShellOverlays from "$lib/shell/components/ShellOverlays.svelte";
@@ -419,14 +419,14 @@
 	 * the app, and every one after while the page lives. Links wait for the
 	 * first session so a launch link is not replaced by the restored session. */
 	async function startShellThenListenForLinks(signal: AbortSignal): Promise<void> {
-		await startShell({
+		await loadDebugOff(); await startShell({
 			onSelectInitial: async (ownedId, stopSignal) => {
 				if (stopSignal.aborted) return;
 				await selectSession(ownedId);
 				if (stopSignal.aborted) return;
 			},
 		});
-		if (signal.aborted || !isTauriRuntime()) return;
+		if (signal.aborted || !isTauriRuntime()) return; void runDebugSwitches(selectSession, signal);
 		try {
 			const { getCurrent, onOpenUrl } = await import("@tauri-apps/plugin-deep-link");
 			if (signal.aborted) return;

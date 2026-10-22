@@ -18,6 +18,7 @@
   import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
   import { readAgentConversationToolCallFromTauri } from '$lib/tauriSource.ts';
   import { highlightCode, languageForPath } from '../../markdown/codeHighlight.ts';
+  import { debugOff } from '$lib/shell/conversation/debugOff.ts';
 
   const disclosure = getContext<ConversationDisclosureContext>(conversationDisclosureContext);
 
@@ -26,7 +27,8 @@
     onFileLink?(path: string): void;
   } = $props();
 
-  const detailsOpen = $derived(disclosure?.get(`${item.itemId}:details`) ?? false);
+  // The memory hunt's `tool-output` switch keeps every row closed, so no output or diff panel mounts.
+  const detailsOpen = $derived(!debugOff('tool-output') && (disclosure?.get(`${item.itemId}:details`) ?? false));
   /* A closed row shows one line, so the full input and output are formatted only once it opens. */
   const rawInput = $derived(item.metadata?.rawInput ?? (item.toolKind === 'command' ? item.summary : undefined));
   const hasOutput = $derived(!!item.output && item.output !== item.diff && /\S/.test(item.output));

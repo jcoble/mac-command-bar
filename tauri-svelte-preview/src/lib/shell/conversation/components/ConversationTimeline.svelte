@@ -25,7 +25,7 @@
   import TurnFileCard from './TurnFileCard.svelte';
   import PendingFirstMessage from './PendingFirstMessage.svelte';
   import WorkingSpinner from '../../components/feedback/WorkingSpinner.svelte';
-
+  import { debugOff } from '$lib/shell/conversation/debugOff.ts';
   interface Props {
     items: readonly ConversationDisplayItem[];
     conversationId: string;
@@ -228,8 +228,8 @@
     if (row) $virtualizer.scrollToOffset(row.start + top - kept.start);
   }
 
-  function atEnd(): boolean { return $virtualizer.isAtEnd(80); }
-  function scrollToEnd(): void { $virtualizer.scrollToEnd(); }
+  function atEnd(): boolean { return debugOff('virtual') && host ? host.scrollHeight - host.scrollTop - host.clientHeight <= 80 : $virtualizer.isAtEnd(80); }
+  function scrollToEnd(): void { if (debugOff('virtual') && host) host.scrollTop = host.scrollHeight; else $virtualizer.scrollToEnd(); }
   function positionRow(key: string, offsetPx: number, behavior: ScrollBehavior = 'auto'): boolean {
     const index = rows.findIndex((row) => row.key === key);
     if (index < 0) return false;
@@ -238,8 +238,8 @@
     return true;
   }
   function measureRow(node: HTMLDivElement) {
-    $virtualizer.measureElement(node);
-    return { destroy() { $virtualizer.measureElement(null); } };
+    if (!debugOff('virtual')) $virtualizer.measureElement(node);
+    return { destroy() { if (!debugOff('virtual')) $virtualizer.measureElement(null); } };
   }
 
   setContext<ConversationDisclosureContext>(conversationDisclosureContext, {
@@ -691,7 +691,7 @@
 
 </script>
 
-<div class="timeline-wrap" data-testid="conversation-timeline-wrap" style={`--composer-height:${composerHeight}px`}>
+<div class="timeline-wrap" class:debug-off-effects={debugOff('effects')} class:debug-off-icons={debugOff('icons')} data-testid="conversation-timeline-wrap" style={`--composer-height:${composerHeight}px`}>
   {#if pageError}<p role="alert" class="px-2 py-2 text-sm text-muted-foreground">{pageError}</p>{/if}
   {#if download?.phase === 'error'}<p role="alert" class="px-2 py-2 text-sm text-muted-foreground">History download stopped: {download.error}</p>{/if}
   {#if loadingOlder}<p class="older-loading" data-testid="conversation-older-loading" role="status"><WorkingSpinner size={12} />Loading earlier messages</p>
@@ -700,11 +700,11 @@
     {#if renderedItems.length === 0}
       {#if pendingFirstMessage}<PendingFirstMessage text={pendingFirstMessage} seed={conversationId} />{:else}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
     {/if}
-    <div class="timeline-list" data-testid="conversation-timeline-list" style:height={`${totalSize}px`}>
-      {#each virtualRows as virtualRow (virtualRow.key)}
+    <div class="timeline-list" class:static-rows={debugOff('virtual')} data-testid="conversation-timeline-list" style:height={debugOff('virtual') ? undefined : `${totalSize}px`}>
+      {#each debugOff('virtual') ? rows.map((row, index) => ({ key: row.key, index, start: 0 })) : virtualRows as virtualRow (virtualRow.key)}
         {@const row = rows[virtualRow.index]}
           <div class="turn-row" data-index={virtualRow.index} style:top={`${virtualRow.start}px`} use:measureRow class:compact-tool={row.item?.kind === 'tool' || !!row.run} data-row-key={row.key} data-anchor-item-id={row.anchorItemId} data-turn-id={row.group?.turnId} data-testid="conversation-timeline-row">
-            {#if row.run}
+            {#if row.run && debugOff('tools')}<div>{row.run.summary}</div>{:else if row.run}
               <button class="run-header" data-run-id={row.run.itemId} type="button" aria-expanded={runOpen(row.run)} onclick={() => toggleRun(row.run!)}>
                 <span class="run-icon" aria-hidden="true">
                   {#if row.run.icon === 'pencil'}<Pencil size={13} />
@@ -737,7 +737,7 @@
             {/if}
             {#if row.item}<TimelineItem item={row.item} {assistantLabel} {onApprovalDecision} {onFileLink} {onPlanOpen} />{/if}
             {#if row.edit}<TurnFileCard path={row.edit.path} added={row.edit.added} removed={row.edit.removed} onReview={onFileLink} />{/if}
-            {#if row.activity && activityLabel}<div class="working-row" data-testid="conversation-working-indicator" role="status"><WorkingSpinner seed={conversationId} /><span>{activityLabel}…</span></div>
+            {#if row.activity && debugOff('activity')}{:else if row.activity && activityLabel}<div class="working-row" data-testid="conversation-working-indicator" role="status"><WorkingSpinner seed={conversationId} /><span>{activityLabel}…</span></div>
             {:else if row.activity && backgroundWork?.length}
               <div class="working-row background-row" data-testid="conversation-background-work" role="group" aria-label="Running in the background" use:backgroundClock>
                 <WorkingSpinner seed={conversationId} />
@@ -763,7 +763,7 @@
 </div>
 
 <style>
-  .timeline-wrap{position:relative;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow:hidden}
+  .timeline-wrap{position:relative;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow:hidden} /* Memory hunt switches (debugOff.ts). */ .debug-off-effects :global(*),.debug-off-effects :global(*::before),.debug-off-effects :global(*::after){box-shadow:none!important;text-shadow:none!important;filter:none!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important;transition:none!important;animation:none!important} .debug-off-icons :global(svg),.debug-off-icons :global(img){display:none!important}
   .older-loading{position:absolute;top:calc(var(--center-head-height, 0px) + 6px);left:0;right:0;z-index:2;display:flex;align-items:center;justify-content:center;gap:6px;margin:0;font-size:12px;color:var(--color-text-2);pointer-events:none;animation:older-appear 1ms 300ms backwards}
   /* Sits over the rows, so it carries its own face to stay readable. */
   .download-line{padding:2px 8px;border-radius:999px;background:var(--color-elevated)}
@@ -772,7 +772,7 @@
   .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:none;padding:0 28px;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
   .timeline-list{flex:none;position:relative;width:min(820px,100%);min-height:1px;margin:0 auto}
   .turn-row{position:absolute;top:0;left:0;display:flex;flex-direction:column;gap:12px;width:100%;padding-bottom:12px}
-  .turn-row.compact-tool{gap:0;padding-bottom:6px}
+  .turn-row.compact-tool{gap:0;padding-bottom:6px} .static-rows .turn-row{position:relative}
   .work-summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 16px;border-top:1px solid var(--color-border);padding-top:12px;color:var(--color-text-2);font-size:13px}
   .work-duration{flex:none;font-variant-numeric:tabular-nums}
   .work-toggle{flex:1;margin:-3px -6px}
