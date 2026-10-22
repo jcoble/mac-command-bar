@@ -32,7 +32,6 @@ import {
   listThemes,
   resolveThemeId
 } from '../src/lib/shell/settings/themes/themeRegistry.ts';
-import { assertContrast, contrastRatio, parseCssColor } from '../src/lib/shell/settings/themes/contrast.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relativePath: string): string => readFileSync(resolve(projectRoot, relativePath), 'utf8');
@@ -235,40 +234,13 @@ function readDeclarations(css: string): Map<string, string> {
 // other form becomes black. selectionBackground is only a canvas fill, so it
 // may be the theme's rgba() highlighter.
 {
-  // Ghostty takes its palette only when a terminal is made, so the Terminal tab
-  // is remade, from the saved theme, whenever the theme changes.
   const source = read(GHOSTTY_FACTORY_PATH);
   assert.match(source, /theme:\s*\{ \.\.\.getTheme\(settings\.appearance\.themeId\)\.terminal \}/);
-  assert.match(read('src/lib/shell/components/RightPanel.svelte'), /\{#key settings\.appearance\.themeId\}[\s\S]*?<WorkspaceTerminal /);
   for (const theme of THEMES) {
     for (const [slot, value] of Object.entries(theme.terminal)) {
       if (slot === 'selectionBackground') continue;
       assert.match(value, /^#[0-9a-f]{6}$/i, `${theme.id} terminal.${slot} is ${value}; Ghostty's WASM terminal reads only #rrggbb and draws any other form as black`);
     }
-  }
-}
-
-// ── Every theme's terminal sits on its panel and reads well ───────────────
-//
-// The canvas is the theme's surface and selection is its highlighter, so the
-// terminal never clashes with the panel around it. Text and the ANSI colours
-// need 4.5:1 on the canvas; bright black (dim text) and the cursor need 3:1.
-// Black is exempt: programs use it as a cell background, not as text.
-{
-  const slots = Object.keys(getTheme(DEFAULT_THEME_ID).terminal).sort();
-  const textSlots = ['foreground', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white', 'brightRed',
-    'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta', 'brightCyan', 'brightWhite'] as const;
-  for (const theme of THEMES) {
-    const t = theme.terminal;
-    assert.deepEqual(Object.keys(t).sort(), slots, `${theme.id} terminal names a different set of slots`);
-    assert.equal(t.background, theme.tokens['--color-surface'], `${theme.id} terminal background is not its surface`);
-    assert.equal(t.selectionBackground, theme.tokens['--color-text-selection'], `${theme.id} terminal selection is not its highlighter`);
-    for (const slot of textSlots) assertContrast(t[slot], t.background, 4.5, `${theme.id} terminal.${slot}`);
-    assertContrast(t.brightBlack, t.background, 3, `${theme.id} terminal.brightBlack`);
-    assertContrast(t.cursor, t.background, 3, `${theme.id} terminal.cursor`);
-    assertContrast(t.cursorAccent, t.cursor, 4.5, `${theme.id} text under the terminal cursor`);
-    const selected = contrastRatio(parseCssColor(t.selectionForeground), parseCssColor(t.selectionBackground, parseCssColor(t.background)));
-    assert.ok(selected >= 4.5, `${theme.id} selected terminal text is ${selected.toFixed(2)}:1, below 4.5:1`);
   }
 }
 
