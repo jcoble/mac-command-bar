@@ -22,6 +22,21 @@ impl SessionStore {
             .optional()
             .map_err(|error| StoreError::sqlite("could not find the session for that conversation", error))
     }
+
+    /// The local session (helpers and workflow steps included) holding this provider
+    /// conversation, for records that carry only the provider's id.
+    pub fn owned_id_for_native_session(&self, native_session_id: &str) -> Result<Option<String>> {
+        self.lock()?
+            .query_row(
+                "SELECT owned_id FROM sessions
+                 WHERE native_session_id = ?1 AND cached_remote_profile_id IS NULL
+                 ORDER BY last_activity_at DESC, owned_id ASC LIMIT 1",
+                params![native_session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| StoreError::sqlite("could not find the session for that conversation", error))
+    }
 }
 
 #[cfg(test)]
@@ -63,5 +78,15 @@ mod tests {
             "UPDATE sessions SET created_at = 'unreadable' WHERE owned_id = 'other-native'", [],
         ).unwrap();
         assert_eq!(store.session_for_native_id("claude", "native-1").unwrap().unwrap().owned_id, "newer");
+    }
+
+    #[test]
+    fn owned_id_for_native_session_includes_child_sessions_but_not_cached_remote_rows() {
+        let store = store();
+        let found = |native: &str| store.owned_id_for_native_session(native).unwrap();
+        assert_eq!(found("native-1").as_deref(), Some("other-provider"), "the most recently active row wins");
+        assert_eq!(found("native-4").as_deref(), Some("child"));
+        assert_eq!(found("native-3"), None, "a cached remote row is not a local session");
+        assert_eq!(found("missing"), None);
     }
 }
