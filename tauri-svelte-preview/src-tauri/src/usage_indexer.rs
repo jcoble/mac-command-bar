@@ -29,7 +29,7 @@ impl UsageIndexer {
         source_key: &str,
     ) -> Result<usize, String> {
         let db = UsageDb::open(&self.database_path)?;
-        let rebuild = db.start_claude_history_rebuild()? && source_kind == "claude-jsonl";
+        let rebuild = db.start_history_rebuild()?.contains(&source_kind);
         let count = ingest_source(
             &db,
             path,
@@ -41,7 +41,7 @@ impl UsageIndexer {
             rebuild,
         )?;
         if rebuild {
-            db.finish_claude_history_rebuild()?;
+            db.finish_history_rebuild()?;
         }
         db.rebuild_daily_rollups()?;
         Ok(count.unwrap_or_default())
@@ -52,10 +52,10 @@ impl UsageIndexer {
     /// a very large transcript cannot turn into an oversized SQLite command.
     pub fn ingest_local_sources(&self) -> Result<usize, String> {
         let db = UsageDb::open(&self.database_path)?;
-        let rebuild_claude = db.start_claude_history_rebuild()?;
+        let rebuild_kinds = db.start_history_rebuild()?;
         let cursors = db.read_source_cursors()?;
         let mut count = 0_usize;
-        let mut rollups_dirty = rebuild_claude;
+        let mut rollups_dirty = !rebuild_kinds.is_empty();
         let ingest_result = (|| -> Result<(), String> {
             for source in discover_local_usage_sources() {
                 let source_key = source.path.to_string_lossy().to_string();
@@ -73,7 +73,7 @@ impl UsageIndexer {
                     &source.provider_instance_id,
                     &source.source_kind,
                     &source_key,
-                    rebuild_claude && source.source_kind == "claude-jsonl",
+                    rebuild_kinds.contains(&source.source_kind.as_str()),
                 )?
                 else {
                     continue;
@@ -83,8 +83,8 @@ impl UsageIndexer {
                     rollups_dirty = true;
                 }
             }
-            if rebuild_claude {
-                db.finish_claude_history_rebuild()?;
+            if !rebuild_kinds.is_empty() {
+                db.finish_history_rebuild()?;
             }
             Ok(())
         })();
@@ -105,7 +105,7 @@ impl UsageIndexer {
 }
 
 /// Reads one source's new lines and stores their events with its cursor;
-/// `None` means nothing changed. During the Claude history rebuild the
+/// `None` means nothing changed. During a history rebuild the
 /// transcript is read from the start, and its old rows are deleted only once
 /// the replacement events are in hand, so an unreadable file keeps its history.
 #[allow(clippy::too_many_arguments)]
@@ -120,7 +120,7 @@ fn ingest_source(
     rebuild: bool,
 ) -> Result<Option<usize>, String> {
     let cursor = cursor.filter(|_| !rebuild);
-    let source = read_incremental_jsonl(
+    let mut source = read_incremental_jsonl(
         path,
         cursor,
         provider,
@@ -136,9 +136,10 @@ fn ingest_source(
         source_kind,
         source_key,
         &context,
+        &mut source.next_cursor.last_event_id,
     );
     if rebuild {
-        db.delete_claude_source_events(&source.next_cursor.source_key)?;
+        db.delete_source_events(source_kind, &source.next_cursor.source_key)?;
     } else if events.is_empty() && cursor == Some(&source.next_cursor) {
         return Ok(None);
     }
@@ -147,44 +148,47 @@ fn ingest_source(
 }
 
 /// Claude rows used to be keyed by transcript line, so a message written over
-/// several lines was counted once per line. Until one indexing pass has
-/// re-read every Claude transcript still on disk under the message key
-/// (`user_version` 1), each one replaces its old rows. Rows whose transcript
-/// is gone cannot be re-read and are kept.
+/// several lines was counted once per line (fixed at `user_version` 1), and
+/// Codex rows counted each repeat of an unchanged token_count total (fixed at
+/// `user_version` 2). Until one indexing pass has re-read every such
+/// transcript still on disk, each one replaces its old rows. Rows whose
+/// transcript is gone cannot be re-read and are kept.
 impl UsageDb {
-    /// Reports whether the rebuild is still pending. While it is, a
+    /// Returns the source kinds still to rebuild. While any are, a
     /// temporary index on `source_key` keeps each transcript's delete from
     /// scanning the whole table.
-    fn start_claude_history_rebuild(&self) -> Result<bool, String> {
+    fn start_history_rebuild(&self) -> Result<&'static [&'static str], String> {
         let connection = self.connection()?;
         let version = connection
             .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .map_err(|error| self.database_error("could not read usage schema version", error))?;
-        if version >= 1 {
-            return Ok(false);
-        }
+        let kinds: &'static [&'static str] = match version {
+            0 => &["claude-jsonl", "codex-jsonl"],
+            1 => &["codex-jsonl"],
+            _ => return Ok(&[]),
+        };
         connection
             .execute_batch("CREATE INDEX IF NOT EXISTS usage_events_rebuild_source_idx ON usage_events (source_key);")
-            .map_err(|error| self.database_error("could not start Claude history rebuild", error))?;
-        Ok(true)
+            .map_err(|error| self.database_error("could not start usage history rebuild", error))?;
+        Ok(kinds)
     }
 
-    fn delete_claude_source_events(&self, source_key: &str) -> Result<(), String> {
+    fn delete_source_events(&self, source_kind: &str, source_key: &str) -> Result<(), String> {
         self.connection()?
             .execute(
                 "DELETE FROM usage_events WHERE source_kind = ?1 AND source_key = ?2",
-                ["claude-jsonl", source_key],
+                [source_kind, source_key],
             )
             .map(|_| ())
-            .map_err(|error| self.database_error("could not clear Claude usage history", error))
+            .map_err(|error| self.database_error("could not clear usage history", error))
     }
 
-    fn finish_claude_history_rebuild(&self) -> Result<(), String> {
+    fn finish_history_rebuild(&self) -> Result<(), String> {
         self.connection()?
             .execute_batch(
-                "DROP INDEX IF EXISTS usage_events_rebuild_source_idx;\nPRAGMA user_version = 1;",
+                "DROP INDEX IF EXISTS usage_events_rebuild_source_idx;\nPRAGMA user_version = 2;",
             )
-            .map_err(|error| self.database_error("could not finish Claude history rebuild", error))
+            .map_err(|error| self.database_error("could not finish usage history rebuild", error))
     }
 }
 
@@ -194,6 +198,7 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
+    mod codex;
 
     #[test]
     fn fixture_jsonl_is_indexed_incrementally_with_non_zero_totals() {

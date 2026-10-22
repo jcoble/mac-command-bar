@@ -10,6 +10,7 @@ fn claude_jsonl_usage_records_become_non_zero_events() {
         "claude-jsonl",
         "/tmp/session.jsonl",
         &UsageSourceContext::default(),
+        &mut None,
     );
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].input_tokens, 12);
@@ -38,6 +39,7 @@ fn parse_claude(lines: &[String]) -> Vec<UsageEvent> {
         "claude-jsonl",
         "/tmp/session.jsonl",
         &UsageSourceContext::default(),
+        &mut None,
     )
 }
 
