@@ -805,7 +805,7 @@ function toolKindOf(...values: unknown[]): ConversationToolKind {
 
 function toolKindForAgentItem(item: AgentItem): ConversationToolKind {
   const metadata = item.providerMetadata;
-  const explicit = toolKindOf(
+  const explicit = toolKindOf(item.type,
     metadata?.toolKind,
     metadata?.kind,
     metadata?.nativeType,
@@ -815,8 +815,6 @@ function toolKindForAgentItem(item: AgentItem): ConversationToolKind {
   if (explicit !== 'tool') return explicit;
   if (typeof metadata?.diff === 'string' && metadata.diff.trim()) return 'file-edit';
   switch (item.type) {
-    case 'command': return 'command';
-    case 'file-change': return 'file-edit';
     case 'web-search': return 'search';
     case 'image-view': return 'fetch';
     default: return 'tool';
@@ -829,8 +827,10 @@ function payloadHasFileChange(payload: StringRecord): boolean {
 }
 
 function toolKindForPayload(payload: StringRecord, payloadKind: string): ConversationToolKind {
+  const kind = toolKindOf(payload.toolKind, payload.nativeType, payload.category, payload.type, payload.kind, payload.name);
+  if (kind === 'command') return kind;
   if (payloadKind === 'turnDiff' || payloadHasFileChange(payload)) return 'file-edit';
-  return toolKindOf(payload.toolKind, payload.nativeType, payload.category, payload.type, payload.kind, payload.name);
+  return kind;
 }
 
 function toolTitleOf(value: unknown): string | null {
@@ -1105,7 +1105,7 @@ function sameDisplayItem(left: ConversationDisplayItem, right: ConversationDispl
         rightRecord[key] as Readonly<Record<string, unknown>> | undefined
       );
     }
-    return Object.is(leftRecord[key], rightRecord[key]);
+    return Object.is(leftRecord[key], rightRecord[key]) || (key === 'steps' && left.kind === 'plan' && right.kind === 'plan' && samePlanSteps(left.steps, right.steps));
   });
 }
 
@@ -1258,7 +1258,7 @@ export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
 
   const payloadKind = normalizedPayloadKind(payload);
   if (payloadKind === 'permissionRequest' || payloadKind === 'approval') return null;
-  if (payloadKind === 'connection' || payloadKind === 'turn' || payloadKind === 'usage') return null;
+  if (payloadKind === 'connection' || payloadKind === 'turn' || payloadKind === 'usage' || payloadKind === 'sessionCompleted') return null;
   // A sub-agent's progress belongs to the agent tree, which reads it from the
   // session's children. As a transcript row it had nothing to show.
   if (payloadKind === 'childUpdate') return null;

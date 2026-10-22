@@ -25,6 +25,7 @@ import {
   isGitFileDeleted,
   isGitFileStaged
 } from '../../gitPanelStore.svelte.ts';
+import { revealDisabledReason } from '../../../../workspacePaths.ts';
 
 export type SourceControlFileActionId =
   | 'view'
@@ -108,6 +109,6 @@ export function sourceControlFileActions(
     action('copy-path', 'Copy path', noRoot),
     action('copy-relative-path', 'Copy relative path', null),
     action('open-in-editor', 'Open in editor', noRoot ?? gone ?? cannotOpenInEditor),
-    action('reveal-in-finder', 'Reveal in Finder', noRoot ?? gone)
+    action('reveal-in-finder', 'Reveal in Finder', noRoot ?? gone ?? revealDisabledReason(root))
   ];
 }

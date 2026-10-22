@@ -23,6 +23,7 @@ use crate::terminal::{TerminalOutputFrame, TerminalScrollbackSnapshot, TerminalS
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(super) enum ClientFrame {
+    Authenticate { proof: String },
     Request { id: u64, command: RemoteCommand },
     Cancel { id: u64 },
     Resume { cursors: BTreeMap<String, i64> },
@@ -47,7 +48,7 @@ pub(in crate::agent_conversation) enum RemoteCommand {
     },
     ExtendImport { owned_id: String },
     /// Past provider sessions this machine's scanner finds, or one transcript's details when `log_path` is set.
-    ScanTranscripts { log_path: Option<String> },
+    ScanTranscripts { log_path: Option<String>, project_roots: Vec<String> },
     /// Names a transcript on this machine as a session here, filed under the desktop's project, and reads its newest page.
     BeginImport { provider: AgentConversationProvider, native_session_id: String, transcript_path: String, cwd: String,
         title: Option<String>, project_id: Option<String> },
@@ -143,7 +144,7 @@ pub(in crate::agent_conversation) enum RemoteCommand {
 pub(in crate::agent_conversation) enum RemoteResponse {
     Workspace(serde_json::Value),
     Sessions(Vec<AgentConversationSessionRecord>),
-    Transcripts(Vec<mcb_core::scanners::sessions::AgentSessionRecord>),
+    Transcripts { sessions: Vec<mcb_core::scanners::sessions::AgentSessionRecord>, common_dirs: BTreeMap<String, String> },
     ProviderUpdates(crate::agent_conversation::providers::updates::ProviderUpdateStatus),
     Restarting,
     Connection(AgentConversationConnection),
@@ -178,7 +179,7 @@ pub(super) enum ServerFrame {
         #[serde(deserialize_with = "deserialize_wire_payload")] snapshot: AgentConversationSnapshot },
     HistoryDownloadChunk { id: u64, owned_id: String, oldest_sequence: i64, covered_bytes: u64, gzip_base64: String },
     HistoryDownloadDone { id: u64, owned_id: String },
-    Ready { protocol_version: u16 },
+    Ready { protocol_version: u16, proof: String, challenge: String },
     MessagesChanged,
     ReplayStart { owned_id: String },
     ReplayComplete { owned_id: String, head: i64, #[serde(deserialize_with = "deserialize_wire_payload")] snapshot: AgentConversationSnapshot },
@@ -197,10 +198,16 @@ pub(super) fn encode_history_chunk(events: &[AgentConversationEvent]) -> Result<
     Ok(BASE64.encode(encoder.finish().map_err(|error| error.to_string())?))
 }
 
+/// A chunk holds about 512 KiB of saved events plus one more row (`HISTORY_DOWNLOAD_CHUNK_BYTES`), and the
+/// largest saved row on a busy machine is about 1 MiB, so 64 MiB fits every real chunk with room to spare.
+/// Past it the backend is trying to run this Mac out of memory with a small, highly compressed frame.
+const MAX_HISTORY_CHUNK_JSON_BYTES: u64 = 64 * 1024 * 1024;
+
 pub(super) fn decode_history_chunk(gzip_base64: &str) -> Result<Vec<AgentConversationEvent>, String> {
     let bytes = BASE64.decode(gzip_base64).map_err(|error| error.to_string())?;
     let mut json = Vec::new();
-    flate2::read::GzDecoder::new(bytes.as_slice()).read_to_end(&mut json).map_err(|error| error.to_string())?;
+    flate2::read::GzDecoder::new(bytes.as_slice()).take(MAX_HISTORY_CHUNK_JSON_BYTES + 1).read_to_end(&mut json).map_err(|error| error.to_string())?;
+    if json.len() as u64 > MAX_HISTORY_CHUNK_JSON_BYTES { return Err("A history chunk from the remote machine is too large to unpack".into()); }
     serde_json::from_slice(&json).map_err(|error| error.to_string())
 }
 
@@ -248,3 +255,26 @@ pub(super) fn encode_server_frame(frame: &ServerFrame) -> Result<String, String>
         _ => Err(message),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_history_chunk_that_unpacks_past_the_limit_is_refused() {
+        // A few hundred KiB of gzip that would unpack to just over the limit.
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        let zeros = vec![b'0'; 1024 * 1024];
+        for _ in 0..=MAX_HISTORY_CHUNK_JSON_BYTES / zeros.len() as u64 { encoder.write_all(&zeros).unwrap(); }
+        let bomb = BASE64.encode(encoder.finish().unwrap());
+        assert!(bomb.len() < 1024 * 1024);
+        assert!(decode_history_chunk(&bomb).unwrap_err().contains("too large"));
+        assert_eq!(decode_history_chunk(&encode_history_chunk(&[]).unwrap()).unwrap(), Vec::new());
+    }
+}
+
+// Regression tests for connecting, reconnecting and catching up over these frames. They live
+// beside the frames because remote/mod.rs is at its size ceiling.
+#[cfg(test)]
+#[path = "connection_pin_tests.rs"]
+mod connection_pin_tests;

@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { compileModule } from 'svelte/compiler';
 import { get } from 'svelte/store';
+import { normalizeProvider } from '../src/lib/shell/ownedSessions.ts';
 import { EventType, StreamProcessor, type StreamChunk } from '@tanstack/ai/client';
 import { shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
 import { conversationChunksFromEvent, conversationDisplayItems, conversationMessagesAfterCustom, conversationMessagesFromEvents, conversationSnapshotChunks } from '../src/lib/shell/conversation/conversationMessages.ts';
@@ -42,9 +43,7 @@ const storePath = fileURLToPath(
 const outputPath = fileURLToPath(
   new URL('../src/lib/shell/conversation/.conversationStore.test.mjs', import.meta.url)
 );
-// The store imports the runes module that holds the resource counters. Node
-// cannot run that file as written, so it is compiled beside it and the store's
-// import is pointed at the compiled copy.
+// Compile the resource-counter runes module and point the store at that copy.
 const diagnosticsPath = fileURLToPath(
   new URL('../src/lib/shell/resourceDiagnostics.svelte.ts', import.meta.url)
 );
@@ -70,7 +69,8 @@ writeFileSync(
   compileForTest(diagnosticsPath, 'resourceDiagnostics.svelte.js')
 );
 
-let store;
+globalThis.$state = (value) => value;
+export let store;
 try {
   store = await import(`${outputPath}?test=${Date.now()}`);
 } finally {
@@ -651,7 +651,7 @@ test('history gaps withhold live content and admitted messages stay retained', a
     source.indexOf('function enqueueFactory('), source.indexOf('function resetReady(')
   );
   const enqueueFactory = Function(
-    'conversationChunksFromEvent', 'recordLiveMessages', 'EventType',
+    'conversationChunksFromEvent', 'recordLiveMessages', 'EventType', 'takeStreamItem',
     `${stripTypeScriptTypes(enqueueBlock, { mode: 'strip' })}\nreturn enqueueFactory;`
   )(
     (_messages: unknown[], nativeEvent: AgentConversationEvent) => [{
@@ -660,7 +660,7 @@ test('history gaps withhold live content and admitted messages stay retained', a
       delta: nativeEvent.payload.delta
     }],
     () => undefined,
-    EventType
+    EventType, (items: unknown[]) => items.shift()
   );
   const controller = new AbortController();
   const queued = enqueueFactory(controller.signal, { chat: { messages: [] }, pendingSend: null });
@@ -962,7 +962,7 @@ test('remote reconnect reacquires only the still-selected child watch', async ()
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
   const block = source.slice(
     source.indexOf('async function reacquireSelectedChildHistory('),
-    source.indexOf('async function handleConversationStreamEnvelope(')
+    source.indexOf('function handleConversationStreamEnvelope(')
   );
   const read = {
     workspaceOwnedId: 'parent', ownedId: 'opaque-child', abortController: new AbortController(),
@@ -1090,7 +1090,7 @@ await test('start-up registers the event stream before it opens the remembered s
 await test('ensure refresh requires the confirmed generation before admitting cached history', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
   const reload = source.slice(source.indexOf('async function reloadSelectedConversation('), source.indexOf('export async function subscribeSelectedConversation('));
-  const ensure = source.slice(source.indexOf('async function ensureStructuredConversationOnce('), source.indexOf('/** Changes a quiescent Codex session'));
+  const ensure = source.slice(source.indexOf('async function ensureStructuredConversationOnce('), source.indexOf('/** Changes a quiescent session'));
   const ownedId = 'ensured-generation';
   for (const priorMinimum of [undefined, 3]) {
     const state = { generation: 0 };
@@ -1314,7 +1314,7 @@ await test('an admitted send returns the native receipt', async () => {
 
 test('file notifications and runtime state do not depend on the selected transcript', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
-  const handler = source.slice(source.indexOf('async function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
+  const handler = source.slice(source.indexOf('function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
   for (const selection of ['root', 'child', 'another-session']) {
     const ownedId = `file-notification-${selection}`;
     const runtimeStates: string[] = [];
@@ -1492,13 +1492,13 @@ await test('Stop during revival prevents dispatch and releases the prepared runt
   const dependencies = {
     getConversationSession: () => state,
     setConversationSending: (_id: string, sending: boolean) => { state.sending = sending; },
-    get,
+    get, normalizeProvider,
     sessionPresenceHistory,
     rail: { owned: [{ ownedId: 'cancel-test', agent: 'antigravity', cwd: '/tmp', nativeSessionId: 'native-original' }] },
     shouldReviveBeforeSend: () => true,
     decideConversationActivation: () => ({ kind: 'structured', nativeSessionMode: 'resume' }),
     ensureStructuredConversation: async () => { await revival; state.generation = 2; return { generation: 2 }; },
-    generationForSend: (_before: number, after: number) => after,
+    generationForSend: (_before: number, after: number) => after, setConversationConnection: () => undefined,
     sendSupportsImages: () => false,
     buildConversationPrompt: (text: string) => ({ text, content: [] }),
     hasBackendCapability: async () => true,
@@ -1615,7 +1615,7 @@ await test('an observed active turn routes Stop to the backend', async () => {
 
 await test('an inactive terminal event clears send state before finished rail presence', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
-  const block = source.slice(source.indexOf('async function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
+  const block = source.slice(source.indexOf('function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
   const code = stripTypeScriptTypes(block, { mode: 'strip' }).replace(/^export /gm, '');
   const calls: string[] = [];
   const ownedId = 'inactive-finish';
@@ -1690,7 +1690,7 @@ await test('an inactive terminal event clears send state before finished rail pr
 await test('remote rail activity reconciles without opening background conversations', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
   const block = source.slice(source.indexOf('async function refreshRemoteSessionActivity('), source.indexOf('// A session an agent started'))
-    + source.slice(source.indexOf('async function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
+    + source.slice(source.indexOf('function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
   const code = stripTypeScriptTypes(block, { mode: 'strip' }).replace(/^export /gm, '');
   const ownedId = 'remote-background-activity';
   const row = {
@@ -1700,11 +1700,12 @@ await test('remote rail activity reconciles without opening background conversat
   const state = { activeTurnId: undefined as string | undefined, suspended: true, sending: false, generation: 1 };
   let opened = false;
   let finishRead: (records: unknown[]) => void = () => {};
+  let readStarted = () => {};
   const dependencies = {
     selectedConversationRead: null,
     childConversationRead: null,
     rail: { activeOwnedId: 'another-session', owned: [row], remoteConnections: { workbox: 'connected' }, error: null },
-    listRemoteAgentConversationSessionsFromTauri: () => new Promise<unknown[]>((resolve) => { finishRead = resolve; }),
+    listRemoteAgentConversationSessionsFromTauri: () => new Promise<unknown[]>((resolve) => { finishRead = resolve; readStarted(); }),
     updateOwnedSession: (_id: string, patch: Partial<typeof row>) => Object.assign(row, patch),
     getConversationSession: () => opened ? state : null,
     preparingSends: new Map(),
@@ -1719,7 +1720,7 @@ await test('remote rail activity reconciles without opening background conversat
   const api = Function(...Object.keys(dependencies), `
     let conversationEventsDisposed = false;
     let conversationEventsGeneration = 1;
-    let remoteActivityRead = 0;
+    let remoteActivityController = null;
     const railActivityEvents = new Map();
     ${code}
     return { refresh: () => refreshRemoteSessionActivity(1),
@@ -1743,7 +1744,6 @@ await test('remote rail activity reconciles without opening background conversat
     ownedId, provider: 'codex' as const, generation: 1, sequence, timestampMs: sequence * 10,
     payload: { kind: 'turn', state: turnState, turnId }
   });
-
   const reconnect = api.refresh();
   finishRead([record('remote-turn')]);
   await reconnect;
@@ -1752,20 +1752,20 @@ await test('remote rail activity reconciles without opening background conversat
   await api.event(event(1, 'remote-turn', 'completed'));
   assert.equal(row.activeTurnId, null, 'completion clears the inventory active-turn flag');
   assert.notEqual(presence(), 'working');
-
   row.runtimeState = 'suspended';
   await api.event(event(2, 'next-turn', 'started'));
   assert.equal(presence(), 'working', 'a live start overrides both cached suspension and old unread completion');
   assert.equal(opened, false, 'the user never needed to open this session');
-
   const racingRead = api.refresh();
   await api.event(event(3, 'next-turn', 'completed'));
+  const rereading = new Promise<void>((resolve) => { readStarted = resolve; });
   finishRead([record('next-turn')]);
-  await racingRead;
+  await rereading;
   assert.equal(row.activeTurnId, null, 'an older inventory reply cannot revive a completed turn');
+  finishRead([record(null)]);
+  await racingRead;
   await api.event(event(2, 'next-turn', 'started'));
   assert.equal(row.activeTurnId, null, 'duplicate replay cannot revive a completed turn');
-
   await api.event(event(4, 'failed-turn', 'started'));
   await api.event({ ownedId, provider: 'codex', generation: 1, sequence: 5, timestampMs: 50,
     payload: { kind: 'error', code: 'test', message: 'Runtime ended', recoverable: false } });
@@ -2042,7 +2042,7 @@ await test('leaving a session ends every wait on its stream and readiness and wr
   let connection: any;
   const session = { provider: 'claude', generation: 1, selectedHasAfter: true, selectedChildHistoryOwnedId: null };
   const dependencies = {
-    conversationChunksFromEvent: () => [],
+    conversationChunksFromEvent: () => [], takeStreamItem: (items: unknown[]) => items.shift(),
     recordLiveMessages: write('live messages'),
     EventType,
     PAGE_BYTES: 1024,

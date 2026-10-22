@@ -1,7 +1,7 @@
 //! This Mac's requests about past provider transcripts on a remote machine.
 //! They are found, read and imported there; this Mac only ever reads the rows
 //! the history download saves.
-use std::sync::atomic::Ordering;
+use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 use mcb_core::scanners::sessions::AgentSessionRecord;
 
@@ -12,9 +12,9 @@ use crate::agent_conversation::protocol::AgentConversationProvider;
 
 impl RemoteConnectionManager {
     /// Every past session the machine's scanner finds, or one transcript's details when `log_path` is set.
-    pub async fn scan_transcripts(&self, profile: &str, log_path: Option<String>) -> Result<Vec<AgentSessionRecord>, String> {
-        match self.request_for_profile(profile, RemoteCommand::ScanTranscripts { log_path }).await? {
-            RemoteResponse::Transcripts(sessions) => Ok(sessions),
+    pub async fn scan_transcripts(&self, profile: &str, log_path: Option<String>, project_roots: Vec<String>) -> Result<(Vec<AgentSessionRecord>, BTreeMap<String, String>), String> {
+        match self.request_for_profile(profile, RemoteCommand::ScanTranscripts { log_path, project_roots }).await? {
+            RemoteResponse::Transcripts { sessions, common_dirs } => Ok((sessions, common_dirs)),
             _ => Err("Remote Assembly returned the wrong transcript response".into()),
         }
     }
@@ -107,7 +107,7 @@ mod tests {
         let (id, _requests) = begin_test_download(&manager, 100, Some(1), Some(1)).await;
         manager.receive_history_chunk("cache-test", id, "large-history", 100, encode_history_chunk(&[history_event(1)]).unwrap()).unwrap();
         manager.finish_history_download("cache-test", "large-history", id).await.unwrap();
-        let saved = || manager.store.remote_saved_minimum(&RemoteHistory::key("cache-test", "large-history")).unwrap();
+        let saved = || manager.store.remote_saved_bounds(&RemoteHistory::key("cache-test", "large-history")).unwrap().0;
         let listed = |numbered_after| [AgentConversationSessionRecord { numbered_after, ..session("large-history", "cache-test", 1) }];
         // A machine too old to say where its journal restarted keeps the copy.
         manager.replace_cached_profile_sessions("cache-test", &listed(None)).unwrap();
@@ -143,6 +143,6 @@ mod tests {
         manager.replace_cached_profile_sessions("cache-test", &listed(Some(3))).unwrap();
         // A chunk the old stream had already sent: its rows belong to the journal that was replaced.
         manager.receive_history_chunk("cache-test", id, "large-history", 50, encode_history_chunk(&[history_event(2)]).unwrap()).unwrap();
-        assert_eq!(manager.store.remote_saved_minimum(&RemoteHistory::key("cache-test", "large-history")).unwrap(), None);
+        assert_eq!(manager.store.remote_saved_bounds(&RemoteHistory::key("cache-test", "large-history")).unwrap().0, None);
     }
 }

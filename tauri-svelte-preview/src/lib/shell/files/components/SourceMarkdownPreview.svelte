@@ -10,8 +10,15 @@
     HIGHLIGHT_CONTEXT_KEY,
     type CodeHighlighter
   } from '@humanspeak/svelte-markdown/extensions/highlight';
-  import { allowHtmlOnly, type RendererComponent, type Renderers } from '@humanspeak/svelte-markdown';
+  import {
+    allowHtmlOnly,
+    defaultSanitizeAttributes,
+    type RendererComponent,
+    type Renderers,
+    type SanitizeAttributesFn
+  } from '@humanspeak/svelte-markdown';
   import { fenceLanguage, highlightCode } from '../../markdown/codeHighlight';
+  import { withoutFetchingAttributes } from './editor/markdownPreview';
 
   // GitHub-flavoured extras the library ships. Created once so the parser's
   // token cache keys stay stable between renders.
@@ -31,6 +38,11 @@
       'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul', 'var'
     ])
   };
+
+  /** Raw HTML loses srcset, style and background before any tag renders, so a
+   *  file cannot make the Preview fetch other addresses. */
+  const sanitizeAttributes: SanitizeAttributesFn = (attributes, context, sanitizeUrl) =>
+    defaultSanitizeAttributes(withoutFetchingAttributes(attributes), context, sanitizeUrl);
 
   /** The library's code renderer, coloured by the app's own highlighter
    *  (the one chat uses), which knows Rust, C#, Swift and the rest. An
@@ -167,6 +179,17 @@
     host.scrollTop = scrollTop;
   });
 
+  // A diagram mermaid fails to draw leaves its scratch element (`d` + the diagram id) on
+  // <body>. Mermaid draws one diagram at a time, so only the newest can still be in use:
+  // clear the older ones when the text changes and when Preview closes.
+  $effect(() => {
+    void content;
+    return () => {
+      const scratch = [...document.querySelectorAll('body > div[id^="dmermaid-"]')];
+      for (const left of scratch.slice(0, -1)) left.remove();
+    };
+  });
+
   onDestroy(() => {
     for (const url of localImages.values()) void revokeLocalImage(url);
     // The library keeps parsed documents for reuse; leaving Preview frees them.
@@ -195,6 +218,7 @@
       source={parts.body}
       {extensions}
       {renderers}
+      {sanitizeAttributes}
       parsed={(tokens) => { rendered = { body: parts.body, tokens }; }}
     >
       {#snippet listitem(props: ListItemSnippetProps)}
@@ -215,7 +239,13 @@
           props.attributes?.src as string | undefined,
           String(props.attributes?.alt ?? ''),
           props.attributes?.title as string | undefined,
-          props.attributes
+          {
+            src: props.attributes?.src,
+            width: props.attributes?.width,
+            height: props.attributes?.height,
+            alt: props.attributes?.alt,
+            title: props.attributes?.title
+          }
         )}
       {/snippet}
       {#snippet link(props: { href?: string; title?: string; children?: Snippet })}
@@ -244,7 +274,10 @@
 <!-- A raw HTML <img> keeps its own attributes (width, height); a Markdown
      image uses the library's image renderer. -->
 {#snippet img(src: string, alt: string, title: string | undefined, attributes: Record<string, unknown> | undefined)}
-  {#if attributes}<img {...attributes} {src} {alt} />{:else}<Image href={src} text={alt} {title} />{/if}
+  {#if attributes}<img {src} {alt} {title}
+    width={attributes.width as string | undefined}
+    height={attributes.height as string | undefined}
+  />{:else}<Image href={src} text={alt} {title} />{/if}
 {/snippet}
 
 {#snippet picture(href: string | undefined, alt: string, title: string | undefined, attributes?: Record<string, unknown>)}
