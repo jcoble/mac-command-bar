@@ -45,9 +45,11 @@ pub struct AcpTurn {
     /// The latest `usage_update` cost: the session's running total in USD.
     pub cost_total_usd: Option<f64>,
     pub node_run_id: Option<String>,
-    /// When the turn's prompt went out. Transcript rows from then on are this
-    /// turn's or a later one's, and ACP counts them.
+    /// When the turn's prompt went out. Transcript rows between then and when
+    /// the turn's rows are written belong to this turn, and ACP counts them.
     pub occurred_at_micros: i64,
+    /// The session's working folder; its last part is the project, as for transcript rows.
+    pub cwd: Option<String>,
 }
 
 struct Tokens { model: String, input: u64, output: u64, cache_read: u64, cache_write: u64, reasoning: u64 }
@@ -98,8 +100,8 @@ impl UsageDb {
     /// total, so the turn's share is that total less the session's previous
     /// total; both go on the turn's largest row. A total below the previous one
     /// means the provider restarted its count, so the whole total is the share.
-    /// Transcript rows for the same native session from the turn's start on are
-    /// dropped, since ACP now counts those turns; earlier transcript rows stay.
+    /// Transcript rows for the same native session written during the turn are
+    /// dropped, since ACP counts it; rows of any other turn stay.
     pub fn insert_acp_turn(&self, turn: &AcpTurn) -> Result<usize, String> {
         let tokens = turn_tokens(turn);
         if tokens.is_empty() {
@@ -120,17 +122,19 @@ impl UsageDb {
             t.input + t.output + t.cache_read + t.cache_write
         });
         let source_key = turn.native_session_id.clone().unwrap_or_else(|| turn.owned_id.clone());
+        let project_id = turn.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).file_name()).map(|name| name.to_string_lossy().to_string());
+        let written_at = super::now_micros();
         for (index, t) in tokens.iter().enumerate() {
             transaction.execute(
-                "INSERT INTO usage_events (provider, provider_instance_id, owned_id, turn_id, node_run_id, occurred_at_micros, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, reported_cost_micros, reported_cost_total_micros, source_kind, source_event_id, source_key, inserted_at_micros) VALUES (?1, 'local', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?16, ?13, ?14, ?15, ?5) ON CONFLICT(provider, provider_instance_id, source_kind, source_event_id) DO NOTHING",
+                "INSERT INTO usage_events (provider, provider_instance_id, owned_id, turn_id, project_id, workspace_id, node_run_id, occurred_at_micros, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, reported_cost_micros, reported_cost_total_micros, source_kind, source_event_id, source_key, inserted_at_micros) VALUES (?1, 'local', ?2, ?3, ?17, ?18, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?16, ?13, ?14, ?15, ?19) ON CONFLICT(provider, provider_instance_id, source_kind, source_event_id) DO NOTHING",
                 params![turn.provider, turn.owned_id, turn.turn_id, turn.node_run_id, turn.occurred_at_micros,
                     t.input as i64, t.output as i64, t.cache_read as i64, t.cache_write as i64, t.reasoning as i64, t.model,
                     cost.filter(|_| Some(index) == largest).map(|(share, _)| share), ACP_SOURCE_KIND,
                     format!("{}:{}:{}", turn.owned_id, turn.turn_id, t.model), source_key,
-                    cost.filter(|_| Some(index) == largest).map(|(_, total)| total)],
+                    cost.filter(|_| Some(index) == largest).map(|(_, total)| total), project_id, turn.cwd, written_at],
             ).map_err(|error| self.database_error("could not write ACP usage", error))?;
         }
-        transaction.execute("DELETE FROM usage_events WHERE owned_id = ?1 AND source_kind <> ?2 AND occurred_at_micros >= ?3", params![source_key, ACP_SOURCE_KIND, turn.occurred_at_micros])
+        transaction.execute("DELETE FROM usage_events WHERE owned_id = ?1 AND source_kind <> ?2 AND occurred_at_micros BETWEEN ?3 AND ?4", params![source_key, ACP_SOURCE_KIND, turn.occurred_at_micros, written_at])
             .map_err(|error| self.database_error("could not drop transcript usage", error))?;
         transaction.commit().map_err(|error| self.database_error("could not finish ACP usage write", error))?;
         Ok(tokens.len())
@@ -180,6 +184,7 @@ mod tests {
             owned_id: "assembly-1".into(), native_session_id: Some("native-1".into()), provider: "claude".into(),
             turn_id: turn_id.into(), result: json!({"stopReason": "end_turn", "_meta": {"quota": {"model_usage": models}}}),
             cost_total_usd: cost, node_run_id: Some("run-1:build:1".into()), occurred_at_micros: 1_700_000_000_000_000,
+            cwd: Some("/work/alpha".into()),
             ..AcpTurn::default()
         }
     }
@@ -260,20 +265,25 @@ mod tests {
 
     // The turn starts at 1_700_000_000_000_000 (see `turn`); its transcript lines come after that.
     #[test]
-    fn transcript_history_before_the_first_acp_turn_stays_and_later_turns_count_once() {
+    fn only_transcript_rows_written_during_an_acp_turn_are_replaced() {
         let (path, db) = open();
         let start = 1_700_000_000_000_000;
+        // A later turn with no ACP row (one that ended in an error) keeps its transcript usage.
+        let later = super::super::now_micros() + 3_600_000_000;
         db.insert_events_with_cursor(&[transcript_row("old-1", "native-1", start - 2_000_000), transcript_row("old-2", "native-1", start - 1_000_000),
             transcript_row("other", "native-2", start + 1), transcript_row("this-turn-early", "native-1", start + 1)], None).unwrap();
         db.insert_acp_turn(&turn("turn-1", vec![model("claude-opus-5-5", 2, 10, 10, 5)], None)).unwrap();
-        db.insert_events_with_cursor(&[transcript_row("this-turn-late", "native-1", start + 2), transcript_row("old-3", "native-1", start - 500_000)], None).unwrap();
+        db.insert_events_with_cursor(&[transcript_row("this-turn-late", "native-1", start + 2), transcript_row("old-3", "native-1", start - 500_000),
+            transcript_row("later-turn", "native-1", later)], None).unwrap();
         let connection = db.connection().unwrap();
         let mut statement = connection.prepare("SELECT source_event_id FROM usage_events WHERE source_kind = 'claude-jsonl' ORDER BY id").unwrap();
         let kept: Vec<String> = statement.query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
-        assert_eq!(kept, ["old-1", "old-2", "other", "old-3"]);
+        assert_eq!(kept, ["old-1", "old-2", "other", "old-3", "later-turn"]);
+        // Five transcript rows (5 in, 5 out each), plus the ACP turn once, under its project.
+        let summary = db.read_usage_summary(&UsageFilter { project_id: Some("alpha".into()), ..UsageFilter::default() }).unwrap();
+        assert_eq!((summary.input_tokens, summary.output_tokens, summary.cache_read_tokens), (2, 5, 10));
         let summary = db.read_usage_summary(&UsageFilter::default()).unwrap();
-        // Three old transcript rows and native-2's (5 in, 5 out each), plus the ACP turn once.
-        assert_eq!((summary.input_tokens, summary.output_tokens, summary.cache_read_tokens), (4 * 5 + 2, 4 * 5 + 5, 10));
+        assert_eq!((summary.input_tokens, summary.output_tokens, summary.cache_read_tokens), (5 * 5 + 2, 5 * 5 + 5, 10));
         let _ = std::fs::remove_file(path);
     }
 

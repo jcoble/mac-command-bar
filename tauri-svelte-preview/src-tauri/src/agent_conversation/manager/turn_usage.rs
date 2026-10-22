@@ -47,5 +47,6 @@ pub(super) fn report_turn_usage(session: &mut ManagedAgentSession, turn_id: &str
         cost_total_usd,
         node_run_id: None,
         occurred_at_micros: started_at_micros.unwrap_or_else(now_micros),
+        cwd: Some(session.cwd.clone()),
     });
 }
