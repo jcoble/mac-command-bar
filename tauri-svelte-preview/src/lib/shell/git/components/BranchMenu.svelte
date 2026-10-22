@@ -105,7 +105,7 @@
   /** A branch another worktree has moves the session there; git would refuse to check it out here. */
   async function switchTo(branch: GitBranchSummary): Promise<void> {
     open = false;
-    const worktree = branchWorktreeRoot(branch, panel.root ?? '');
+    const worktree = branchWorktreeRoot(branch);
     if (worktree && onUseSessionCheckout) await onUseSessionCheckout(worktree);
     else await service.switchBranch(branch.name);
   }

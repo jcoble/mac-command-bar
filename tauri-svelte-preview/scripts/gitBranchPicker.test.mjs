@@ -36,14 +36,15 @@ assert.equal(describeBranchRow(branches[0]), 'tracks origin/main · latest work'
 assert.equal(describeBranchRow(branches[1]), 'no remote branch · wire the panel');
 assert.equal(describeBranchRow(branches[2]), 'tracks origin/spike/colors');
 
-// A branch checked out in another worktree is reached by moving the session there, on the session's machine.
-assert.equal(branchWorktreeRoot(branches[1], '/repo'), '/worktrees/tsk-808');
+// A branch checked out in another worktree is reached by moving the session there.
+assert.equal(branchWorktreeRoot(branches[1]), '/worktrees/tsk-808');
+// On a remote machine the bridge has already prefixed the path; it is passed on unchanged.
 assert.equal(
-  branchWorktreeRoot(branches[1], 'assembly-remote://workbox/repo'),
+  branchWorktreeRoot({ ...branches[1], worktreePath: 'assembly-remote://workbox/worktrees/tsk-808' }),
   'assembly-remote://workbox/worktrees/tsk-808'
 );
-assert.equal(branchWorktreeRoot(branches[0], '/repo'), null, 'the current branch is already here');
-assert.equal(branchWorktreeRoot(branches[2], '/repo'), null, 'a branch with no worktree is checked out here');
+assert.equal(branchWorktreeRoot(branches[0]), null, 'the current branch is already here');
+assert.equal(branchWorktreeRoot(branches[2]), null, 'a branch with no worktree is checked out here');
 
 assert.equal(describeCurrentBranch(null), 'no branch checked out');
 assert.equal(describeCurrentBranch('  '), 'no branch checked out');

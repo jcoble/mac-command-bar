@@ -11,7 +11,6 @@
  */
 
 import type { GitBranchSummary } from '$lib/tauriSource';
-import { parseRemoteWorkspacePath, remoteWorkspacePath } from '../../../workspacePaths.ts';
 
 /** The characters git refuses in a branch name, plus the ones a bare argument cannot carry. */
 const REFUSED_CHARACTERS = ['~', '^', ':', '?', '*', '[', '\\'];
@@ -39,13 +38,11 @@ export function describeBranchRow(branch: GitBranchSummary): string {
 /**
  * The worktree to move the session to when this branch is picked, or null to
  * check it out here. Git refuses to check out a branch another worktree has, so
- * the session goes to that worktree instead. Git reports the path on the
- * repository's machine; a remote root keeps its machine.
+ * the session goes to that worktree instead. For a remote repository the
+ * workspace bridge has already given the path its machine prefix.
  */
-export function branchWorktreeRoot(branch: GitBranchSummary, root: string): string | null {
-  if (branch.isCurrent || !branch.worktreePath) return null;
-  const remote = parseRemoteWorkspacePath(root);
-  return remote ? remoteWorkspacePath(remote.profileId, branch.worktreePath) : branch.worktreePath;
+export function branchWorktreeRoot(branch: GitBranchSummary): string | null {
+  return branch.isCurrent || !branch.worktreePath ? null : branch.worktreePath;
 }
 
 /**
