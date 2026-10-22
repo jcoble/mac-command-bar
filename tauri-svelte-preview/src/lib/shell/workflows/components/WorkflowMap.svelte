@@ -39,7 +39,10 @@
   })));
 
   /** A step that sends work back draws an arc from its top to its target's top, labelled with its round. */
-  const loops = $derived(run.definition.nodes.flatMap((definition) => {
+  const loops = $derived.by(() => {
+    // Loops back to the same step stack their arcs and labels instead of drawing over each other.
+    const perTarget = new Map<string, number>();
+    return run.definition.nodes.flatMap((definition) => {
     const review = definition.step?.review as { of?: unknown } | undefined;
     const target = typeof review?.of === 'string' ? review.of : typeof definition.step?.on_fail === 'string' ? definition.step.on_fail : null;
     const from = place.get(definition.id), to = target ? place.get(target) : undefined;
@@ -47,12 +50,15 @@
     const x1 = from.x + BOX_W / 2, x2 = to.x + BOX_W / 2, top = Math.min(from.y, to.y);
     const node = nodeOf(definition.id);
     const label = node?.startedAtMs
-      ? `round ${node.attempt}${maxRounds ? ` of ${maxRounds}` : ''}`
+      ? `round ${node.attempt}${maxRounds && node.attempt <= maxRounds ? ` of ${maxRounds}` : ''}`
       : `sends back to ${target}`;
     // Wider loops arc higher, so their labels sit at different heights.
-    const rise = Math.min(TOP * 1.7, 40 + Math.abs(x2 - x1) * 0.2);
+    const stacked = perTarget.get(target) ?? 0;
+    perTarget.set(target, stacked + 1);
+    const rise = Math.min(TOP * 1.7, 40 + Math.abs(x2 - x1) * 0.2 + stacked * 36);
     return [{ id: definition.id, path: `M${x1} ${from.y} Q${(x1 + x2) / 2} ${top - rise} ${x2} ${to.y}`, label, x: (x1 + x2) / 2, y: top - rise / 2 - 4 }];
-  }));
+    });
+  });
 
   function subtitle(definitionStep: Record<string, unknown> | undefined, node: WorkflowNodeRunRecord | undefined): string {
     const review = definitionStep?.review as { agent?: { model?: unknown; provider?: unknown } } | undefined;

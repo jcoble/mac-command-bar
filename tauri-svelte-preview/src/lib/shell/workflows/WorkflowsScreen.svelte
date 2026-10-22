@@ -321,7 +321,8 @@
   .workflows-screen {
     position: absolute;
     inset: 0;
-    z-index: 20;
+    /* Above the layout's resize handles (z-index 99), which otherwise take clicks on a strip of the screen. */
+    z-index: 100;
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
