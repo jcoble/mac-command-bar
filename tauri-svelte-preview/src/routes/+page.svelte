@@ -303,8 +303,8 @@
 	});
 
 	$effect(() => {
-		const kind = paneShowing ? topTabs.activeKind : "session";
-		untrack(() => workbench.paneShown(kind ?? "session"));
+		const key = topTabs.activeKey;
+		untrack(() => workbench.paneShown(key));
 	});
 
 	// The active top tab is the truth for what is showing. Whatever made it
@@ -546,7 +546,7 @@
 
 	function selectCenterTab(id: CenterTabId): void {
 		if (id === "session") {
-			if (workbench.expanded) workbench.setExpanded(false);
+			workbench.showChat();
 			return;
 		}
 		if (id === "editor") {
@@ -563,7 +563,6 @@
 
 	/** The `+` menu: one of the top-row kinds, or a file picked from the Files drawer. */
 	async function openFromMenu(kind: NewTabKind): Promise<void> {
-		if (kind === "browser") return openNewBrowserTab();
 		if (kind === "file") {
 			selectRightTab("files");
 			filesFilterFocus += 1;
@@ -577,7 +576,8 @@
 			await gitService.clearHistoryPath();
 			if (selection.activeOwnedId !== ownedId || selection.durableSessionRoot !== root) return;
 		} else if (kind === "pull-requests") pullRequestSelection.selected = null;
-		selectCenterTab(kind);
+		if (kind === "browser") openNewBrowserTab(); else selectCenterTab(kind);
+		workbench.yieldDrawerTo(topTabs.activeKey);
 	}
 
 	function selectRightTab(id: Parameters<WorkbenchController["selectRightTab"]>[0]): void {
@@ -586,10 +586,10 @@
 		if (ownedId) selection.persistWorkspaceState(ownedId, workbench.captureSessionState());
 	}
 
-	function openNewSession(projectId: string | null = null): void {
+	function openNewSession(projectId: string | null = null, folder: string | null = null): void {
 		projectsOpen = false;
 		messagesOpen = false;
-		selection.newSession.open(projectId);
+		selection.newSession.open(projectId, folder);
 		selectCenterTab("session");
 	}
 
@@ -740,7 +740,7 @@
 			{#key selection.newSession.stopSignal}
 			<DraftSessionSurface
 				stopSignal={selection.newSession.stopSignal}
-				projectId={selection.newSession.projectId}
+				projectId={selection.newSession.projectId} folder={selection.newSession.folder}
 				startingOwnedId={selection.newSession.pendingFirstMessage?.ownedId ?? null}
 				onSend={startNewSession}
 				onClose={() => selection.newSession.close()}

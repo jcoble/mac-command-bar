@@ -723,7 +723,7 @@
     <section class="structured" data-testid="structured-conversation" aria-label={`${active.agent} conversation`}>
       {#if active.executionEnvironment === 'remote'}
         <div class="remote-location" title={remoteMachine?.sshTarget ?? undefined}>
-          Remote: {remoteMachine?.name ?? 'Saved machine'}{#if remoteMachine} ({remoteMachine.sshTarget}){/if} · {active.cwd}
+          Remote: {remoteMachine?.name ?? 'Saved machine'}{#if remoteMachine} ({remoteMachine.sshTarget}){/if} · {active.cwd}{#if remoteDisconnected} · Offline, showing the saved chat{/if}
         </div>
       {/if}
       {#if !appOwned}

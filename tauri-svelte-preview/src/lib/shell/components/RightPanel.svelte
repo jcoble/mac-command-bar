@@ -61,7 +61,7 @@
     /** Another project's folder Files and Git show instead of the session's, or null. */
     viewedRoot?: string | null;
     onViewedRootChange?(root: string | null): void;
-    onNewSessionHere?(projectId: string): void;
+    onNewSessionHere?(projectId: string, folder: string): void;
     messagesUnread: number;
     onMessagesSeen(): void;
     onShowRunMessages(runId: string, label: string): void;
@@ -136,6 +136,7 @@
         checkoutDiscoveryRoots={viewing ? [] : checkoutDiscoveryRoots}
         onUseSessionCheckout={viewing ? undefined : onUseSessionCheckout}
         {readOnlyReason}
+        {viewing}
       />
     </div>
     {#if visible && activeId === 'source-control'}
@@ -151,6 +152,7 @@
           onWorkspaceStateChange={onSourceControlWorkspaceChange}
           onUseSessionCheckout={viewing ? undefined : onUseSessionCheckout}
           {readOnlyReason}
+          {viewing}
         />
       </div>
     {:else if visible && activeId === 'worktrees'}

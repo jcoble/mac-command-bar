@@ -43,9 +43,12 @@ export function resetWorkflowStore(): void {
   workflowState.activated = false;
 }
 
+// Runs are re-read on every change, so a read clears only a failure of its own;
+// an action's error stays until the next action.
+let loadError: string | null = null;
+
 export function beginWorkflowLoad(): void {
   workflowState.loading = true;
-  workflowState.error = null;
   workflowState.unavailableReason = null;
   workflowState.activated = true;
 }
@@ -57,7 +60,7 @@ export function applyWorkflowSnapshots(runs: WorkflowRunRecord[] | null): void {
     return newer && newer.lastSequence > run.lastSequence ? newer : run;
   }) ?? [];
   workflowState.loading = false;
-  workflowState.error = null;
+  if (workflowState.error === loadError) workflowState.error = null;
   workflowState.unavailableReason = runs === null ? 'Workflow runs are available in the desktop app.' : null;
   workflowState.activated = true;
   if (
@@ -71,7 +74,7 @@ export function applyWorkflowSnapshots(runs: WorkflowRunRecord[] | null): void {
 
 export function failWorkflowLoad(message: string): void {
   workflowState.loading = false;
-  workflowState.error = message;
+  workflowState.error = loadError = message;
   workflowState.unavailableReason = null;
   workflowState.activated = true;
 }
@@ -81,7 +84,6 @@ export function upsertWorkflowSnapshot(run: WorkflowRunRecord): void {
   if (index < 0) workflowState.runs = [...workflowState.runs, run];
   else if (run.lastSequence >= workflowState.runs[index].lastSequence) workflowState.runs[index] = run;
   workflowState.loading = false;
-  workflowState.error = null;
   workflowState.unavailableReason = null;
   workflowState.activated = true;
   if (!workflowState.selectedWorkflowRunId) workflowState.selectedWorkflowRunId = run.id;

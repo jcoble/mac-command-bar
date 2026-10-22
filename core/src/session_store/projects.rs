@@ -1,0 +1,62 @@
+use super::{Result, SessionStore, StoreError};
+use rusqlite::OptionalExtension;
+
+impl SessionStore {
+    /// The registered project roots on one machine.
+    pub fn project_roots(&self, machine: &str) -> Result<Vec<String>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare("SELECT root_path FROM projects WHERE machine = ?1 ORDER BY created_at, id")
+            .map_err(|error| StoreError::sqlite("could not prepare the project roots", error))?;
+        let rows = statement
+            .query_map([machine], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not list the project roots", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not list the project roots", error))
+    }
+
+    /// The root folder of the project added on `machine` whose folder is `named`, or else
+    /// the only one titled `named`. A title shared by several projects finds none.
+    pub fn project_root(&self, machine: &str, named: &str) -> Result<Option<String>> {
+        self.lock()?.query_row(
+            "SELECT root_path FROM projects WHERE machine = ?1 AND root_path = ?2
+             UNION ALL
+             SELECT MAX(root_path) FROM projects WHERE machine = ?1 AND title = ?2 HAVING COUNT(*) = 1
+             LIMIT 1",
+            [machine, named], |row| row.get(0),
+        ).optional().map_err(|error| StoreError::sqlite("could not find the project", error))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::ProjectRow;
+    use super::*;
+
+    fn add(store: &SessionStore, id: &str, machine: &str, root: &str, title: &str) {
+        store.insert_or_get_project(&ProjectRow {
+            id: id.into(), machine: machine.into(), root_path: root.into(), title: title.into(), repo_key: String::new(),
+            created_at_ms: 0, group_key: String::new(), pinned_at_ms: None, last_used_ms: None,
+        }).unwrap();
+    }
+
+    #[test]
+    fn a_local_project_is_found_by_its_folder_or_its_only_title() {
+        let store = SessionStore::open_in_memory().unwrap();
+        add(&store, "a", "local", "/work/app", "app");
+        add(&store, "b", "local", "/work/twin-1", "twin");
+        add(&store, "c", "local", "/work/twin-2", "twin");
+        add(&store, "d", "workbox", "/work/remote", "remote");
+        assert_eq!(store.project_root("workbox", "remote").unwrap().as_deref(), Some("/work/remote"));
+        assert_eq!(store.project_root("workbox", "/work/remote").unwrap().as_deref(), Some("/work/remote"));
+        assert_eq!(store.project_root("workbox", "app").unwrap(), None);
+        let found = |named| store.project_root("local", named).unwrap();
+        assert_eq!(found("app").as_deref(), Some("/work/app"));
+        assert_eq!(found("/work/app").as_deref(), Some("/work/app"));
+        assert_eq!(found("/work/twin-2").as_deref(), Some("/work/twin-2"));
+        // A shared title, another machine's project and an unknown name find nothing.
+        for named in ["twin", "remote", "/work/remote", "/work", "missing"] {
+            assert_eq!(found(named), None, "{named}");
+        }
+    }
+}

@@ -292,7 +292,7 @@ impl UsageDb {
         batches: &[(&[UsageEvent], Option<&UsageSourceCursor>)],
         rebuild_rollups: bool,
     ) -> Result<(), String> {
-        const INSERT_EVENT_SQL: &str = "INSERT OR IGNORE INTO usage_events (provider, provider_instance_id, owned_id, workflow_id, turn_id, project_id, workspace_id, occurred_at_micros, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, estimated_cost_micros, estimate_rate_version, source_kind, source_event_id, source_key, inserted_at_micros) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        const INSERT_EVENT_SQL: &str = "INSERT INTO usage_events (provider, provider_instance_id, owned_id, workflow_id, turn_id, project_id, workspace_id, occurred_at_micros, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, estimated_cost_micros, estimate_rate_version, source_kind, source_event_id, source_key, inserted_at_micros) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(provider, provider_instance_id, source_kind, source_event_id) DO UPDATE SET owned_id=excluded.owned_id, workflow_id=excluded.workflow_id, turn_id=excluded.turn_id, project_id=excluded.project_id, workspace_id=excluded.workspace_id, occurred_at_micros=excluded.occurred_at_micros, input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens, cache_read_tokens=excluded.cache_read_tokens, cache_write_tokens=excluded.cache_write_tokens, reasoning_tokens=excluded.reasoning_tokens, model=excluded.model, estimated_cost_micros=excluded.estimated_cost_micros, estimate_rate_version=excluded.estimate_rate_version";
         const UPSERT_CURSOR_SQL: &str = "INSERT INTO usage_source_cursors (provider, provider_instance_id, source_kind, source_key, file_identity, offset_bytes, size_bytes, modified_at_micros, last_event_id, updated_at_micros) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(provider, provider_instance_id, source_kind, source_key) DO UPDATE SET file_identity=excluded.file_identity, offset_bytes=excluded.offset_bytes, size_bytes=excluded.size_bytes, modified_at_micros=excluded.modified_at_micros, last_event_id=excluded.last_event_id, updated_at_micros=excluded.updated_at_micros";
         let mut connection = self.connection()?;
         let transaction = connection
@@ -575,12 +575,12 @@ impl UsageDb {
         )
     }
 
-    fn connection(&self) -> Result<Connection, String> {
+    pub(crate) fn connection(&self) -> Result<Connection, String> {
         Connection::open(&self.path)
             .map_err(|error| self.database_error("could not open usage history", error))
     }
 
-    fn database_error(&self, action: &str, error: rusqlite::Error) -> String {
+    pub(crate) fn database_error(&self, action: &str, error: rusqlite::Error) -> String {
         format!(
             "Usage history database {action} for {}: {error}",
             self.path.display()

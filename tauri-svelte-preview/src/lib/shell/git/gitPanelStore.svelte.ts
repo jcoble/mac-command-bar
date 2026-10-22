@@ -373,3 +373,20 @@ export function isNotARepositoryError(message: string): boolean {
 export function isPlainFolderError(message: string): boolean {
   return /not a git repository/i.test(message);
 }
+
+/**
+ * The text a failed git call shows. The backend names an unreachable remote by
+ * its internal profile id, so the saved machine name the user knows replaces it.
+ */
+export function describeGitError(
+  error: unknown,
+  fallback: string,
+  profiles: readonly { id: string; name: string }[]
+): string {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (message.trim() === '') return fallback;
+  return message.replace(/Remote machine (\S+) is not connected/, (text, id: string) => {
+    const name = profiles.find((profile) => profile.id === id)?.name;
+    return name ? `${name} is not connected` : text;
+  });
+}

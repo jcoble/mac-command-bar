@@ -33,6 +33,7 @@ import {
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import { setGitSurfaceDiagnostics } from '../resourceDiagnostics.svelte.ts';
 import { parseRemoteWorkspacePath } from '../../workspacePaths.ts';
+import { rail } from '../stores/sessionRailStore.svelte.ts';
 import {
   addGitRemoteFromTauri,
   amendGitCommitFromTauri,
@@ -65,6 +66,7 @@ import {
 } from '../../tauriSource.ts';
 import {
   clearSelectedGitFile,
+  describeGitError,
   gitPanel,
   resetGitPanelState,
   type GitActionKind,
@@ -244,11 +246,6 @@ export function absolutePathWithin(root: string, relativePath: string): string {
   return tail === '' ? base : `${base}/${tail}`;
 }
 
-function describeError(error: unknown, fallback: string): string {
-  const message = error instanceof Error ? error.message : String(error ?? '');
-  return message.trim() === '' ? fallback : message;
-}
-
 export interface GitService {
   /** The state this service writes. The panel reads the same object. */
   readonly state: GitPanelState;
@@ -389,7 +386,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     } catch (error) {
       if (!stillCurrent(statusGuard, id, root)) return;
       state.status = null;
-      state.statusError = describeError(error, 'Could not read the repository status.');
+      state.statusError = describeGitError(error, 'Could not read the repository status.', rail.remoteProfiles);
       void publishSourceControl();
     } finally {
       if (stillCurrent(statusGuard, id, root)) state.statusLoading = false;
@@ -433,7 +430,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       // A failed "Load more" keeps what is already on screen; only a failed
       // refresh has nothing left to show.
       if (!loadingMore) state.history = [];
-      state.historyError = describeError(error, 'Could not read the commit history.');
+      state.historyError = describeGitError(error, 'Could not read the commit history.', rail.remoteProfiles);
     } finally {
       if (stillCurrent(historyGuard, id, root)) {
         if (loadingMore) state.historyLoadingMore = false;
@@ -571,7 +568,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       publishGitDiagnostics();
     } catch (error) {
       if (!stillCurrent(diffGuard, id, root) || state.diffRevision !== revision) return;
-      state.diffError = describeError(error, 'Could not read the changes for this file.');
+      state.diffError = describeGitError(error, 'Could not read the changes for this file.', rail.remoteProfiles);
     } finally {
       if (stillCurrent(diffGuard, id, root) && state.diffRevision === revision) {
         state.diffLoading = false;
@@ -678,7 +675,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       return true;
     } catch (error) {
       if (state.root !== root) return false;
-      state.actionError = describeError(error, 'The git command did not finish.');
+      state.actionError = describeGitError(error, 'The git command did not finish.', rail.remoteProfiles);
       return false;
     } finally {
       if (state.actionBusy === kind) state.actionBusy = '';
@@ -850,7 +847,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
         await refresh();
       } catch (error) {
         if (signal.aborted || state.root !== root) return;
-        state.actionError = describeError(error, 'Git could not set up the folder.');
+        state.actionError = describeGitError(error, 'Git could not set up the folder.', rail.remoteProfiles);
       } finally {
         if (state.actionBusy === 'init') state.actionBusy = '';
       }
