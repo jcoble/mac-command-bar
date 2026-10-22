@@ -59,19 +59,24 @@ exec "$adapter_dir/${runtime}" "$@"
 `;
 }
 
-function bunTarget() {
+function denoTarget() {
   const key = `${process.platform}-${process.arch}`;
   const targets: Record<string, string> = {
-    'darwin-arm64': 'bun-darwin-arm64',
-    'darwin-x64': 'bun-darwin-x64-baseline',
-    'linux-arm64': 'bun-linux-arm64',
-    'linux-x64': 'bun-linux-x64-baseline',
-    'win32-arm64': 'bun-windows-arm64',
-    'win32-x64': 'bun-windows-x64-baseline'
+    'darwin-arm64': 'aarch64-apple-darwin',
+    'darwin-x64': 'x86_64-apple-darwin',
+    'linux-arm64': 'aarch64-unknown-linux-gnu',
+    'linux-x64': 'x86_64-unknown-linux-gnu'
   };
   const target = targets[key];
   if (!target) throw new Error(`Release adapters do not support ${key}`);
   return target;
+}
+
+// Bundle one entry to a single ESM file, then compile it into a self-contained binary.
+async function compileAdapter(entry: string, output: URL, workDir: string) {
+  const bundle = join(workDir, `${output.pathname.split('/').pop()}.mjs`);
+  await run('deno', ['bundle', '--platform=deno', '--minify', '-o', bundle, entry]);
+  await run('deno', ['compile', '--no-remote', '--no-npm', '-A', `--target=${denoTarget()}`, `--output=${output.pathname}`, bundle]);
 }
 
 async function main() {
@@ -87,22 +92,13 @@ async function main() {
   const claudeLauncher = new URL('claude-agent-acp', adapterDir);
   const agyLauncher = new URL('agy-acp', adapterDir);
 
-  await run('bun', [
-    'build',
-    'node_modules/@agentclientprotocol/codex-acp/dist/index.js',
-    '--minify',
-    '--compile',
-    `--target=${bunTarget()}`,
-    `--outfile=${codexOutput.pathname}`
-  ]);
-  await run('bun', [
-    'build',
-    'scripts/claudeAcpLauncher.ts',
-    '--minify',
-    '--compile',
-    `--target=${bunTarget()}`,
-    `--outfile=${claudeOutput.pathname}`
-  ]);
+  const bundleDir = await mkdtemp(join(tmpdir(), 'assembly-adapter-bundles-'));
+  try {
+    await compileAdapter('node_modules/@agentclientprotocol/codex-acp/dist/index.js', codexOutput, bundleDir);
+    await compileAdapter('scripts/claudeAcpLauncher.ts', claudeOutput, bundleDir);
+  } finally {
+    await rm(bundleDir, { recursive: true, force: true });
+  }
   // Resolve only Google's official ACP distribution, then package its two files.
   const registry = await fetch('https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json', { signal: stopController.signal });
   if (!registry.ok) throw new Error(`ACP registry: HTTP ${registry.status}`);
