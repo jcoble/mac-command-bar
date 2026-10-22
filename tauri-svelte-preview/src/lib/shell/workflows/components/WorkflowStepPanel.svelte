@@ -9,6 +9,7 @@
   import Check from '@lucide/svelte/icons/check';
   import CircleStop from '@lucide/svelte/icons/circle-stop';
   import ExternalLink from '@lucide/svelte/icons/external-link';
+  import Maximize2 from '@lucide/svelte/icons/maximize-2';
   import MessageSquare from '@lucide/svelte/icons/message-square';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 
@@ -34,9 +35,11 @@
     onApprove: () => void;
     onRetry: () => void;
     onOpenChat: () => void;
+    /** Opens the review or proof close-up; null for other steps. */
+    onCloseup: (() => void) | null;
   }
 
-  let { run, node, now, busy, timeline, local, onAnswer, onApprove, onRetry, onOpenChat }: Props = $props();
+  let { run, node, now, busy, timeline, local, onAnswer, onApprove, onRetry, onOpenChat, onCloseup }: Props = $props();
 
   let tab = $state('what');
   const definition = $derived(run.definition.nodes.find((item) => item.id === node.nodeId));
@@ -69,6 +72,9 @@
     <StepGlyphIcon {glyph} />
     <h2 class="truncate text-(length:--text-heading) font-semibold">{definition?.title ?? node.nodeId}</h2>
     <span class="truncate text-[13px] text-muted-foreground">{STATE_WORDS[glyph]}{node.attempt > 1 ? ` · attempt ${node.attempt}` : ''}{duration ? ` · ${duration}` : ''}</span>
+    {#if onCloseup}
+      <Button size="sm" variant="ghost" class="ml-auto" onclick={onCloseup}><Maximize2 />Close-up</Button>
+    {/if}
   </div>
   <Tabs.Root bind:value={tab} class="min-h-0 flex-1">
     <Tabs.List>

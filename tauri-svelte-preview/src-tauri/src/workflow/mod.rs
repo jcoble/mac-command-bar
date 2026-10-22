@@ -3561,9 +3561,9 @@ pub(crate) async fn execute_operation(engine: &WorkflowEngine, operation: &str, 
             .map_err(|error| error.to_string()),
         "list" => return serde_json::to_value(engine.list_runs().map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string()),
-        // Every ledger row of one run, so the timeline can show each attempt of each step.
-        "history" => return serde_json::to_value(engine.store.list_workflow_run_history(&text("runId")?).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string()),
+        // Every ledger row of one run, so the timeline can show each attempt of each step; and every review report, for the review close-up.
+        "history" => return serde_json::to_value(engine.store.list_workflow_run_history(&text("runId")?).map_err(|error| error.to_string())?).map_err(|error| error.to_string()),
+        "reviews" => return engine.store.run_review_reports(&text("runId")?).map(Value::Array).map_err(|error| error.to_string()),
         "get" => engine.get_run(&text("runId")?),
         "create" => {
             let task = serde_json::from_value(args["task"].clone()).map_err(|error| error.to_string())?;
