@@ -2458,10 +2458,10 @@ impl AgentRuntimeManager {
             let session = current_session(&sessions, owned_id, generation)?;
             if let Some(turn_id) = &session.active_turn_id {
                 if !session.capabilities.session.steering {
-                    return Err(
-                        "This provider does not support steering an active turn".to_string()
-                    );
+                    return Err("This provider does not support steering an active turn".to_string());
                 }
+                // Nothing jumps ahead of a waiting request, from any surface (TSK-1592).
+                if !session.permission_requests.is_empty() || !session.user_input_requests.is_empty() { return Err("The agent is waiting for an answer. Answer it first, then send your message.".to_string()); }
                 if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
                     return Err("The structured writer is not the current owner".to_string());
                 }
@@ -7966,7 +7966,7 @@ mod tests {
     mod helper_messages;
     mod checkout;
     mod model_effort;
-    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close;
+    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close; mod agui_steer;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
