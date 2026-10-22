@@ -64,9 +64,9 @@ struct View {
     /// Text sent for each message still open, and what ended this turn.
     texts: HashMap<String, String>,
     ended: HashSet<String>,
-    /// Open tool calls, and whether their arguments went out.
-    tools: HashMap<String, bool>,
-    /// Child agents seen, and whether each has finished.
+    /// Open tool calls and their latest arguments.
+    tools: HashMap<String, Map<String, Value>>,
+    /// Child agents seen this turn, and whether each has finished.
     children: HashMap<String, bool>,
     last_text: Option<String>,
     usage: Option<Value>,
@@ -88,7 +88,11 @@ impl AguiProjector {
             held.push(event.clone());
             return Vec::new();
         }
-        view.project(event)
+        let chunks = view.project(event);
+        if matches!(event.payload, Payload::Connection { state: ConversationConnectionState::Closed, .. }) {
+            self.views.remove(&event.owned_id);
+        }
+        chunks
     }
 
     /// Holds the session's live events until `finish_open` has its snapshot.
@@ -104,8 +108,9 @@ impl AguiProjector {
         let held = view.held.take().unwrap_or_default();
         let mut opened = Opened::default();
         if let Some((events, pending, head)) = snapshot {
-            let mut fresh = View { next_run: view.next_run.take(), next_parent: view.next_parent.take(), ..View::default() };
+            let mut fresh = View::default();
             let chunks: Vec<Value> = events.iter().flat_map(|event| fresh.project(event)).collect();
+            (fresh.next_run, fresh.next_parent) = (view.next_run.take(), view.next_parent.take());
             // The journal can show a request the session no longer waits on.
             fresh.requests.retain(|request| pending.contains(&request.id));
             if fresh.requests.is_empty() {
@@ -269,6 +274,11 @@ impl View {
                     }
                 }
             }
+            // The reply re-sent whole at a turn's end adds nothing once ended, or
+            // while paused (Stop expires the request first); `finish` ends it.
+            Payload::AssistantMessage { item_id, .. }
+                if self.ended.contains(item_id)
+                    || (self.open_run.is_none() && self.paused_run.is_some() && self.texts.contains_key(item_id)) => {}
             Payload::AssistantMessage { item_id, text, completed, .. } => {
                 self.open(&mut out, thread, sequence);
                 self.last_text = Some(item_id.clone());
@@ -283,17 +293,20 @@ impl View {
                 custom = true;
             }
             Payload::Approval { request_id, state: ApprovalState::Requested, summary, options } => {
-                self.open(&mut out, thread, sequence);
-                self.request(&mut out, thread, permission_request(request_id, event.generation, summary, options));
+                self.request(&mut out, thread, sequence, permission_request(request_id, event.generation, summary, options));
+            }
+            // Withdrawn, not answered: the turn's end usually follows (Stop, a failure).
+            Payload::Approval { request_id, state: ApprovalState::Expired, .. }
+            | Payload::UserInputResolved { request_id, cancelled: true } => {
+                self.requests.retain(|open| open.id != *request_id);
             }
             Payload::Approval { request_id, .. } | Payload::UserInputResolved { request_id, .. } => {
                 self.answered(&mut out, thread, request_id);
             }
             Payload::UserInputRequested { request_id, title, description, fields, can_decline } => {
-                self.open(&mut out, thread, sequence);
                 let mut metadata = Map::new();
                 metadata.insert("assembly:input".into(), json!({ "description": description, "canDecline": can_decline, "fields": fields }));
-                self.request(&mut out, thread, OpenRequest {
+                self.request(&mut out, thread, sequence, OpenRequest {
                     id: request_id.clone(), generation: event.generation, is_input: true, option_ids: Vec::new(), reason: "input",
                     message: title.clone(), schema: input_schema(fields), metadata,
                 });
@@ -334,10 +347,15 @@ impl View {
         out
     }
 
-    /// Opens a run for content that arrives outside one, unless a pause is open.
+    /// Opens a run for content that arrives outside one. Content during a pause
+    /// gets a run of its own; a pause whose requests were withdrawn ends first.
     fn open(&mut self, out: &mut Vec<Value>, thread: &str, sequence: i64) {
-        if self.open_run.is_some() || self.paused_run.is_some() {
+        if self.open_run.is_some() {
             return;
+        }
+        if let Some(paused) = self.paused_run.take_if(|_| self.requests.is_empty()) {
+            out.push(agui::run_finished(thread, &paused, None, None));
+            self.next_parent.get_or_insert(paused);
         }
         let run_id = self.next_run.take().unwrap_or_else(|| format!("run-{sequence}"));
         out.push(agui::run_started(thread, &run_id, self.next_parent.take().as_deref()));
@@ -375,39 +393,42 @@ impl View {
         }
     }
 
-    /// Starts a call once; sends its arguments once they are known (later
-    /// updates carry them), then its result.
+    /// Starts a call once; streams its arguments once they are known (later
+    /// updates carry them), and ends it with the latest ones, then its result.
     fn tool(&mut self, out: &mut Vec<Value>, id: &str, name: &str, state: ToolState, fields: [&Option<String>; 4], sequence: i64) {
         let [summary, output, path, diff] = fields;
         if self.ended.contains(id) {
             return;
         }
         let parent = self.last_text.clone();
-        let args_sent = *self.tools.entry(id.to_string()).or_insert_with(|| {
+        let args = self.tools.entry(id.to_string()).or_insert_with(|| {
             out.push(agui::tool_start(id, name, parent.as_deref(), json!({ "assembly": { "sequence": sequence } })));
-            false
+            Map::new()
         });
-        let done = matches!(state, ToolState::Completed | ToolState::Failed);
-        let mut args = Map::new();
+        let first = args.is_empty();
         for (key, value) in [("summary", summary), ("path", path)] {
             if let Some(value) = value {
                 args.insert(key.into(), json!(value));
             }
         }
-        if !args_sent && (done || !args.is_empty()) {
-            out.push(agui::tool_args(id, &Value::Object(args)));
-            out.push(agui::tool_end(id));
-            self.tools.insert(id.to_string(), true);
+        if first && !args.is_empty() {
+            out.push(agui::tool_args(id, &Value::Object(args.clone())));
         }
-        if done {
+        if matches!(state, ToolState::Completed | ToolState::Failed) {
+            out.push(agui::tool_end(id, &Value::Object(self.tools.remove(id).unwrap_or_default())));
             let content = output.as_deref().or(summary.as_deref()).unwrap_or_default();
             out.push(agui::tool_result(id, content, state == ToolState::Failed, diff.as_deref()));
-            self.tools.remove(id);
             self.ended.insert(id.to_string());
         }
     }
 
     fn child(&mut self, out: &mut Vec<Value>, id: &str, parent_tool_call_id: &str, label: Option<&str>, state: &str) {
+        let done = matches!(state, "finished" | "done" | "completed" | "cancelled" | "stopped");
+        let failed = matches!(state, "failed" | "error" | "disconnected");
+        if (done || failed) && !self.children.contains_key(id) {
+            // Closed when an earlier turn ended.
+            return;
+        }
         let finished = self.children.entry(id.to_string()).or_insert_with(|| {
             let parent = (!parent_tool_call_id.is_empty()).then_some(parent_tool_call_id);
             out.push(agui::subagent_started(id, label.unwrap_or("Subagent"), parent));
@@ -416,16 +437,21 @@ impl View {
         if *finished {
             return;
         }
-        match state {
-            "finished" | "done" | "completed" => out.push(agui::subagent_finished(id)),
-            "failed" | "error" | "disconnected" => out.push(agui::subagent_error(id, state)),
-            _ => return,
+        if done {
+            out.push(agui::subagent_finished(id));
+        } else if failed {
+            out.push(agui::subagent_error(id, state));
+        } else {
+            return;
         }
         *finished = true;
     }
 
     /// A request ends the run it interrupts; a second one joins the same pause.
-    fn request(&mut self, out: &mut Vec<Value>, thread: &str, request: OpenRequest) {
+    fn request(&mut self, out: &mut Vec<Value>, thread: &str, sequence: i64, request: OpenRequest) {
+        if self.requests.is_empty() {
+            self.open(out, thread, sequence);
+        }
         if self.paused_run.is_none() {
             self.paused_run = self.open_run.take();
         }
@@ -437,6 +463,7 @@ impl View {
     /// An answer from any surface (this view's `resume`, the approval card, the
     /// inbox, the phone) finishes the paused run at once, so the stock client
     /// drops the interrupt and unlocks; the continuation names it as parent.
+    /// A withdrawn request is not an answer: the turn's end or `open` ends it.
     fn answered(&mut self, out: &mut Vec<Value>, thread: &str, request_id: &str) {
         let before = self.requests.len();
         self.requests.retain(|open| open.id != request_id);
@@ -454,36 +481,40 @@ impl View {
     }
 
     fn finish(&mut self, out: &mut Vec<Value>, thread: &str, state: TurnState, sequence: i64) {
+        // Replies, calls and child agents still open end before their run does.
+        let mut texts: Vec<String> = self.texts.drain().map(|(id, _)| id).collect();
+        texts.sort();
+        out.extend(texts.iter().map(|id| agui::text_end(id)));
+        let mut tools: Vec<(String, Map<String, Value>)> = self.tools.drain().collect();
+        tools.sort_by(|a, b| a.0.cmp(&b.0));
+        out.extend(tools.into_iter().map(|(id, args)| agui::tool_end(&id, &Value::Object(args))));
+        let mut children: Vec<String> = self.children.drain().filter(|(_, finished)| !finished).map(|(id, _)| id).collect();
+        children.sort();
+        out.extend(children.iter().map(|id| agui::subagent_finished(id)));
+        let error = matches!(state, TurnState::Failed)
+            .then(|| self.error.take().unwrap_or_else(|| ("turn_failed".into(), "The turn failed".into())));
+        let failed = |run: &str| error.as_ref().map(|(code, message)| agui::run_error(thread, run, message, Some(code.as_str())));
         if let Some(paused) = self.paused_run.take() {
-            // The turn ended while it waited, such as on Stop.
+            // The turn ended while it waited, such as on Stop or a failure.
             self.requests.clear();
-            out.push(agui::run_finished(thread, &paused, Some(agui::cancelled()), None));
+            out.push(failed(&paused).unwrap_or_else(|| agui::run_finished(thread, &paused, Some(agui::cancelled()), None)));
         }
         if self.open_run.is_none() && self.next_run.is_some() {
             // The client is waiting on the run it asked for.
             self.open(out, thread, sequence);
         }
         if let Some(run) = self.open_run.take() {
-            // A reply still streaming ends before its run does.
-            let mut open: Vec<String> = self.texts.drain().map(|(id, _)| id).collect();
-            open.sort();
-            out.extend(open.iter().map(|id| agui::text_end(id)));
             let usage = self.usage.take();
-            out.push(match state {
-                TurnState::Failed => {
-                    let (code, message) = self.error.take().unwrap_or_else(|| ("turn_failed".into(), "The turn failed".into()));
-                    agui::run_error(thread, &run, &message, Some(&code))
-                }
+            out.push(failed(&run).unwrap_or_else(|| match state {
                 TurnState::Interrupted => agui::run_finished(thread, &run, Some(agui::cancelled()), usage),
                 _ => agui::run_finished(thread, &run, None, usage),
-            });
+            }));
         }
+        self.next_run = None;
         self.next_parent = None;
         self.usage = None;
         self.error = None;
-        self.texts.clear();
         self.ended.clear();
-        self.tools.clear();
         self.last_text = None;
     }
 

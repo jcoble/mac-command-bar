@@ -117,8 +117,9 @@ pub fn tool_args(tool_call_id: &str, args: &Value) -> Value {
     json!({ "type": "TOOL_CALL_ARGS", "toolCallId": tool_call_id, "delta": args.to_string() })
 }
 
-pub fn tool_end(tool_call_id: &str) -> Value {
-    json!({ "type": "TOOL_CALL_END", "toolCallId": tool_call_id })
+/// `input` is the call's latest arguments; the stock client takes them as final.
+pub fn tool_end(tool_call_id: &str, input: &Value) -> Value {
+    json!({ "type": "TOOL_CALL_END", "toolCallId": tool_call_id, "input": input })
 }
 
 /// A failed call keeps its error on the call (`output-error`), never `RUN_ERROR`.

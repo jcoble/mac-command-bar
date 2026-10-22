@@ -47,6 +47,41 @@ fn types(chunks: &[Value]) -> Vec<&str> {
     chunks.iter().map(|chunk| chunk["type"].as_str().unwrap()).collect()
 }
 
+/// What the stock client needs: each run starts once and ends once (an
+/// interrupt only pauses it), content comes while a run is live, and every
+/// message and call is closed before the last run ends (a call may span a
+/// pause: the stock client completes open calls at the interrupt).
+fn assert_well_formed(chunks: &[Value]) {
+    let (mut started, mut ended, mut live, mut open) = (HashSet::new(), HashSet::new(), HashSet::new(), HashSet::new());
+    for chunk in chunks {
+        let run = chunk["runId"].as_str().unwrap_or_default().to_string();
+        let item = chunk["messageId"].as_str().or(chunk["toolCallId"].as_str()).unwrap_or_default().to_string();
+        match chunk["type"].as_str().unwrap() {
+            "RUN_STARTED" => assert!(started.insert(run.clone()) && live.insert(run), "a run started twice: {chunk}"),
+            "RUN_FINISHED" if chunk["outcome"]["type"] == "interrupt" => {
+                assert!(started.contains(&run) && !ended.contains(&run), "a pause outside its run: {chunk}");
+                live.remove(&run);
+            }
+            "RUN_FINISHED" | "RUN_ERROR" => {
+                assert!(started.contains(&run) && ended.insert(run.clone()), "a run ended twice or never started: {chunk}");
+                live.remove(&run);
+            }
+            "TEXT_MESSAGE_END" | "TOOL_CALL_END" => {
+                assert!(started.len() > ended.len() && open.remove(&item), "an end outside a run or for nothing open: {chunk}");
+            }
+            "CUSTOM" | "SUBAGENT_STARTED" | "SUBAGENT_FINISHED" | "SUBAGENT_ERROR" => {}
+            kind => {
+                assert!(!live.is_empty(), "{kind} outside a live run: {chunk}");
+                if kind.ends_with("_START") {
+                    open.insert(item);
+                }
+            }
+        }
+    }
+    assert_eq!(started, ended, "every run ends");
+    assert!(open.is_empty(), "{open:?} still open after the last run ended");
+}
+
 fn turn(state: TurnState) -> Payload { Payload::Turn { turn_id: "turn-1".into(), state } }
 fn delta(id: &str, text: &str) -> Payload { Payload::AssistantDelta { item_id: id.into(), delta: text.into() } }
 fn reply(id: &str, text: &str) -> Payload { Payload::AssistantMessage { item_id: id.into(), text: text.into(), completed: true, blocks: None } }
@@ -102,6 +137,7 @@ fn permission_scenario(choice: &str) -> (Script, Vec<Value>) {
 #[test]
 fn a_permission_pauses_the_run_and_the_client_resume_continues_it() {
     let (_, chunks) = permission_scenario("allow-once");
+    assert_well_formed(&chunks);
     assert_eq!(types(&chunks), [
         "RUN_STARTED", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END", "TOOL_CALL_START", "RUN_FINISHED",
         "RUN_FINISHED", "RUN_STARTED", "TOOL_CALL_ARGS", "TOOL_CALL_END", "TOOL_CALL_RESULT",
@@ -145,7 +181,6 @@ fn an_answer_from_any_surface_ends_the_paused_run_at_once() {
     let resolutions = [
         ("permission accepted on the card, inbox or phone", permission("perm-1", ApprovalState::Accepted)),
         ("permission declined", permission("perm-1", ApprovalState::Declined)),
-        ("permission expired by its session", permission("perm-1", ApprovalState::Expired)),
         ("question answered", Payload::UserInputResolved { request_id: "perm-1".into(), cancelled: false }),
     ];
     for (surface, resolution) in resolutions {
@@ -183,6 +218,132 @@ fn a_session_that_dies_while_a_request_waits_ends_the_paused_run() {
     let ended = script.send(Payload::Connection { state: ConversationConnectionState::Failed, native_session_id: None });
     assert_eq!(types(&ended), ["TEXT_MESSAGE_END", "RUN_FINISHED", "CUSTOM"], "the half reply ends before its run");
     assert_eq!(ended[1]["outcome"]["type"], "cancelled");
+}
+
+/// An expired permission or a cancelled question is withdrawn, not answered:
+/// on Stop or a failure the turn's end follows, so the pause ends only when
+/// something comes next, as cancelled when it is the turn's end.
+#[test]
+fn a_withdrawn_request_ends_its_pause_only_when_the_turn_goes_on() {
+    for withdrawn in [permission("perm-1", ApprovalState::Expired), Payload::UserInputResolved { request_id: "perm-1".into(), cancelled: true }] {
+        let mut script = Script::open();
+        let mut chunks = script.send(turn(TurnState::Started));
+        let request = if matches!(withdrawn, Payload::UserInputResolved { .. }) { question("perm-1") } else { permission("perm-1", ApprovalState::Requested) };
+        chunks.extend(script.send(request));
+        let paused_run = chunks[0]["runId"].clone();
+        assert!(script.send(withdrawn).is_empty());
+        // A question its user declined: the agent goes on.
+        let continued = script.send(delta("msg-1", "Skipping that."));
+        assert_eq!(types(&continued), ["RUN_FINISHED", "RUN_STARTED", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT"]);
+        assert_eq!((&continued[0]["runId"], continued[0].get("outcome")), (&paused_run, None));
+        assert_eq!(continued[1]["parentRunId"], paused_run);
+        chunks.extend(continued);
+        chunks.extend(script.send(turn(TurnState::Completed)));
+        assert_well_formed(&chunks);
+    }
+}
+
+/// Stop with a reply streaming and a call waiting on a permission: the manager
+/// expires the request, re-sends the reply whole, then ends the turn.
+#[test]
+fn a_stop_while_paused_ends_what_is_open_then_cancels_the_paused_run() {
+    let mut script = Script::open();
+    let mut chunks = script.send(turn(TurnState::Started));
+    chunks.extend(script.send(delta("msg-1", "Working")));
+    chunks.extend(script.send(tool("tool-1", ToolState::Started, None, None)));
+    chunks.extend(script.send(permission("perm-1", ApprovalState::Requested)));
+    let stopped: Vec<Value> = [permission("perm-1", ApprovalState::Expired), reply("msg-1", "Working"), turn(TurnState::Interrupted)]
+        .into_iter().flat_map(|payload| script.send(payload)).collect();
+    assert_eq!(types(&stopped), ["TEXT_MESSAGE_END", "TOOL_CALL_END", "RUN_FINISHED"], "no run starts after the pause");
+    assert_eq!((&stopped[2]["runId"], &stopped[2]["outcome"]["type"]), (&chunks[0]["runId"], &json!("cancelled")));
+    chunks.extend(stopped);
+    assert_well_formed(&chunks);
+}
+
+#[test]
+fn a_failure_while_paused_is_a_run_error_on_the_paused_run() {
+    let mut script = Script::open();
+    let mut chunks = script.send(turn(TurnState::Started));
+    chunks.extend(script.send(question("ask-1")));
+    let failed: Vec<Value> = [Payload::Error { code: "provider_error".into(), message: "The model is overloaded".into(), recoverable: false },
+        Payload::UserInputResolved { request_id: "ask-1".into(), cancelled: true }, turn(TurnState::Failed)]
+        .into_iter().flat_map(|payload| script.send(payload)).collect();
+    assert_eq!(types(&failed), ["CUSTOM", "RUN_ERROR"]);
+    assert_eq!((&failed[1]["runId"], &failed[1]["message"]), (&chunks[0]["runId"], &json!("The model is overloaded")));
+    chunks.extend(failed);
+    assert_well_formed(&chunks);
+}
+
+#[test]
+fn calls_and_child_agents_still_open_are_closed_when_the_turn_ends() {
+    let mut script = Script::open();
+    let child = |id: &str, state: &str| Payload::ChildUpdate { child_id: id.into(), parent_tool_call_id: String::new(), parent_id: None,
+        transcript_id: None, label: None, state: state.into(), latest_activity: None };
+    let mut chunks = script.send(turn(TurnState::Started));
+    chunks.extend(script.send(tool("tool-1", ToolState::Started, None, None)));
+    chunks.extend(script.send(child("child-1", "running")));
+    chunks.extend(script.send(child("child-2", "running")));
+    assert_eq!(types(&script.send(child("child-2", "cancelled"))), ["SUBAGENT_FINISHED", "CUSTOM"]);
+    let ended = script.send(turn(TurnState::Completed));
+    assert_eq!(types(&ended), ["TOOL_CALL_END", "SUBAGENT_FINISHED", "RUN_FINISHED"]);
+    assert_eq!(ended[1]["subagentRunId"], "child-1");
+    chunks.extend(ended);
+    assert_well_formed(&chunks);
+}
+
+#[test]
+fn a_client_run_survives_a_reopen_and_does_not_outlive_its_turn() {
+    let mut script = Script::open();
+    script.run("run-client-1", None, Vec::new()).unwrap();
+    script.views.begin_open(THREAD);
+    let history = [event(1, user("user-0", "Earlier")), event(2, turn(TurnState::Completed))];
+    script.views.finish_open(THREAD, Some((&history, &HashSet::new(), 2)));
+    script.sequence = 2;
+    assert_eq!(script.send(user("user-1", "Now"))[0]["runId"], "run-client-1", "the replayed history does not use it up");
+    // A steer's run while one is open is not used by a later turn.
+    script.run("run-client-2", None, Vec::new()).unwrap();
+    script.send(turn(TurnState::Completed));
+    assert_eq!(script.send(user("user-2", "From the phone"))[0]["runId"], "run-5");
+}
+
+#[test]
+fn content_during_a_pause_comes_inside_a_run() {
+    let mut script = Script::open();
+    let mut chunks = script.send(turn(TurnState::Started));
+    chunks.extend(script.send(tool("tool-1", ToolState::Started, Some("Write notes/hello.txt"), None)));
+    chunks.extend(script.send(permission("perm-1", ApprovalState::Requested)));
+    let parallel = script.send(tool("tool-1", ToolState::Completed, Some("Write notes/hello.txt"), Some("done")));
+    assert_eq!(types(&parallel), ["RUN_STARTED", "TOOL_CALL_END", "TOOL_CALL_RESULT"]);
+    assert!(parallel[0].get("parentRunId").is_none(), "it does not answer the pause: {}", parallel[0]);
+    chunks.extend(parallel);
+    chunks.extend(script.send(permission("perm-1", ApprovalState::Accepted)));
+    chunks.extend(script.send(turn(TurnState::Completed)));
+    assert_well_formed(&chunks);
+}
+
+#[test]
+fn a_closed_session_drops_its_view_and_child_agents_are_kept_per_turn() {
+    let mut script = Script::open();
+    script.send(turn(TurnState::Started));
+    script.send(Payload::ChildUpdate { child_id: "child-1".into(), parent_tool_call_id: String::new(), parent_id: None,
+        transcript_id: None, label: None, state: "running".into(), latest_activity: None });
+    script.send(turn(TurnState::Completed));
+    assert!(script.views.views[THREAD].children.is_empty());
+    script.send(Payload::Connection { state: ConversationConnectionState::Closed, native_session_id: None });
+    assert!(!script.views.views.contains_key(THREAD));
+}
+
+#[test]
+fn arguments_that_change_before_a_call_ends_reach_the_client() {
+    let mut script = Script::open();
+    script.send(turn(TurnState::Started));
+    let task = |state: ToolState, summary: &str| Payload::Tool { item_id: "background-task:1".into(), name: "Background command".into(), state,
+        summary: Some(summary.into()), output: None, path: None, diff: None };
+    assert_eq!(types(&script.send(task(ToolState::Started, "npm test"))), ["TOOL_CALL_START", "TOOL_CALL_ARGS"]);
+    assert!(script.send(task(ToolState::Updated, "npm test: 40 of 90")).is_empty());
+    let done = script.send(task(ToolState::Completed, "Completed"));
+    assert_eq!(types(&done), ["TOOL_CALL_END", "TOOL_CALL_RESULT"]);
+    assert_eq!(done[0]["input"], json!({ "summary": "Completed" }));
 }
 
 #[test]
@@ -324,17 +485,18 @@ fn a_session_without_an_open_view_projects_nothing() {
     assert!(views.project(&event(1, turn(TurnState::Started))).is_empty());
 }
 
-/// Writes the scenarios above as chunk files for the frontend's contract test,
-/// when `AGUI_FIXTURE_OUT` names a folder. `rust-chunks.jsonl` holds client
-/// runs only; `rust-chunks-extra.jsonl` holds the answers from other surfaces,
-/// a Stop during a pause, and a reopened view.
+/// The scenarios the frontend's contract test plays are well formed; with
+/// `AGUI_FIXTURE_OUT` naming a folder they are also written there for it.
+/// `rust-chunks.jsonl` holds client runs only; `rust-chunks-extra.jsonl` holds
+/// the answers from other surfaces, a Stop during a pause, and a reopened view.
 #[test]
-fn writes_contract_fixtures() {
-    let Some(folder) = std::env::var_os("AGUI_FIXTURE_OUT") else { return };
+fn contract_scenarios_are_well_formed() {
     let line = |scenario: &str, chunk: &Value| json!({ "scenario": scenario, "ownedId": THREAD, "chunk": chunk }).to_string();
     let mut runs = Vec::new();
     for (scenario, choice) in [("permission-allow", "allow-once"), ("permission-reject", "reject")] {
-        runs.extend(permission_scenario(choice).1.iter().map(|chunk| line(scenario, chunk)));
+        let chunks = permission_scenario(choice).1;
+        assert_well_formed(&chunks);
+        runs.extend(chunks.iter().map(|chunk| line(scenario, chunk)));
     }
     let mut script = Script::open();
     script.run("run-client-3", None, Vec::new()).unwrap();
@@ -350,20 +512,21 @@ fn writes_contract_fixtures() {
     question_run.extend(script.send(turn(TurnState::Started)));
     question_run.extend(script.send(Payload::Error { code: "provider_error".into(), message: "Overloaded".into(), recoverable: false }));
     question_run.extend(script.send(turn(TurnState::Failed)));
+    assert_well_formed(&question_run);
     runs.extend(question_run.iter().map(|chunk| line("question-then-failed-turn", chunk)));
 
-    let mut extra = Vec::new();
     let mut other = Script::open();
-    for payload in [turn(TurnState::Started), permission("perm-1", ApprovalState::Requested), permission("perm-1", ApprovalState::Accepted),
+    let other_run: Vec<Value> = [turn(TurnState::Started), permission("perm-1", ApprovalState::Requested), permission("perm-1", ApprovalState::Accepted),
         delta("msg-3", "Done."), reply("msg-3", "Done."), turn(TurnState::Completed), turn(TurnState::Started),
-        permission("perm-2", ApprovalState::Requested), turn(TurnState::Interrupted)] {
-        extra.extend(other.send(payload).iter().map(|chunk| line("other-surface-and-stop", chunk)));
-    }
+        permission("perm-2", ApprovalState::Requested), turn(TurnState::Interrupted)].into_iter().flat_map(|payload| other.send(payload)).collect();
+    assert_well_formed(&other_run);
+    let mut extra: Vec<String> = other_run.iter().map(|chunk| line("other-surface-and-stop", chunk)).collect();
     let snapshot = [event(10, turn(TurnState::Started)), event(11, delta("msg-4", "Let me check.")), event(12, permission("perm-3", ApprovalState::Requested))];
     let mut views = AguiProjector::default();
     views.begin_open(THREAD);
     let opened = views.finish_open(THREAD, Some((&snapshot, &HashSet::from(["perm-3".to_string()]), 12)));
     extra.extend(opened.events.iter().chain(opened.open_requests.iter()).map(|chunk| line("reopened-view", chunk)));
+    let Some(folder) = std::env::var_os("AGUI_FIXTURE_OUT") else { return };
     let folder = std::path::PathBuf::from(folder);
     std::fs::write(folder.join("rust-chunks.jsonl"), runs.join("\n") + "\n").unwrap();
     std::fs::write(folder.join("rust-chunks-extra.jsonl"), extra.join("\n") + "\n").unwrap();
