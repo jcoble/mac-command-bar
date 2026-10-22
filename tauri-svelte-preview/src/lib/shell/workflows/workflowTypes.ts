@@ -73,6 +73,8 @@ export interface WorkflowDefinitionV1 {
   name: string;
   description: string;
   trigger: unknown;
+  /** The file's `limits`, such as `max_rounds`. */
+  limits?: Record<string, unknown>;
   inputs: unknown[];
   roles: AgentRoleDefinition[];
   nodes: WorkflowNodeDefinition[];
@@ -100,6 +102,8 @@ export interface WorkflowNodeDefinition {
   id: string;
   title: string;
   roleId: string;
+  /** The step as written in the workflow file: `review`, `on_fail`, `run`, `agent`. */
+  step?: Record<string, unknown>;
   dependsOn: string[];
   condition: unknown | null;
   fanOut: unknown | null;

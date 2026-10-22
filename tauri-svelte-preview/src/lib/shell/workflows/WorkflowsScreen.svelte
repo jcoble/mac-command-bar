@@ -17,6 +17,7 @@
   import { parseRemoteWorkspacePath } from '$lib/workspacePaths.ts';
   import { listWorkflowRuns } from './workflowService.ts';
   import { workflowErrorText, type WorkflowRunRecord } from './workflowTypes.ts';
+  import WorkflowBoard from './components/WorkflowBoard.svelte';
 
   interface Props {
     /** The active session's project; a remote project's runs are on that machine's engine. */
@@ -30,8 +31,20 @@
   let runs = $state<WorkflowRunRecord[]>([]);
   let loaded = $state(false);
   let error = $state('');
+  let openRunId = $state<string | null>(null);
+  let now = $state(Date.now());
   /** Ends every read and listener when the screen closes. */
   const stop = new AbortController();
+
+  // One clock for every elapsed time on screen; it runs only while a running run or step is shown.
+  const ticking = $derived(runs.some((run) => run.nodes.some((node) => node.state === 'running' || node.state === 'starting')
+    && (openRunId === null || openRunId === run.id)));
+  $effect(() => {
+    if (!ticking) return;
+    now = Date.now();
+    const timer = window.setInterval(() => (now = Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  });
 
   onMount(() => {
     void follow(stop.signal);
@@ -90,6 +103,8 @@
 
   {#if loaded && runs.length === 0 && !error}
     <p class="text-[13px] text-muted-foreground">No workflow runs yet.</p>
+  {:else if runs.length}
+    <WorkflowBoard {runs} {now} costOf={() => ''} onOpen={(runId) => (openRunId = runId)} />
   {/if}
 </div>
 
