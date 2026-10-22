@@ -50,6 +50,14 @@ export function shortProjectPath(path: string): string {
   return path.replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, '~');
 }
 
+/** A path longer than `max` characters, cut in the middle so its start and its last folder stay readable. */
+export function middleTruncatePath(path: string, max: number): string {
+  if (path.length <= max) return path;
+  const last = path.slice(path.lastIndexOf('/'));
+  const keep = max - last.length - 1;
+  return keep > 0 ? `${path.slice(0, keep)}…${last}` : `…${last}`;
+}
+
 /** When the project was last used, as the short age the app prints elsewhere ("5m", "2h", "3d"); empty if never. */
 export function projectLastUsedLabel(lastUsedMs: number | null, now: Date): string {
   return lastUsedMs === null ? '' : formatAge(new Date(lastUsedMs).toISOString(), now);
@@ -124,7 +132,7 @@ export function otherProjectGroups(
         const native = parseRemoteWorkspacePath(checkout.path)?.path ?? checkout.path;
         const folder = trimSlash(native).split('/').at(-1) ?? native;
         const branch = checkout.branch.trim();
-        return { projectId: project.id, path: checkout.path, folder: native, label: branch ? `${folder} — ${branch}` : folder, detail: shortProjectPath(native), worktree: true };
+        return { projectId: project.id, path: checkout.path, folder: native, label: branch && branch !== folder ? `${folder} — ${branch}` : folder, detail: shortProjectPath(native), worktree: true };
       });
       return [{ projectId: project.id, path: root, folder: project.rootPath, label: project.title, detail: shortProjectPath(project.rootPath), worktree: false }, ...worktrees];
     });

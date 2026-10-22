@@ -27,15 +27,25 @@ pub(super) fn add_board_schema(c: &Connection) -> Result<()> {
     -- A deleted session's questions go with it; nobody is left to answer them.
     CREATE TRIGGER IF NOT EXISTS board_questions_session_deleted AFTER DELETE ON sessions
     BEGIN DELETE FROM board_questions WHERE session_owned_id=OLD.owned_id; END;")
-        .map_err(|e| StoreError::sqlite("could not create the board tables", e))
+        .map_err(|e| StoreError::sqlite("could not create the board tables", e))?;
+    // When an agent last asked for the card or question to go to the owner's phone; the push sends once for each.
+    for table in ["board_cards","board_questions"] {
+        let exists: bool=c.query_row(&format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name='notified_at_ms')"),[],|r|r.get(0))
+            .map_err(|e| StoreError::sqlite("could not inspect the board tables", e))?;
+        if !exists {
+            c.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN notified_at_ms INTEGER;"))
+                .map_err(|e| StoreError::sqlite("could not add the notify column", e))?;
+        }
+    }
+    Ok(())
 }
 
 const UPSERT: &str = "INSERT INTO board_cards(card_key,title,state,summary,steps_json,agent_note,task_key,task_url,pr_url,run_id,
-    session_owned_id,written_by,created_by,created_at_ms,updated_at_ms)
+    session_owned_id,written_by,created_by,created_at_ms,updated_at_ms,notified_at_ms)
 VALUES (:key, COALESCE(:title,(SELECT title FROM board_cards WHERE card_key=:key)),
     COALESCE(:state,(SELECT state FROM board_cards WHERE card_key=:key)), COALESCE(:summary,''), COALESCE(:steps,'[]'),
     NULLIF(:note,''), NULLIF(:task_key,''), NULLIF(:task_url,''), NULLIF(:pr_url,''), NULLIF(:run_id,''),
-    COALESCE(:session,:caller), :caller, :caller, :now, :now)
+    COALESCE(:session,:caller), :caller, :caller, :now, :now, CASE WHEN :notify THEN :now END)
 ON CONFLICT(card_key) DO UPDATE SET title=excluded.title, state=excluded.state,
     summary=COALESCE(:summary,summary), steps_json=COALESCE(:steps,steps_json),
     agent_note=CASE WHEN :note IS NULL THEN agent_note ELSE NULLIF(:note,'') END,
@@ -44,15 +54,17 @@ ON CONFLICT(card_key) DO UPDATE SET title=excluded.title, state=excluded.state,
     pr_url=CASE WHEN :pr_url IS NULL THEN pr_url ELSE NULLIF(:pr_url,'') END,
     run_id=CASE WHEN :run_id IS NULL THEN run_id ELSE NULLIF(:run_id,'') END,
     session_owned_id=COALESCE(:session,session_owned_id), written_by=:caller, updated_at_ms=:now,
+    notified_at_ms=CASE WHEN :notify THEN :now ELSE notified_at_ms END,
     snoozed_until_ms=CASE WHEN excluded.state IS NOT state THEN NULL ELSE snoozed_until_ms END
 WHERE dropped_at_ms IS NULL AND (:orch OR created_by=:caller)";
 
-const QUESTION_UPSERT: &str = "INSERT INTO board_questions(question_key,title,body,recommended,session_owned_id,created_by,answer,asked_at_ms,answered_at_ms)
+const QUESTION_UPSERT: &str = "INSERT INTO board_questions(question_key,title,body,recommended,session_owned_id,created_by,answer,asked_at_ms,answered_at_ms,notified_at_ms)
 VALUES (:key, COALESCE(:title,(SELECT title FROM board_questions WHERE question_key=:key)),
     COALESCE(:question,(SELECT body FROM board_questions WHERE question_key=:key),''),
     NULLIF(:recommended,''), COALESCE(:session,:caller), :caller, :answer, :now,
-    CASE WHEN :answer IS NULL THEN NULL ELSE :now END)
+    CASE WHEN :answer IS NULL THEN NULL ELSE :now END, CASE WHEN :notify THEN :now END)
 ON CONFLICT(question_key) DO UPDATE SET title=excluded.title, body=excluded.body,
+    notified_at_ms=CASE WHEN :notify THEN :now ELSE notified_at_ms END,
     recommended=CASE WHEN :recommended IS NULL THEN recommended ELSE NULLIF(:recommended,'') END,
     session_owned_id=COALESCE(:session,session_owned_id),
     -- New question text without an answer is the question asked again: it reopens.
@@ -175,6 +187,7 @@ impl SessionStore {
         for field in ["state","task_key","run_id","session"] {
             if patch.get(field).is_some_and(|v| !v.is_string()) { return Err(StoreError::message("card text must be a string")); }
         }
+        if patch.get("notify").is_some_and(|v| !v.is_boolean()) { return Err(StoreError::message("notify must be true or false")); }
         if patch.get("state").is_some_and(|v| !matches!(v.as_str(),Some("needs_you"|"running"|"in_review"|"done"))) {
             return Err(StoreError::message("state must be needs_you, running, in_review or done"));
         }
@@ -190,7 +203,7 @@ impl SessionStore {
         let changed=c.execute(UPSERT,named_params! {":key":key,":caller":caller,":orch":orch,":now":now,
             ":title":text("title"),":state":text("state"),":summary":text("summary"),":steps":steps,
             ":note":text("note"),":task_key":text("task_key"),":task_url":text("task_url"),":pr_url":text("pr_url"),
-            ":run_id":text("run_id"),":session":text("session")});
+            ":run_id":text("run_id"),":session":text("session"),":notify":patch["notify"]==true});
         match changed {
             Ok(0) => {
                 let dropped: bool=c.query_row("SELECT dropped_at_ms IS NOT NULL FROM board_cards WHERE card_key=?",[key],|r|r.get(0))
@@ -218,11 +231,12 @@ impl SessionStore {
             }
         }
         if patch.get("session").is_some_and(|v| !v.is_string()) { return Err(StoreError::message("question text must be a string")); }
+        if patch.get("notify").is_some_and(|v| !v.is_boolean()) { return Err(StoreError::message("notify must be true or false")); }
         let text=|field: &str| patch.get(field).and_then(Value::as_str);
         let c=self.lock_write()?;
         let id=c.query_row(QUESTION_UPSERT,named_params! {":key":key,":caller":caller,":orch":orch,":now":now,
             ":title":text("title"),":question":text("question"),":recommended":text("recommended"),
-            ":answer":text("answer"),":session":text("session")},|r|r.get(0));
+            ":answer":text("answer"),":session":text("session"),":notify":patch["notify"]==true},|r|r.get(0));
         match id {
             Ok(id) => Ok(id),
             Err(rusqlite::Error::QueryReturnedNoRows) => Err(StoreError::message("this question belongs to another session")),
@@ -263,6 +277,33 @@ impl SessionStore {
         let json: String=self.lock()?.query_row(&format!("{LATEST}{BOARD}"),params![today_ms,now_ms],|r|r.get(0))
             .map_err(|e|StoreError::sqlite("could not read the board",e))?;
         serde_json::from_str(&json).map_err(|_|StoreError::message("could not read the board document"))
+    }
+
+    /// Cards and questions an agent sent to the owner's phone after `after_ms`, oldest first; `at` is when.
+    pub fn board_notified_since(&self, after_ms: i64) -> Result<Vec<Value>> {
+        self.board_phone_items(("c.notified_at_ms","c.notified_at_ms>?1"), ("q.notified_at_ms","q.notified_at_ms>?1"), &[after_ms])
+    }
+
+    /// Needs-you cards (not snoozed at `now_ms`) and open questions posted after `after_ms` and at or
+    /// before `until_ms`, oldest first; `at` is when they were posted.
+    pub fn board_unanswered(&self, after_ms: i64, until_ms: i64, now_ms: i64) -> Result<Vec<Value>> {
+        self.board_phone_items(("c.updated_at_ms","c.state='needs_you' AND c.dropped_at_ms IS NULL AND c.updated_at_ms>?1
+                AND c.updated_at_ms<=?2 AND (c.snoozed_until_ms IS NULL OR c.snoozed_until_ms<=?3)"),
+            ("q.asked_at_ms","q.answered_at_ms IS NULL AND q.asked_at_ms>?1 AND q.asked_at_ms<=?2"), &[after_ms,until_ms,now_ms])
+    }
+
+    /// Board items for a phone push, each `(time column, filter)`: kind, key, title, text (what the owner must
+    /// do: the card's first step, else its summary or note, or the question), the posting session's id and name, and at.
+    fn board_phone_items(&self, (card_at, cards): (&str, &str), (question_at, questions): (&str, &str), args: &[i64]) -> Result<Vec<Value>> {
+        let json: String=self.lock()?.query_row(&format!("SELECT json_group_array(json(item) ORDER BY at) FROM (
+            SELECT {card_at} AS at, json_object('kind','card','key',c.card_key,'title',c.title,
+                'text',COALESCE(json_extract(c.steps_json,'$[0]'),NULLIF(c.summary,''),c.agent_note),'session',c.written_by,'session_name',s.title,'at',{card_at}) AS item
+            FROM board_cards c LEFT JOIN sessions s ON s.owned_id=c.written_by WHERE {cards}
+            UNION ALL
+            SELECT {question_at}, json_object('kind','question','key',q.question_key,'title',q.title,'text',q.body,'session',q.session_owned_id,'session_name',s.title,'at',{question_at})
+            FROM board_questions q LEFT JOIN sessions s ON s.owned_id=q.session_owned_id WHERE {questions})"),rusqlite::params_from_iter(args),|r|r.get(0))
+            .map_err(|e|StoreError::sqlite("could not read the board items for the phone",e))?;
+        serde_json::from_str(&json).map_err(|_|StoreError::message("could not read the board items for the phone"))
     }
 
     pub fn board_count(&self, now_ms: i64) -> Result<Value> {

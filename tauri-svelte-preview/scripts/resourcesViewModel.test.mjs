@@ -13,8 +13,8 @@ const sample = {
   totals: { cpuPercent: 7.5, rssBytes: 1_170_000_000, processCount: 5 },
   app: {
     parts: [
-      { label: 'Webview / renderer', pid: 12, cpuPercent: 1.25, rssBytes: 200 },
-      { label: 'Main process', pid: 10, cpuPercent: 0.25, rssBytes: 300 }
+      { label: 'Webview / renderer', pid: 12, cpuPercent: 1.25, physicalFootprintBytes: 200, rssBytes: 200 },
+      { label: 'Main process', pid: 10, cpuPercent: 0.25, physicalFootprintBytes: 300, rssBytes: 300 }
     ]
   },
   groups: [
@@ -26,8 +26,8 @@ const sample = {
           label: 'Agent conversation',
           kind: 'conversation',
           processes: [
-            { pid: 22, name: 'helper', cpuPercent: 2, rssBytes: 100 },
-            { pid: 21, name: 'adapter', cpuPercent: 1, rssBytes: 400 }
+            { pid: 22, name: 'helper', cpuPercent: 2, physicalFootprintBytes: 100, rssBytes: 100 },
+            { pid: 21, name: 'adapter', cpuPercent: 1, physicalFootprintBytes: 400, rssBytes: 400 }
           ]
         }
       ]
@@ -39,7 +39,7 @@ const sample = {
           ownedId: 'terminal-a',
           label: 'Terminal 1',
           kind: 'terminal',
-          processes: [{ pid: 31, name: 'zsh', cpuPercent: 3, rssBytes: 600 }]
+          processes: [{ pid: 31, name: 'zsh', cpuPercent: 3, physicalFootprintBytes: 600, rssBytes: 600 }]
         }
       ]
     }
@@ -59,7 +59,7 @@ assert.deepEqual(
 );
 assert.equal(view.groups[1].sessions[0].totals.cpuPercent, 3);
 assert.equal(view.appParts[0].label, 'Main process');
-assert.deepEqual(view.appTotals, { cpuPercent: 1.5, rssBytes: 500, processCount: 2 });
+assert.deepEqual(view.appTotals, { cpuPercent: 1.5, physicalFootprintBytes: 500, rssBytes: 500, processCount: 2 });
 
 assert.equal(formatResourceBytes(1_170_000_000), '1.09 GB');
 assert.equal(formatResourceBytes(1024 * 1024), '1.0 MB');

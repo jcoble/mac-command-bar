@@ -215,6 +215,15 @@ assert.equal(markdownImageTarget('/elsewhere/notes.md', root, 'shot.png'), null,
 assert.equal(markdownImageTarget(doc, null, 'img/shot.png'), null, 'no project, no local images');
 assert.deepEqual(markdownImageTarget(doc, root, 'https://example.com/a.png'), { kind: 'https', url: 'https://example.com/a.png' });
 assert.deepEqual(markdownImageTarget(doc, root, 'HTTP://example.com/a.png'), { kind: 'http', url: 'HTTP://example.com/a.png' });
+{
+  const remote = (path: string, profile = 'machine-a') => `assembly-remote://${profile}${path}`;
+  const remoteDoc = remote('/home/me/project/docs/guide.md');
+  const remoteRoot = remote('/home/me/project');
+  assert.deepEqual(markdownImageTarget(remoteDoc, remoteRoot, 'img/shot.png'), { kind: 'file', path: remote('/home/me/project/docs/img/shot.png') }, 'a remote project reads its images from the same machine');
+  assert.equal(markdownImageTarget(remoteDoc, remoteRoot, '../../x.png'), null, 'a remote image outside the project is refused');
+  assert.equal(markdownImageTarget(remoteDoc, remote('/home/me/project', 'other'), 'img/shot.png'), null, 'a project on another machine is not this file\'s project');
+  assert.equal(markdownImageTarget(remoteDoc, root, 'img/shot.png'), null, 'a Mac project does not own a remote file');
+}
 assert.equal(markdownImageTarget(doc, root, ''), null);
 assert.equal(markdownImageTarget(doc, root, undefined), null, 'the sanitizer removed an unsafe URL');
 assert.equal(markdownImageTarget(doc, root, 'data:image/png;base64,AAAA'), null);

@@ -157,3 +157,10 @@ export function presentAgentError(raw: string): PresentedAgentError {
     detail: prettyPrintEmbeddedJson(raw)
   };
 }
+
+/** A failed settings probe on a draft is a setup problem: nothing was sent. */
+export function presentProbeError(raw: string, providerName: string): string {
+  const { summary } = presentAgentError(raw);
+  if (summary.includes('Settings → Updates')) return summary;
+  return `${summary} Update the ${providerName} adapter in Settings → Updates.`;
+}
