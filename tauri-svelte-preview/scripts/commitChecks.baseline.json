@@ -65,7 +65,7 @@
     "tauri-svelte-preview/src/lib/shell/conversation/newSession/DraftSessionSurface.svelte": 867,
     "tauri-svelte-preview/src/lib/shell/files/editor/fixtures/mcbExtensionApiProbe.ts": 996,
     "tauri-svelte-preview/src/lib/shell/files/editor/sourceIntelligence.ts": 1411,
-    "tauri-svelte-preview/src/lib/shell/git/gitService.ts": 871,
+    "tauri-svelte-preview/src/lib/shell/git/gitService.ts": 870,
     "tauri-svelte-preview/src/lib/shell/ownedSessions.ts": 625,
     "tauri-svelte-preview/src/lib/shell/workflows/components/WorkflowRuns.svelte": 669,
     "tauri-svelte-preview/src/lib/shell/browser/components/BrowserPanel.svelte": 983,

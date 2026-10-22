@@ -95,6 +95,8 @@ export interface GitPanelState {
   // ── working-tree actions ──────────────────────────────────────────────────
   /** Draft commit message (bound to the commit box). */
   commitMessage: string;
+  /** The Amend switch: the commit button rewrites the last commit. Off again after an amend. */
+  amend: boolean;
   /** Which action is running right now, or ''. */
   actionBusy: GitActionKind | '';
   /** Plain-English result of the last action. */
@@ -129,6 +131,7 @@ export function createGitPanelState(): GitPanelState {
     diffLoading: false,
     diffError: '',
     commitMessage: '',
+    amend: false,
     actionBusy: '',
     actionStatus: '',
     actionError: ''
