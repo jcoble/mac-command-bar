@@ -378,11 +378,8 @@ impl MessagingEndpoint {
             }
             Some("start_session") => {
                 let args = &tool_call["arguments"];
-                let provider = match args["provider"].as_str() {
-                    Some("codex") => AgentConversationProvider::Codex,
-                    Some("claude") => AgentConversationProvider::Claude,
-                    _ => return Err("provider must be codex or claude".into()),
-                };
+                let provider: AgentConversationProvider = serde_json::from_value(args["provider"].clone())
+                    .map_err(|_| "provider must be codex, claude or antigravity")?;
                 // The name goes into message labels, so it is one line.
                 let name = args["name"].as_str().map(str::trim)
                     .filter(|name| !name.is_empty() && !name.chars().any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')))
@@ -453,7 +450,7 @@ impl MessagingEndpoint {
                     }
                     loop {
                         let run = engine.create_run_from_file(std::path::Path::new(&project), std::path::Path::new(path), task.clone(),
-                            json!({"started_by":owned_id}), key.clone()).map_err(workflow_error)?;
+                            json!({"started_by":owned_id,"inputs":args["inputs"]}), key.clone()).map_err(workflow_error)?;
                         // A repeated key returns the run as it was created; its state now is what counts.
                         let run = engine.get_run(&run.id).map_err(workflow_error)?;
                         if !matches!(run.state, crate::workflow::WorkflowRunState::Completed
@@ -512,16 +509,16 @@ impl MessagingEndpoint {
                  "inputSchema":{"type":"object","properties":{}}},
                 {"name":"send_message","description":OWNER_AUTHORITY.to_string() + " Send a message to an Assembly session you may reach (see list_sessions), addressed by its handle (such as brisk-heron), its name, or its owned id; add @machine (brisk-heron@workbox-test) for a session on another machine. A handle never changes when the session is renamed.",
                  "inputSchema":{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}},
-                {"name":"start_session","description":"Start a Codex or Claude helper session. It works in folder (an absolute path on your machine, such as a worktree) or, without one, in your folder. It is listed with your agents, and its final reply is sent to you as a message when it finishes.",
-                 "inputSchema":{"type":"object","properties":{"provider":{"type":"string","enum":["codex","claude"]},
+                {"name":"start_session","description":"Start a Codex, Claude or Antigravity helper session. It works in folder (an absolute path on your machine, such as a worktree) or, without one, in your folder. It is listed with your agents, and its final reply is sent to you as a message when it finishes.",
+                 "inputSchema":{"type":"object","properties":{"provider":{"type":"string","enum":["codex","claude","antigravity"]},
                      "model":{"type":"string"},"prompt":{"type":"string"},"name":{"type":"string"},"folder":{"type":"string"}},"required":["provider","prompt","name"]}},
                 {"name":"workflow_format","description":"Read the reference for writing an Assembly workflow (.assembly/workflows/*.yml).",
                  "inputSchema":{"type":"object","properties":{}}},
                 {"name":"check_workflow","description":"Check a workflow file in a registered project on this machine, or your current project when project is omitted. Returns ok, its steps and any warnings, or the first error.",
                  "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"project":{"type":"string","description":"Registered project title or root path on this machine; omit to use your current project."}},"required":["path"]}},
-                {"name":"start_workflow","description":"Start a workflow from a registered project's .assembly/workflows on this machine, or your current project when project is omitted. You are messaged when it waits for the owner or ends. At most 3 of your runs can be unfinished.",
+                {"name":"start_workflow","description":"Start a workflow from a registered project's .assembly/workflows on this machine, or your current project when project is omitted. You are messaged when it waits for the owner or ends. At most 3 of your runs can be unfinished. `inputs` sets the workflow's inputs, e.g. {\"i_merge\": true} so the run leaves the merge to the owner.",
                  "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"project":{"type":"string","description":"Registered project title or root path on this machine; omit to use your current project."},
-                     "task":{"type":"object","properties":{"key":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"}},"required":["key","title","body"]}},
+                     "task":{"type":"object","properties":{"key":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"}},"required":["key","title","body"]},"inputs":{"type":"object"}},
                      "required":["path","task"]}},
                 {"name":"list_workflow_runs","description":"List the workflow runs on this machine.",
                  "inputSchema":{"type":"object","properties":{}}},
