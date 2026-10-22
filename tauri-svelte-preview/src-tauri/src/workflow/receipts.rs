@@ -218,6 +218,8 @@ pub(super) fn check_shape(contract: WorkflowOutputContract, value: &Value) -> Re
         WorkflowOutputContract::ProofReceipt => serde_json::from_value::<ProofReceipt>(value.clone()).map(drop).map_err(parse),
         WorkflowOutputContract::PullRequestReceipt => serde_json::from_value::<PullRequestReceipt>(value.clone()).map(drop).map_err(parse),
         WorkflowOutputContract::PullRequestMergeReceipt => serde_json::from_value::<PullRequestMergeReceipt>(value.clone()).map(drop).map_err(parse),
+        WorkflowOutputContract::SpecComplianceReceipt | WorkflowOutputContract::VerificationReceipt =>
+            Err(rejected(format!("{} is no longer reported", contract.name()))),
     }
 }
 

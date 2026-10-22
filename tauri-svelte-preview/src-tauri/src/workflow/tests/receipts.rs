@@ -244,6 +244,20 @@ fn a_starting_step_already_sees_and_can_call_report_result() {
 }
 
 #[test]
+fn a_run_stored_before_typed_results_still_loads() {
+    let repo = RunRepo::new();
+    let engine = run_engine(Arc::new(FakeRuntime::default()));
+    let run = loop_run(&engine, &repo.0, "  build: { result: build, agent: { provider: codex }, prompt: prompts/p.md }\n");
+    for legacy in ["VerificationReceipt", "SpecComplianceReceipt"] {
+        let mut stored = serde_json::to_value(&run).unwrap();
+        stored["nodes"][0]["outputContract"] = json!(legacy);
+        let loaded: WorkflowRunRecord = serde_json::from_value(stored).unwrap();
+        // No step reports one any more, so a report against it is refused rather than guessed at.
+        assert!(WorkflowPolicy::validate_output(loaded.nodes[0].output_contract, &built()).is_err(), "{legacy}");
+    }
+}
+
+#[test]
 fn an_agent_step_whose_result_is_not_build_fails_changed_code() {
     let repo = RunRepo::new();
     let engine = run_engine(Arc::new(FakeRuntime::default()));

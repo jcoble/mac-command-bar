@@ -371,6 +371,9 @@ pub(crate) enum WorkflowOutputContract {
     ReconReceipt,
     PlanReceipt,
     ProofReceipt,
+    /// Only in runs stored before typed results; no step reports one, so they stay readable.
+    SpecComplianceReceipt,
+    VerificationReceipt,
 }
 
 impl WorkflowOutputContract {
@@ -384,6 +387,8 @@ impl WorkflowOutputContract {
             Self::ReconReceipt => "ReconReceipt",
             Self::PlanReceipt => "PlanReceipt",
             Self::ProofReceipt => "ProofReceipt",
+            Self::SpecComplianceReceipt => "SpecComplianceReceipt",
+            Self::VerificationReceipt => "VerificationReceipt",
         }
     }
 }
