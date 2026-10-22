@@ -14,7 +14,7 @@
   import * as Command from '$lib/components/ui/command/index.js';
   import * as Popover from '$lib/components/ui/popover/index.js';
   import { projectRegistry } from '$lib/shell/projects/projectRegistry.svelte.ts';
-  import { otherProjectGroups, projectMachineLabel } from '$lib/shell/projects/projects.ts';
+  import { middleTruncatePath, otherProjectGroups, projectMachineLabel } from '$lib/shell/projects/projects.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
   import { listRepositoryCheckoutsFromTauri, type RepositoryCheckout } from '$lib/tauriSource';
   import { cn } from '$lib/utils';
@@ -65,7 +65,7 @@
         <FolderSearch class="size-[14px] text-muted-foreground" aria-hidden="true" />
         <span class="min-w-0 truncate">{viewedRoot ? `Viewing ${viewedName} on ${viewedMachine}` : 'Open another project'}</span>
       </Popover.Trigger>
-      <Popover.Content align="start" class="w-[340px] gap-0 p-0">
+      <Popover.Content align="start" class="w-[480px] gap-0 p-0">
         <Popover.Header class="px-3 pt-3 pb-2">
           <Popover.Title class="text-[13px] font-medium">Open another project</Popover.Title>
           <Popover.Description class="text-[13px] text-muted-foreground">
@@ -75,15 +75,17 @@
         </Popover.Header>
         <Command.Root class="rounded-none! border-t">
           <Command.Input placeholder="Filter projects" />
-          <Command.List class="max-h-[320px]">
+          <Command.List class="max-h-[400px]">
             <Command.Empty>No project matches.</Command.Empty>
             {#each groups as group (group.machine)}
               <Command.Group heading={group.label}>
                 {#each group.options as option (option.path)}
-                  <Command.Item value={`${group.label} ${option.label} ${option.path}`} onSelect={() => pick(option.path)}>
-                    {#if !option.worktree}{#if group.machine === 'local'}<Laptop />{:else}<Cloud />{/if}{/if}
-                    <span class={cn('min-w-0 flex-1 truncate text-[13px]', option.worktree && 'pl-6')}>{option.label}</span>
-                    <span class="max-w-[45%] truncate text-sm text-muted-foreground">{option.detail}</span>
+                  <Command.Item class="items-start" value={`${group.label} ${option.label} ${option.path}`} onSelect={() => pick(option.path)}>
+                    {#if !option.worktree}{#if group.machine === 'local'}<Laptop class="mt-0.5" />{:else}<Cloud class="mt-0.5" />{/if}{/if}
+                    <span class={cn('flex min-w-0 flex-1 flex-col', option.worktree && 'pl-6')}>
+                      <span class="text-[13px] break-words">{option.label}</span>
+                      <span class="truncate text-[13px] text-muted-foreground" title={option.folder}>{middleTruncatePath(option.detail, 46)}</span>
+                    </span>
                   </Command.Item>
                 {/each}
               </Command.Group>
