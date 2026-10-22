@@ -25,6 +25,10 @@ const anonymousAsyncIifePattern =
   /\b(void|[A-Za-z_$][\w$]*(?:\s*\?\?=|\s*=))\s*\(\s*async\s*\(\s*\)\s*=>/g;
 const cssHasPattern = /:has\s*\(/gi;
 const tailwindHasPattern = /\b(?:(?:group|peer)-)?has-(?:\[[^\]\r\n]+\]|[A-Za-z][\w-]*)(?:\/[\w-]+)?:/g;
+// Animations end (AGENTS.md): an endless loop repaints every frame, so CSS, inline styles and the
+// Tailwind loop classes may not repeat forever. A value ends at a quote, except a quoted keyframe name, and
+// may hold Svelte {expressions}.
+const endlessAnimationPattern = /\banimation(?:-iteration-count)?(?:\|important)?\s*(?::|=\s*\{?\s*["'`]?)(?:[^;{}"'`<>]|\{[^{}"'`<>]*\}|(["'])[\w-]*\1)*?(?<![\w-])infinite(?![\w-])|\banimate-(?:spin|pulse|ping|bounce)\b/gi;
 
 const allowedHits = new Set([
   'src/lib/shell/components/UtilityStrip.svelte:setInterval:const refreshInterval = window.setInterval(() => {',
@@ -42,9 +46,12 @@ const allowedHits = new Set([
   "src/lib/shell/panels/tasks/TasksPanel.svelte:tick:import { onDestroy, onMount, tick } from 'svelte';",
   'src/lib/shell/panels/tasks/TasksPanel.svelte:tick:await tick();',
   // These one-shot timers are both stopped by the AbortSignal-owning surface.
-  'src/lib/shell/notionOAuth.ts:new Promise:await new Promise<void>((resolve, reject) => {',
-  'src/lib/shell/notionOAuth.ts:setTimeout:const timeout = window.setTimeout(finish, CLAIM_INTERVAL_MS);',
+  // TSK-1553: this callback wait owns one five-minute timer; claim, abort and browser-open failure clear it and remove its listener.
+  'src/lib/shell/notionOAuth.ts:new Promise:const code = new Promise<string>((resolve, reject) => {',
+  'src/lib/shell/notionOAuth.ts:setTimeout:const timeout = setTimeout(',
   'src/lib/shell/workflows/components/WorkflowRuns.svelte:setTimeout:const timer = window.setTimeout(() => {',
+  // The Board badge's one timer: when the earliest snoozed card wakes it recounts and reloads an open board; each recount and unmounting clear it.
+  'src/lib/shell/board/BoardButton.svelte:setTimeout:if (result.snoozed_until_ms) timer = window.setTimeout(() => { version += 1; void recount(); }, Math.max(0, result.snoozed_until_ms - Date.now()));',
   // One five-second shot per active turn; the effect clears it when the turn ends or the composer unmounts.
   'src/lib/shell/conversation/components/ConversationComposer.svelte:setTimeout:const timer = setTimeout(() => (turnSettled = true), 5000);',
   // One ten-second shot while a filter group is open; closing the group or unmounting clears it.
@@ -69,6 +76,11 @@ const allowedHits = new Set([
   // a frame later). The pending frame id is kept; a newer transition and dispose() cancel it.
   'src/lib/shell/layout/frame.ts:requestAnimationFrame:toolsFrame = requestAnimationFrame(() => {',
   'src/lib/shell/layout/frame.ts:cancelAnimationFrame:cancelAnimationFrame(toolsFrame);',
+  // TSK-1299: the same one-frame invalidation when the drawer changes the frame's width. The pending
+  // frame id is kept; the next layout and unmounting cancel it.
+  'src/lib/shell/components/ShellFrame.svelte:requestAnimationFrame:layoutRequest = requestAnimationFrame(() => {',
+  "src/lib/shell/components/ShellFrame.svelte:requestAnimationFrame:layoutRequest = requestAnimationFrame(() => (centerRegionSlot.style.visibility = ''));",
+  'src/lib/shell/components/ShellFrame.svelte:cancelAnimationFrame:cancelAnimationFrame(layoutRequest);',
   // TSK-1424 G: refresh after the panel renders visible; flushSync throws inside an effect. The effect's
   // controller aborts on hide or unmount and the refresh checks it after the tick.
   'src/lib/shell/files/components/FilesPanel.svelte:tick:import { onDestroy, tick, untrack } from "svelte";',
@@ -87,7 +99,14 @@ const allowedHits = new Set([
   'src/lib/shell/conversation/conversationService.ts:setTimeout:const timer = setTimeout(finish, ms);',
   // TSK-1424 B: the chat stream's wait for the next native event. Leaving the session aborts the
   // stream's signal, whose listener wakes the wait; the stream's finally removes that listener.
-  'src/lib/shell/conversation/conversationConnection.ts:new Promise:await new Promise<void>((resolve) => { wake = resolve; });',
+  'src/lib/shell/conversation/conversationConnection.ts:new Promise:if (!items.length && !signal.aborted) await new Promise<void>((resolve) => { wake = resolve; });',
+  // TSK-1561: streamed text waits one frame so a frame's deltas reach the chat as one update. The
+  // frame, the 50 ms fallback for a window that draws no frames, and leaving the session (abort)
+  // each settle the wait, and settling cancels the other two.
+  'src/lib/shell/conversation/conversationMessages.ts:new Promise:await new Promise<void>((resolve) => {',
+  'src/lib/shell/conversation/conversationMessages.ts:cancelAnimationFrame:cancelAnimationFrame(frame);',
+  'src/lib/shell/conversation/conversationMessages.ts:requestAnimationFrame:const frame = requestAnimationFrame(done);',
+  'src/lib/shell/conversation/conversationMessages.ts:setTimeout:const timer = setTimeout(done, 50);',
   // TSK-1424 B: the chat's readiness gate, resolved when its snapshot is consumed. Leaving the
   // session (disposeConversationChat) and a failed stream reject it.
   'src/lib/shell/conversation/conversationConnection.ts:new Promise:selection.ready = new Promise<void>((resolve, reject) => {',
@@ -103,6 +122,10 @@ const allowedHits = new Set([
   // window is visible; going off screen, hiding the window or the action's destroy on unmount clears it.
   'src/lib/shell/conversation/components/ConversationTimeline.svelte:setInterval:let timer: ReturnType<typeof setInterval> | null = null;',
   'src/lib/shell/conversation/components/ConversationTimeline.svelte:setInterval:timer = setInterval(() => { backgroundNow = Date.now(); }, 1000);',
+  // TSK-1563: scrolling saves the reader's place and checks for paging once a frame instead of per event.
+  // One pending frame at a time; unmounting cancels it, and the work it runs checks the render window.
+  'src/lib/shell/conversation/components/ConversationTimeline.svelte:requestAnimationFrame:viewFrame ||= requestAnimationFrame(() => { viewFrame = 0; saveView(); requestPage(frameOlder); });',
+  'src/lib/shell/conversation/components/ConversationTimeline.svelte:cancelAnimationFrame:onDestroy(() => { stop.abort(); cancelAnimationFrame(viewFrame); });',
   // TSK-1424 A: a running tool group's first scroll to its newest row waits for the first render inside an
   // effect; unmounting aborts the group's signal, which the wait checks after the tick.
   "src/lib/shell/conversation/components/ConversationToolGroup.svelte:tick:import { getContext, onDestroy, setContext, tick, untrack } from 'svelte';",
@@ -119,7 +142,8 @@ interface Hit {
     | 'anonymous-async-iife'
     | 'non-async-promise-implementation'
     | 'css-has-selector'
-    | 'tailwind-has-variant';
+    | 'tailwind-has-variant'
+    | 'endless-animation';
   term: string;
   text: string;
 }
@@ -221,6 +245,11 @@ function scanCssText(rel: string, source: string): Hit[] {
       if (pattern.test(text)) hits.push({ file: rel, line: index + 1, category, term, text: text.trim() });
     }
   }
+  // A declaration can wrap across lines, so the loop check reads the whole text and reports the line it starts on.
+  for (const match of withoutComments.matchAll(endlessAnimationPattern)) {
+    const line = withoutComments.slice(0, match.index).split(/\r?\n/).length;
+    hits.push({ file: rel, line, category: 'endless-animation', term: 'infinite', text: lines[line - 1].trim() });
+  }
   return hits;
 }
 
@@ -293,7 +322,8 @@ function run(): void {
   const sourceFiles = staged ? [] : files(srcRoot).sort();
   const scan = staged ? scanStagedFiles() : { count: sourceFiles.length, hits: sourceFiles.flatMap(scanFile) };
   const hits = scan.hits.filter((hit) =>
-    hit.category.startsWith('css-')
+    hit.category === 'endless-animation'
+    || hit.category.startsWith('css-')
     || hit.category === 'tailwind-has-variant'
     || !allowedHits.has(`${hit.file}:${hit.term}:${hit.text}`)
   );
@@ -310,6 +340,7 @@ function run(): void {
   console.log(`non-async Promise implementation hits: ${count('non-async-promise-implementation')}`);
   console.log(`CSS :has() hits: ${count('css-has-selector')}`);
   console.log(`Tailwind has variant hits: ${count('tailwind-has-variant')}`);
+  console.log(`endless animation hits: ${count('endless-animation')}`);
   console.log(`total prohibited hits: ${hits.length}`);
   for (const hit of hits) {
     console.log(`${hit.file}:${hit.line}: ${hit.category}:${hit.term}: ${hit.text}`);

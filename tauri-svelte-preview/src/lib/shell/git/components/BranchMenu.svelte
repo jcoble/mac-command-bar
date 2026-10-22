@@ -214,7 +214,7 @@
     <div class="flex flex-col gap-1 px-1 pb-1">
       <Input
         class="h-7 text-[13px]"
-        placeholder="tsk-808-git-panel"
+        placeholder="feature/my-change"
         autocomplete="off"
         spellcheck="false"
         disabled={!canWrite || menuBusy}

@@ -58,6 +58,7 @@
     type GitPanelState
   } from '$lib/shell/git/gitPanelStore.svelte';
   import { absolutePathWithin, type GitService } from '$lib/shell/git/gitService';
+  import { nativeWorkspacePath } from '$lib/workspacePaths.ts';
   import { formatLastActivity } from '$lib/shell/relativeTime';
   import { openFileInEditor, showCenterTab } from '$lib/shell/workbenchNavigation';
 
@@ -167,11 +168,11 @@
         readOnly
       });
     } else if (action === 'copy-commit-path') {
-      await copyText(
+      await copyText(nativeWorkspacePath(
         panel.root
           ? absolutePathWithin(panel.root, menu.target.file.relativePath)
           : menu.target.file.relativePath
-      );
+      ));
     }
   }
 

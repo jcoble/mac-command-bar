@@ -1279,9 +1279,7 @@
     height: 22px;
     margin: 5px 8px;
     border-radius: 7px;
-    background: linear-gradient(90deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.105), rgba(255, 255, 255, 0.045));
-    background-size: 180% 100%;
-    animation: shimmer 1.2s ease-in-out infinite;
+    background: rgba(255, 255, 255, 0.07);
   }
 
   .empty-tree {
@@ -1293,15 +1291,6 @@
     text-align: center;
     font-size: 12px;
     font-weight: 700;
-  }
-
-  @keyframes shimmer {
-    from {
-      background-position: 100% 0;
-    }
-    to {
-      background-position: -80% 0;
-    }
   }
 
   @container (max-width: 330px) {

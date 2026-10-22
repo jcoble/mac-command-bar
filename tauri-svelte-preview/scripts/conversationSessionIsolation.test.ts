@@ -163,7 +163,7 @@ assert.equal(legacy.topTabs, undefined);
   const panelSource = readFileSync(new URL('../src/lib/shell/panels/agents/AgentsPanel.svelte', import.meta.url), 'utf8');
   const panelSelect = panelSource.slice(panelSource.indexOf('  async function select('), panelSource.indexOf('  function openFile('));
   const serviceSource = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
-  const reconnect = serviceSource.slice(serviceSource.indexOf('async function reacquireSelectedChildHistory('), serviceSource.indexOf('async function handleConversationStreamEnvelope('));
+  const reconnect = serviceSource.slice(serviceSource.indexOf('async function reacquireSelectedChildHistory('), serviceSource.indexOf('function handleConversationStreamEnvelope('));
   const readers = serviceSource.slice(serviceSource.indexOf('function selectedEventUsesControlCursor('), serviceSource.indexOf('export async function readOlderSelectedConversationItems(')).replaceAll('export ', '');
 
   for (const parentProvider of ['claude', 'codex']) {

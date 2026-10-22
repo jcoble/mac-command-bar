@@ -39,7 +39,8 @@
    * tooltip, the one popup the OS draws above a live browser page.
    *
    * PRESENTATIONAL ONLY: the tabs and the active key are handed in, and every
-   * click is handed back out.
+   * click is handed back out. The one exception is the Board button, a
+   * self-contained control that reads its own count.
    */
   import { untrack } from 'svelte';
   import FileSearch from '@lucide/svelte/icons/file-search';
@@ -58,6 +59,7 @@
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { Separator } from '$lib/components/ui/separator/index.js';
+  import BoardButton from '$lib/shell/board/BoardButton.svelte';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import { cn } from '$lib/utils.js';
   import FileIcon from './explorer/FileIcon.svelte';
@@ -302,6 +304,7 @@
     </DropdownMenu.Root>
 
     <div class="ml-auto flex flex-none items-center gap-1">
+      <BoardButton />
       <Separator orientation="vertical" class="mx-1 h-[14px]" />
       {#if paneOpen}
         <Tooltip.Root>

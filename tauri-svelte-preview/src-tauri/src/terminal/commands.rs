@@ -87,3 +87,8 @@ pub(crate) async fn close_terminal_session(
     }
     terminal::close_terminal_session(&terminal_registry, &session_id)
 }
+
+// Declared here, not in `terminal/mod.rs`, because that file is at its size baseline.
+#[cfg(test)]
+#[path = "lifecycle_tests.rs"]
+mod lifecycle_tests;

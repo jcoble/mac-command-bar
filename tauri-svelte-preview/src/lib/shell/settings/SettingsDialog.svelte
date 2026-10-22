@@ -1,28 +1,4 @@
-<!--
-  SettingsDialog.svelte — the /next shell's settings screen.
-
-  Same settings as before, same wording, same store. What changed is the shape:
-  it was a 560px dialog with four tabs, and it is now a full-window screen —
-  a way back to the app at the foot of the section list (the macOS window
-  buttons cover the top-left), a search field that filters the rows
-  as you type, a grouped list of sections down the left, and cards of rows on
-  the right. That is the layout every desktop app of this kind uses, and it is
-  the only one that stays readable as the list of settings grows.
-
-  Everything is built from the components in `$lib/components/ui`, coloured
-  from the /next tokens. No native `<select>` anywhere; no setting was added,
-  renamed or dropped in the move.
-
-  Why the file is still called `SettingsDialog` and still takes `open`: the
-  host that mounts it (`SettingsHost.svelte`) and the shell above it both
-  address it that way, and neither is this lane's to change.
-
-  Nothing here touches the backend except the C# language-server switch, which
-  has always asked the app to start or stop the server.
-
-  Usage:
-    <SettingsDialog bind:open />
--->
+<!-- Settings screen using the shared row layout and native settings store. -->
 <script lang="ts">
   import { onDestroy, type Snippet } from 'svelte';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -41,6 +17,7 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import SettingsSelect from '$lib/shell/settings/SettingsSelect.svelte';
+  import HelperSessionSettings from '$lib/shell/settings/HelperSessionSettings.svelte';
   import ProviderCliUpdateControl from '$lib/shell/providers/ProviderCliUpdateControl.svelte';
   import ProviderUpdateControl from '$lib/shell/providers/ProviderUpdateControl.svelte';
   import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
@@ -142,6 +119,7 @@
     { id: 'general', group: 'Application', label: 'General', icon: SlidersHorizontal },
     { id: 'connections', group: 'Application', label: 'Connections', icon: Server },
     { id: 'updates', group: 'Application', label: 'Updates', icon: Download },
+    { id: 'agents', group: 'Application', label: 'Agents', icon: Sparkles },
     { id: 'helper', group: 'Application', label: 'Utility model', icon: Sparkles }
   ];
 
@@ -152,6 +130,10 @@
    * to type that the row does not itself say.
    */
   const rows = [
+    { id: 'helper_auto_done_minutes', section: 'agents', card: 'Helper sessions', title: 'Mark finished helpers Done after',
+      description: 'Minutes to wait on this machine; 0 means Never.', keywords: 'agents helpers sessions minutes done never' },
+    { id: 'helpers_per_session', section: 'agents', card: 'Helper sessions', title: 'Helpers per session',
+      description: 'Maximum unfinished helpers for each session on this machine.', keywords: 'agents helpers sessions limit' },
     { id: 'remote-connections', section: 'connections', card: 'Remote machines', title: 'Saved connections',
       description: 'Connect or disconnect an Assembly backend.', keywords: 'ssh workbox server remote reconnect' },
     {
@@ -516,10 +498,6 @@
     ).map((id) => ({ value: id, label: id }))
   );
 
-  // Every one of these talks to the app, and the app answers a refusal as a
-  // whole sentence. Letting one reject would leave the status line blank over
-  // a screen that has already moved on, so each says what happened, and the
-  // ones that changed the screen first put it back.
   async function loadHelper(): Promise<void> {
     try {
       helper = await readHelperSettingsFromTauri();
@@ -528,10 +506,6 @@
     }
   }
 
-  /**
-   * Changing service changes which key is wanted, so the model goes back to
-   * that service's cheapest and the screen re-reads whether a key is stored.
-   */
   async function chooseHelperVendor(value: string): Promise<void> {
     if (!helper) return;
     const before = helper;
@@ -808,7 +782,7 @@
               </div>
               <!-- The Helper section has nothing in the settings store to put
                    back, so it is not offered a reset it could not carry out. -->
-              {#if shownSection.id !== 'helper' && shownSection.id !== 'updates' && shownSection.id !== 'connections'}
+              {#if shownSection.id !== 'agents' && shownSection.id !== 'helper' && shownSection.id !== 'updates' && shownSection.id !== 'connections'}
                 <Button
                   variant="ghost"
                   size="sm"
@@ -872,6 +846,10 @@
                       {@render settingRow(id, providerUpdateControl, true)}
                     {:else if id === 'provider-cli-updates'}
                       {@render settingRow(id, providerCliUpdateControl, true)}
+                    {:else if id === 'helper_auto_done_minutes'}
+                      {@render settingRow(id, helperAutoDoneControl)}
+                    {:else if id === 'helpers_per_session'}
+                      {@render settingRow(id, helperLimitControl)}
                     {:else if id === 'helper-route'}
                       {@render settingRow(id, helperRouteControl)}
                     {:else if id === 'helper-vendor'}
@@ -1146,6 +1124,10 @@
     onChange={(value) => void chooseHelperVendor(value)}
   />
 {/snippet}
+
+{#snippet helperAutoDoneControl()}<HelperSessionSettings setting="helper_auto_done_minutes" />{/snippet}
+
+{#snippet helperLimitControl()}<HelperSessionSettings setting="helpers_per_session" />{/snippet}
 
 {#snippet helperRouteControl()}
   <SettingsSelect

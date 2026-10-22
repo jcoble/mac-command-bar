@@ -1,9 +1,9 @@
+import { get } from 'svelte/store';
 import type { HistoryDownloadProgress } from '$lib/tauriSource';
 import { displayEventFrom } from './conversationMessages.ts';
 export { displayEventFrom } from './conversationMessages.ts';
 /**
  * Reactive conversation state keyed by Command Bar's stable `ownedId`.
- *
  * This module performs no IO. The conversation service owns Tauri calls and
  * holds controls and view state beside the selected TanStack message graph.
  */
@@ -47,6 +47,7 @@ import { normalizeProvider, type AgentExecutionOwner } from '../ownedSessions.ts
 import { hasTranscriptReader } from '../history/sessionHistoryViewModel.ts';
 import {
   clearSessionPresence,
+  sessionPresenceHistory,
   synchronizeSessionPresenceWork
 } from './sessionPresence.ts';
 import { recordConversationPresenceEvent } from './sessionNotifications.ts';
@@ -1123,6 +1124,10 @@ export function setConversationMode(ownedId: string, mode: ConversationViewMode)
 }
 
 export function setConversationSending(ownedId: string, sending: boolean): void {
+  // Clear the send's placeholder even when its session was suspended or released.
+  if (!sending && get(sessionPresenceHistory)[ownedId]?.activeTurnId === 'sending') {
+    synchronizeSessionPresenceWork(ownedId, null, false);
+  }
   const current = conversationSessions[ownedId];
   if (!current || current.sending === sending) return;
   current.sending = sending;
@@ -1142,11 +1147,6 @@ export function setConversationConnection(connection: AgentConversationConnectio
   current.connectionState = connection.state;
   current.suspended = connection.suspended ?? false;
   if (connection.nativeSessionId) current.nativeSessionId = connection.nativeSessionId;
-  // A connection always carries a config object, even when nobody has asked an
-  // adapter anything — every field null, every list empty. Applying that on its
-  // mere existence wiped the answers the composer had just read back from the
-  // database, which is what left a resumed conversation saying its agent had no
-  // settings. Only a config with something in it replaces what is on screen.
   if (connection.config && hasAgentConversationConfig(connection.config)) {
     current.agentConfig = connection.config;
     current.agentConfigError = null;

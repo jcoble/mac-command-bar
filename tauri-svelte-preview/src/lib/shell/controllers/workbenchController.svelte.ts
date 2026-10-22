@@ -4,7 +4,7 @@
  */
 import { DEFAULT_RIGHT_TAB } from '../layout/workbenchTabs';
 import { topTabs } from '../layout/topTabs.svelte';
-import type { TopTabKind } from '../layout/topTabsOps';
+import { parseTopTabKey, type TopTabKey } from '../layout/topTabsOps';
 import type { RightTabId } from '../workbenchNavigation';
 import {
 	DEFAULT_DIFF_MODE,
@@ -71,6 +71,8 @@ export class WorkbenchController {
 	/** True between `beginSessionSwitch` and `restoreSessionState`, so the pane
 	 * is not removed and re-added while the next session's tabs arrive. */
 	switching = $state(false);
+	/** The `+`-menu tab the drawer closed for; leaving that tab opens the drawer again. */
+	private drawerYieldedTo: TopTabKey | null = null;
 
 	private frameControls: FrameControls | null = null;
 	private restoringTabs = false;
@@ -109,9 +111,10 @@ export class WorkbenchController {
 		this.frameControls?.setToolsExpanded(expanded);
 	}
 
-	/** What is in front: a pane tab, or the chat when the pane shows nothing. */
-	paneShown(kind: TopTabKind | 'session'): void {
-		shellPanels.panelShown(kind);
+	/** What is in front: a pane tab, or the chat when no tab is open (null). */
+	paneShown(key: TopTabKey | null): void {
+		if (key !== this.drawerYieldedTo) this.giveDrawerBack();
+		shellPanels.panelShown(key ? parseTopTabKey(key)?.kind ?? 'session' : 'session');
 		this.syncGitSurfaceVisibility();
 	}
 
@@ -125,7 +128,26 @@ export class WorkbenchController {
 		this.setRightPanelOpen(!this.rightPanelOpen);
 	}
 
+	/** A wide tab opened from the `+` menu takes the drawer's room until the user leaves it. */
+	yieldDrawerTo(key: TopTabKey | null): void {
+		if (key === null || key.startsWith('editor:')) return;
+		if (!this.rightPanelOpen && this.drawerYieldedTo === null) return;
+		this.setRightPanelOpen(false);
+		this.drawerYieldedTo = key;
+	}
+
+	/** The chat is chosen: the pane stops covering it, and a yielded drawer comes back. */
+	showChat(): void {
+		if (this.expanded) this.setExpanded(false);
+		this.giveDrawerBack();
+	}
+
+	private giveDrawerBack(): void {
+		if (this.drawerYieldedTo !== null) this.setRightPanelOpen(true);
+	}
+
 	setRightPanelOpen(open: boolean): void {
+		this.drawerYieldedTo = null;
 		this.rightPanelOpen = open;
 		this.syncRightPanelVisibility();
 		this.syncGitSurfaceVisibility();
@@ -155,6 +177,7 @@ export class WorkbenchController {
 
 	/** Remove outgoing lazy surfaces while the next session is being restored. */
 	beginSessionSwitch(): void {
+		this.giveDrawerBack();
 		this.switching = true;
 		releaseBrowserWorkspace();
 		// The outgoing tabs were already captured; keeping them as remembered

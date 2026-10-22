@@ -11,7 +11,8 @@ export type ConversationMessagesContext = {
 };
 export const conversationToolContext = Symbol('conversation-tool');
 export type ConversationToolContext = {
-  readonly message: UIMessage | undefined;
+  /** The timeline's row for this call, so the tool part need not rebuild it from the message. */
+  readonly item: Extract<ConversationDisplayItem, { kind: 'tool' }>;
   openFile(path: string): void;
   readonly renderTool?: Snippet<[Extract<ConversationDisplayItem, { kind: 'tool' }>]>;
 };

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 
 import { DESIGNS, SPINNER_IDS, pickSpinner } from '../src/lib/shell/components/feedback/workingSpinners.ts';
 
@@ -24,6 +25,14 @@ import { DESIGNS, SPINNER_IDS, pickSpinner } from '../src/lib/shell/components/f
 // Without a seed the pick is random but always a real design.
 {
   for (let index = 0; index < 50; index += 1) assert.ok(SPINNER_IDS.includes(pickSpinner()));
+}
+
+// Every design ships its animated image and its still frame for reduced motion.
+{
+  const folder = new URL('../src/lib/shell/components/feedback/spinners/', import.meta.url);
+  for (const id of SPINNER_IDS) {
+    for (const file of [`${id}.webp`, `${id}-still.webp`]) assert.ok(existsSync(new URL(file, folder)), file);
+  }
 }
 
 console.log('working spinners: ok');
