@@ -3860,7 +3860,7 @@ mod tests {
         assert_eq!(tool(&endpoint, &token, "start_workflow", args).unwrap()["run_id"], started["run_id"]);
         let listed = tool(&endpoint, &token, "list_workflow_runs", json!({})).unwrap();
         assert_eq!(listed, json!([{"run_id":run.id,"name":"Loop","task_key":"TSK-1","state":"running",
-            "phase":"implementing","current_step":"build","started_by":"starter"}]));
+            "phase":"implementing","current_step":"build","started_by":"starter","parent_task":null}]));
     }
 
     #[test]

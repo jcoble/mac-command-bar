@@ -210,7 +210,8 @@ fn run_facts(run: &crate::workflow::WorkflowRunRecord, store: &SessionStore) -> 
         step
     }).collect::<Vec<_>>();
     json!({"run_id":run.id,"name":run.definition.name,"task_key":run.input_snapshot["task"]["key"],
-        "state":run.state,"phase":run.phase,"started_by":run.input_snapshot["started_by"],"steps":steps})
+        "state":run.state,"phase":run.phase,"started_by":run.input_snapshot["started_by"],
+        "parent_task":run.input_snapshot["inputs"]["parent_task"],"steps":steps})
 }
 
 /// The caller's session id, its backend's store, and the manager that delivers
@@ -469,7 +470,7 @@ impl MessagingEndpoint {
                     "task_key":run.input_snapshot["task"]["key"],"state":run.state,"phase":run.phase,
                     "current_step":run.nodes.iter().find(|node| !matches!(node.state, crate::workflow::WorkflowNodeState::Completed
                         | crate::workflow::WorkflowNodeState::Skipped | crate::workflow::WorkflowNodeState::Blocked)).map(|node| &node.node_id),
-                    "started_by":run.input_snapshot["started_by"]})).collect())))
+                    "started_by":run.input_snapshot["started_by"],"parent_task":run.input_snapshot["inputs"]["parent_task"]})).collect())))
             }
             Some("get_workflow_run") => {
                 let run_id = tool_call["arguments"]["run_id"].as_str().ok_or("run_id must be a run id")?;
