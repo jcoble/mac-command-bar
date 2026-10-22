@@ -68,6 +68,17 @@ fn only_the_owner_can_mark_a_run_finished_and_it_needs_a_one_line_note() {
 }
 
 #[test]
+fn mark_finished_is_refused_while_a_command_step_is_running() {
+    let repo = RunRepo::new();
+    let engine = run_engine(Arc::new(FakeRuntime::default()));
+    let run = loop_run(&engine, &repo.0, "  wait: { run: [\"sleep 3\"] }\n");
+    assert_eq!(step_of(&run, "wait").state, WorkflowNodeState::Running);
+    let refused = mark(&engine, &run.id, "owner");
+    assert!(matches!(&refused, Err(WorkflowError::InvalidTransition(message)) if message.contains("Stop the run first")), "{refused:?}");
+    assert_eq!(engine.get_run(&run.id).unwrap().state, WorkflowRunState::Running);
+}
+
+#[test]
 fn remove_refuses_a_run_that_has_not_finished() {
     let repo = RunRepo::new();
     let engine = run_engine(Arc::new(FakeRuntime::default()));
@@ -105,25 +116,28 @@ fn remove_leaves_a_proof_folder_outside_the_engines_proof_folders() {
 }
 
 #[test]
-fn remove_finished_runs_older_than_keeps_newer_and_unfinished_runs() {
+fn remove_finished_runs_older_than_removes_only_the_old_finished_runs() {
     let repo = RunRepo::new();
     let clock = Arc::new(FakeClock(AtomicU64::new(1)));
     let engine = WorkflowEngine::new(Arc::new(FakeRuntime::default()), Arc::new(InMemoryWorktreeLeasePort::default()),
         clock.clone(), Arc::new(FakeIds(AtomicU64::new(1))), Arc::new(SessionStore::open_in_memory().unwrap()));
-    let create = |key: &str| {
+    let create = |key: String| {
         let mut workflow = definition();
-        workflow.id = key.into();
-        engine.create_run(workflow, json!({"cwd": repo.0}), key.into()).unwrap()
+        workflow.id = key.clone();
+        engine.create_run(workflow, json!({"cwd": repo.0}), key).unwrap()
     };
-    let old = create("old");
-    tauri::async_runtime::block_on(engine.cancel(&old.id, "stop")).unwrap();
-    let unfinished = create("unfinished");
+    let finish = |run: &WorkflowRunRecord| { tauri::async_runtime::block_on(engine.cancel(&run.id, "stop")).unwrap(); };
+    let old: Vec<String> = (0..12).map(|n| { let run = create(format!("old-{n}")); finish(&run); run.id }).collect();
+    let unfinished: Vec<String> = (0..5).map(|n| create(format!("unfinished-{n}")).id).collect();
     const DAY: u64 = 86_400_000;
     clock.0.store(10 * DAY, Ordering::SeqCst);
-    let recent = create("recent");
-    tauri::async_runtime::block_on(engine.cancel(&recent.id, "stop")).unwrap();
-    assert_eq!(engine.remove_finished_runs_older_than(7).unwrap(), vec![old.id.clone()]);
+    let recent: Vec<String> = (0..8).map(|n| { let run = create(format!("recent-{n}")); finish(&run); run.id }).collect();
+    let mut removed = engine.remove_finished_runs_older_than(7).unwrap();
+    removed.sort();
+    let mut expected = old.clone();
+    expected.sort();
+    assert_eq!(removed, expected);
     let left: Vec<String> = engine.list_runs().unwrap().into_iter().map(|run| run.id).collect();
-    assert!(!left.contains(&old.id));
-    assert!(left.contains(&unfinished.id) && left.contains(&recent.id), "{left:?}");
+    assert_eq!(left.len(), unfinished.len() + recent.len());
+    assert!(unfinished.iter().chain(&recent).all(|id| left.contains(id)), "{left:?}");
 }

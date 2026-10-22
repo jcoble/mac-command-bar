@@ -42,6 +42,11 @@ impl WorkflowEngine {
         if ended(&run) {
             return Err(WorkflowError::InvalidTransition("This run has already ended".into()));
         }
+        // A `run` step's shell command is not an agent session, so cancelling cannot stop it.
+        if run.nodes.iter().any(|node| matches!(node.state, WorkflowNodeState::Starting | WorkflowNodeState::Running)
+            && run.definition.nodes.iter().any(|step| step.id == node.node_id && step.step.get("run").is_some())) {
+            return Err(WorkflowError::InvalidTransition("A command step is still running; wait for it to end, or Stop the run first".into()));
+        }
         let now = self.clock.now_ms();
         for node in &mut run.nodes {
             if matches!(node.state, WorkflowNodeState::Queued | WorkflowNodeState::Starting | WorkflowNodeState::Running
@@ -83,11 +88,8 @@ impl WorkflowEngine {
     /// Removes every finished run last changed more than `days` days ago; returns the ids removed.
     pub fn remove_finished_runs_older_than(&self, days: u64) -> Result<Vec<String>, WorkflowError> {
         let cutoff = self.clock.now_ms().saturating_sub(days.saturating_mul(DAY_MS));
-        let mut removed = Vec::new();
-        for run in self.list_runs()?.into_iter().filter(|run| ended(run) && run.updated_at_ms < cutoff) {
-            self.remove_run(&run.id)?;
-            removed.push(run.id);
-        }
-        Ok(removed)
+        let ids = self.store.finished_workflow_runs_before(cutoff).map_err(|error| WorkflowError::Ledger(error.to_string()))?;
+        for id in &ids { self.remove_run(id)?; }
+        Ok(ids)
     }
 }
