@@ -3483,7 +3483,7 @@ fn main() {
                     )?;
                 }
             }
-            let workflow_events = workflow_engine.clone(); usage_history::start_acp_usage(app.handle(), workflow_engine.clone());
+            let workflow_events = workflow_engine.clone(); usage_history::start_acp_usage(usage_history::usage_db_path(app.handle())?, agent_runtime.store_handle());
             let workflow_handle = app.handle().clone();
             agent_runtime.set_emitter(Arc::new(move |event| {
                 let is_terminal_turn = matches!(

@@ -149,21 +149,19 @@ pub fn record_helper_call(
     UsageDb::open(usage_db_path(app)?)?.insert_events_with_cursor_deferred_rollup(&[event], None)
 }
 
-/// Rebuilds the rates table, then stores each finished turn's ACP usage,
-/// attributed to the workflow step attempt that owns the session, if any.
-pub fn start_acp_usage(app: &AppHandle, workflow: crate::workflow::WorkflowEngine) {
-    let path = match usage_db_path(app) {
-        Ok(path) => path,
-        Err(error) => return crate::debug_log::stderr_log!("Usage from ACP is off: {error}"),
-    };
+/// Rebuilds the rates table, then stores each finished turn's ACP usage in this
+/// machine's usage database, attributed to the workflow step attempt that owns
+/// the session, if any. The desktop and the remote backend both call it.
+pub fn start_acp_usage(path: std::path::PathBuf, store: std::sync::Arc<mcb_core::session_store::SessionStore>) {
     if let Err(error) = UsageDb::open(&path).and_then(|db| db.rebuild_rates(crate::usage_db::acp::SEEDED_RATES)) {
         crate::debug_log::stderr_log!("Could not load usage rates: {error}");
     }
     crate::agent_conversation::manager::turn_usage::set_turn_usage_listener(std::sync::Arc::new(move |mut turn| {
-        let (path, workflow) = (path.clone(), workflow.clone());
+        let (path, store) = (path.clone(), store.clone());
         tauri::async_runtime::spawn_blocking(move || {
-            turn.node_run_id = workflow.list_runs().ok().and_then(|runs| {
-                runs.into_iter().flat_map(|run| run.nodes).find(|node| node.owned_id == turn.owned_id).map(|node| node.id)
+            turn.node_run_id = store.node_run_for_session(&turn.owned_id).unwrap_or_else(|error| {
+                crate::debug_log::stderr_log!("Could not find the session's workflow step: {error}");
+                None
             });
             if let Err(error) = UsageDb::open(&path).and_then(|db| db.insert_acp_turn(&turn)) {
                 crate::debug_log::stderr_log!("Could not store turn usage: {error}");

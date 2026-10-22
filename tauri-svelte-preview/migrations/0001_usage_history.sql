@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS usage_events (
     inserted_at_micros INTEGER NOT NULL,
     node_run_id TEXT,
     reported_cost_micros INTEGER,
+    -- The provider's running cost total the share was taken from.
+    reported_cost_total_micros INTEGER,
     UNIQUE (provider, provider_instance_id, source_kind, source_event_id)
 );
 

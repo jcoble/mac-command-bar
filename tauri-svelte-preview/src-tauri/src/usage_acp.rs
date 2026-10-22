@@ -95,9 +95,9 @@ impl UsageDb {
     }
 
     /// Writes one row per model the turn used. The reported cost is a running
-    /// total, so the turn's share is that total less what the session's rows
-    /// already hold; the share goes on the turn's largest row. A total below the
-    /// stored sum means the provider restarted its count, and is taken as is.
+    /// total, so the turn's share is that total less the session's previous
+    /// total; both go on the turn's largest row. A total below the previous one
+    /// means the provider restarted its count, so the whole total is the share.
     /// Transcript rows for the same native session from the turn's start on are
     /// dropped, since ACP now counts those turns; earlier transcript rows stay.
     pub fn insert_acp_turn(&self, turn: &AcpTurn) -> Result<usize, String> {
@@ -109,11 +109,11 @@ impl UsageDb {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| self.database_error("could not start ACP usage write", error))?;
         let cost = turn.cost_total_usd.map(|total| (total * 1_000_000.0).round() as i64)
-            .map(|total| -> rusqlite::Result<i64> {
-                let stored: i64 = transaction.query_row(
-                    "SELECT COALESCE(SUM(reported_cost_micros), 0) FROM usage_events WHERE owned_id = ?1 AND source_kind = ?2",
+            .map(|total| -> rusqlite::Result<(i64, i64)> {
+                let previous: i64 = transaction.query_row(
+                    "SELECT COALESCE((SELECT reported_cost_total_micros FROM usage_events WHERE owned_id = ?1 AND source_kind = ?2 AND reported_cost_total_micros IS NOT NULL ORDER BY id DESC LIMIT 1), 0)",
                     params![turn.owned_id, ACP_SOURCE_KIND], |row| row.get(0))?;
-                Ok(if total >= stored { total - stored } else { total })
+                Ok((if total >= previous { total - previous } else { total }, total))
             }).transpose().map_err(|error| self.database_error("could not read reported cost", error))?;
         let largest = (0..tokens.len()).max_by_key(|&i| {
             let t = &tokens[i];
@@ -122,11 +122,12 @@ impl UsageDb {
         let source_key = turn.native_session_id.clone().unwrap_or_else(|| turn.owned_id.clone());
         for (index, t) in tokens.iter().enumerate() {
             transaction.execute(
-                "INSERT INTO usage_events (provider, provider_instance_id, owned_id, turn_id, node_run_id, occurred_at_micros, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, reported_cost_micros, source_kind, source_event_id, source_key, inserted_at_micros) VALUES (?1, 'local', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?5) ON CONFLICT(provider, provider_instance_id, source_kind, source_event_id) DO NOTHING",
+                "INSERT INTO usage_events (provider, provider_instance_id, owned_id, turn_id, node_run_id, occurred_at_micros, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, reported_cost_micros, reported_cost_total_micros, source_kind, source_event_id, source_key, inserted_at_micros) VALUES (?1, 'local', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?16, ?13, ?14, ?15, ?5) ON CONFLICT(provider, provider_instance_id, source_kind, source_event_id) DO NOTHING",
                 params![turn.provider, turn.owned_id, turn.turn_id, turn.node_run_id, turn.occurred_at_micros,
                     t.input as i64, t.output as i64, t.cache_read as i64, t.cache_write as i64, t.reasoning as i64, t.model,
-                    if Some(index) == largest { cost } else { None }, ACP_SOURCE_KIND,
-                    format!("{}:{}:{}", turn.owned_id, turn.turn_id, t.model), source_key],
+                    cost.filter(|_| Some(index) == largest).map(|(share, _)| share), ACP_SOURCE_KIND,
+                    format!("{}:{}:{}", turn.owned_id, turn.turn_id, t.model), source_key,
+                    cost.filter(|_| Some(index) == largest).map(|(_, total)| total)],
             ).map_err(|error| self.database_error("could not write ACP usage", error))?;
         }
         transaction.execute("DELETE FROM usage_events WHERE owned_id = ?1 AND source_kind <> ?2 AND occurred_at_micros >= ?3", params![source_key, ACP_SOURCE_KIND, turn.occurred_at_micros])
@@ -136,19 +137,25 @@ impl UsageDb {
     }
 }
 
-/// Brings a database made before ACP rows up to date: the two new columns, and
+/// Brings a database made before ACP rows up to date: the new columns, and
 /// Codex transcript rows, whose input used to include cached input, stored as
 /// uncached input like every other row.
 pub(super) fn upgrade(transaction: &Transaction) -> rusqlite::Result<()> {
-    let has_column: bool = transaction.query_row(
-        "SELECT COUNT(*) > 0 FROM pragma_table_info('usage_events') WHERE name = 'node_run_id'", [], |row| row.get(0))?;
-    if has_column {
-        return Ok(());
+    let missing = |column: &str| -> rusqlite::Result<bool> {
+        transaction.query_row("SELECT COUNT(*) = 0 FROM pragma_table_info('usage_events') WHERE name = ?1", [column], |row| row.get(0))
+    };
+    let first_upgrade = missing("node_run_id")?;
+    for (column, kind) in [("node_run_id", "TEXT"), ("reported_cost_micros", "INTEGER"), ("reported_cost_total_micros", "INTEGER")] {
+        if missing(column)? {
+            transaction.execute_batch(&format!("ALTER TABLE usage_events ADD COLUMN {column} {kind};"))?;
+        }
     }
-    transaction.execute_batch("ALTER TABLE usage_events ADD COLUMN node_run_id TEXT; ALTER TABLE usage_events ADD COLUMN reported_cost_micros INTEGER;")?;
-    transaction.execute(
-        "UPDATE usage_events SET input_tokens = MAX(input_tokens - cache_read_tokens - cache_write_tokens, 0) WHERE source_kind = ?1",
-        ["codex-jsonl"]).map(|_| ())
+    if first_upgrade {
+        transaction.execute(
+            "UPDATE usage_events SET input_tokens = MAX(input_tokens - cache_read_tokens - cache_write_tokens, 0) WHERE source_kind = ?1",
+            ["codex-jsonl"])?;
+    }
+    Ok(())
 }
 
 
@@ -204,11 +211,12 @@ mod tests {
     }
 
     #[test]
-    fn a_total_below_the_stored_sum_is_taken_as_is() {
+    fn after_the_provider_restarts_its_count_each_turn_is_measured_from_the_new_count() {
         let (path, db) = open();
-        db.insert_acp_turn(&turn("turn-1", vec![model("claude-opus-5-5", 2, 10, 10, 5)], Some(0.2))).unwrap();
-        db.insert_acp_turn(&turn("turn-2", vec![model("claude-opus-5-5", 2, 10, 10, 5)], Some(0.05))).unwrap();
-        assert_eq!(rows(&db).iter().map(|row| row.5).collect::<Vec<_>>(), [Some(200_000), Some(50_000)]);
+        for (turn_id, total) in [("turn-1", 0.2), ("turn-2", 0.05), ("turn-3", 0.08)] {
+            db.insert_acp_turn(&turn(turn_id, vec![model("claude-opus-5-5", 2, 10, 10, 5)], Some(total))).unwrap();
+        }
+        assert_eq!(rows(&db).iter().map(|row| row.5).collect::<Vec<_>>(), [Some(200_000), Some(50_000), Some(30_000)]);
         let _ = std::fs::remove_file(path);
     }
 
@@ -288,7 +296,7 @@ mod tests {
     fn an_older_database_gets_the_columns_and_uncached_codex_input() {
         let path = std::env::temp_dir().join(format!("mcb-usage-acp-{}.sqlite3", uuid::Uuid::new_v4()));
         let connection = rusqlite::Connection::open(&path).unwrap();
-        connection.execute_batch(&USAGE_SCHEMA.replace("    node_run_id TEXT,\n    reported_cost_micros INTEGER,\n", "")).unwrap();
+        connection.execute_batch(&USAGE_SCHEMA.replace("    node_run_id TEXT,\n    reported_cost_micros INTEGER,\n    -- The provider's running cost total the share was taken from.\n    reported_cost_total_micros INTEGER,\n", "")).unwrap();
         connection.execute("INSERT INTO usage_events (provider, provider_instance_id, occurred_at_micros, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, source_kind, source_event_id, source_key, inserted_at_micros) VALUES ('codex', 'local', 1, 100, 1, 80, 5, 0, 'gpt-5.6-sol', 'codex-jsonl', 'e', 'k', 1)", []).unwrap();
         drop(connection);
         let db = UsageDb::open(&path).expect("an older database should upgrade");
