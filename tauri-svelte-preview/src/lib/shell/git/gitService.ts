@@ -34,6 +34,7 @@ import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import { setGitSurfaceDiagnostics } from '../resourceDiagnostics.svelte.ts';
 import { parseRemoteWorkspacePath } from '../../workspacePaths.ts';
 import { rail } from '../stores/sessionRailStore.svelte.ts';
+import { createGitAmend } from './gitAmend.ts';
 import {
   addGitRemoteFromTauri,
   amendGitCommitFromTauri,
@@ -289,7 +290,8 @@ export interface GitService {
   unstagePaths(paths: string[]): Promise<void>;
   /** Commit the staged changes using `state.commitMessage` unless one is given. */
   commit(message?: string): Promise<void>;
-  /** Rewrite the last commit with the staged changes, then turn Amend off. */
+  setAmend(on: boolean): Promise<void>;
+  /** Rewrite the last commit with the staged changes, then turn Amend off. `setAmend(true)` fills an empty box with the last message. */
   amendCommit(message?: string): Promise<void>;
   /**
    * Throw away the named files' changes. THE CALLER MUST HAVE ASKED FIRST:
@@ -333,6 +335,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
    * is cleared, or the repository changes. */
   let diffRead = new AbortController();
   let historySurfaceVisible = false;
+  const amend = createGitAmend(state, backend);
   let sourceControlSyncGeneration = 0;
 
   function publishGitDiagnostics(): void {
@@ -736,14 +739,11 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       // Only clear the box on a commit that actually happened.
       if (state.actionError === '' && state.status !== before) state.commitMessage = '';
     },
-
+    setAmend: amend.set,
     async amendCommit(message?: string): Promise<void> {
-      const text = (message ?? state.commitMessage).trim();
+      const text = amend.messageFor((message ?? state.commitMessage).trim());
       const amended = await runAction('amend', (root) => backend.amend(root, text), { reloadHistory: true });
-      if (!amended) return;
-      state.commitMessage = '';
-      // Left on, the next commit would silently rewrite this one too.
-      state.amend = false;
+      if (amended) amend.finish();
     },
 
     async discardPaths(paths: string[]): Promise<void> {

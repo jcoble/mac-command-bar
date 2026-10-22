@@ -784,7 +784,7 @@
               <Switch
                 size="sm"
                 disabled={!canChange}
-                bind:checked={panel.amend}
+                checked={panel.amend} onCheckedChange={(on) => void service.setAmend(on)}
                 data-testid="source-control-amend-toggle"
               />
               Amend
