@@ -3082,7 +3082,7 @@ impl AgentRuntimeManager {
         let mut update = AgentConversationConfigUpdate {
             model: normalized_optional_id(request.model),
             reasoning_effort: normalized_optional_id(request.reasoning_effort),
-            approval_policy: normalized_optional_id(request.approval_policy),
+            approval_policy: crate::proof_mode::requested_mode(normalized_optional_id(request.approval_policy)),
         };
         let native_session_id = {
             let mut sessions = self

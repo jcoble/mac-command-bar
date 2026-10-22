@@ -149,6 +149,11 @@ pub fn session_launch(descriptor: &ProviderDescriptor, pre_approval: bool) -> Re
     })
 }
 
+/// A mode a send or config change asks for; dropped in proof mode, where the mode is locked.
+pub fn requested_mode(mode: Option<String>) -> Option<String> {
+    mode.filter(|_| active().is_none())
+}
+
 /// Proof mode on for this test's thread only, so other tests run normally.
 #[cfg(test)]
 pub fn turn_on_for_this_thread(stdin: &str) {
@@ -208,6 +213,7 @@ mod tests {
     fn the_terminal_keyring_and_github_writes_are_refused() {
         let none = serde_json::Value::Null;
         assert!(refuse_command("start_terminal_session", &none).is_ok(), "only in proof mode");
+        assert_eq!(requested_mode(Some("auto".into())), Some("auto".into()));
         turn_on_for_this_thread("planted\n\n");
         for command in ["start_terminal_session", "open_terminal_path", "merge_github_pull_request",
             "comment_github_pull_request", "reply_github_pull_request_comment", "submit_github_pull_request_review"] {
@@ -221,6 +227,7 @@ mod tests {
         assert_eq!(refuse_command("set_agent_conversation_config_option", &mode).unwrap_err(), "Changing the mode is off in proof mode");
         let model = serde_json::json!({"request": {"optionId": "model"}});
         assert!(refuse_command("set_agent_conversation_config_option", &model).is_ok());
+        assert_eq!(requested_mode(Some("auto".into())), None, "a send that asks for a mode keeps the session's mode");
         let policy = serde_json::json!({"request": {"approvalPolicy": "auto", "model": null}});
         assert!(refuse_command("set_agent_conversation_config", &policy).is_err());
         assert!(refuse_command("set_agent_conversation_config", &serde_json::json!({"request": {"model": "m"}})).is_ok());
