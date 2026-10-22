@@ -19,6 +19,7 @@
   import { activate as activateExplorer } from '$lib/shell/files/explorer/explorerService';
   import { sessionWorkingIn } from '$lib/shell/projects/projects.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
+  import { settings } from '$lib/shell/settings/settingsStore.svelte';
 
   import AgentsPanel from '$lib/shell/panels/agents/AgentsPanel.svelte';
   import FilesPanel from '$lib/shell/files/components/FilesPanel.svelte';
@@ -40,6 +41,8 @@
     root: string;
     /** False when the active session's checkout has disappeared. */
     rootAvailable?: boolean;
+    /** The folder the session works in, which Source Control reads; `root` when unset. */
+    sourceControlRoot?: string;
     /** The active session's ownedId, or null. */
     ownedId: string | null;
     /** Optional tree-only projection while rail selection is rebuilt in layers. */
@@ -71,6 +74,7 @@
     activeId,
     root,
     rootAvailable = true,
+    sourceControlRoot,
     ownedId,
     filesRoot,
     filesOwnedId,
@@ -143,7 +147,7 @@
       <div class="panel-body showing">
         <SourceControlPanel
           visible={true}
-          root={viewing ? viewedRoot ?? '' : root}
+          root={viewing ? viewedRoot ?? '' : sourceControlRoot || root}
           {ownedId}
           rootAvailable={viewing || rootAvailable}
           inspectionRoot={viewing ? undefined : sourceControlInspectionRoot}
@@ -159,9 +163,10 @@
       <div class="panel-body showing"><WorktreesPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'terminal'}
       <div class="panel-body showing">
-        {#key ownedId}
+        <!-- Ghostty takes its colours only when a terminal is made: a theme change remakes it. -->
+        {#key settings.appearance.themeId}{#key ownedId}
           {#key root}<WorkspaceTerminal {root} {ownedId} />{/key}
-        {/key}
+        {/key}{/key}
       </div>
     {:else if visible && activeId === 'run'}
       <div class="panel-body showing"><RunPanel visible={true} {root} {ownedId} /></div>

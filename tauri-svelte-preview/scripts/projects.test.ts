@@ -6,6 +6,7 @@ import {
   defaultDraftProjectId,
   filterProjects,
   isNewFolderPath,
+  middleTruncatePath,
   otherProjectGroups,
   projectBadge,
   projectCountsByMachine,
@@ -116,6 +117,16 @@ const project = (id: string, machine: string): ProjectRecord => ({
   assert.equal(shortProjectPath('/homework/app'), '/homework/app');
 }
 
+// A long path is cut in the middle, keeping its start and its last folder whole; a short one is unchanged.
+{
+  assert.equal(middleTruncatePath('~/dev/work/EdiPlatform', 40), '~/dev/work/EdiPlatform');
+  assert.equal(
+    middleTruncatePath('~/dev/work/worktrees/mac-command-bar/tsk-1556-project-picker', 40),
+    '~/dev/work/work…/tsk-1556-project-picker'
+  );
+  assert.equal(middleTruncatePath('~/a/a-very-long-final-folder-name-here', 20), '…/a-very-long-final-folder-name-here');
+}
+
 // Last used reads as the app's short age; a project never used shows nothing.
 {
   const now = new Date('2026-10-10T12:00:00Z');
@@ -132,7 +143,7 @@ const project = (id: string, machine: string): ProjectRecord => ({
     [{ id: 'workbox', name: 'Workbox Test' }, { id: 'sd', name: 'SD' }],
     { workbox: 'connected', sd: 'disconnected' },
     {
-      '/work/A': [{ path: '/work/A/', branch: 'main', isMain: true }, { path: '/work/A-wt', branch: 'feature', isMain: false }],
+      '/work/A': [{ path: '/work/A/', branch: 'main', isMain: true }, { path: '/work/A-wt', branch: 'feature', isMain: false }, { path: '/work/fix', branch: 'fix', isMain: false }],
       'assembly-remote://workbox/work/B': [{ path: 'assembly-remote://workbox/work/B-wt', branch: 'fix', isMain: false }]
     }
   );
@@ -140,7 +151,9 @@ const project = (id: string, machine: string): ProjectRecord => ({
   assert.deepEqual(groups, [
     { machine: 'local', label: 'This Mac', options: [
       { projectId: 'A', path: '/work/A', folder: '/work/A', label: 'A', detail: '/work/A', worktree: false },
-      { projectId: 'A', path: '/work/A-wt', folder: '/work/A-wt', label: 'A-wt — feature', detail: '/work/A-wt', worktree: true }
+      { projectId: 'A', path: '/work/A-wt', folder: '/work/A-wt', label: 'A-wt — feature', detail: '/work/A-wt', worktree: true },
+      // A branch named like its folder is not repeated.
+      { projectId: 'A', path: '/work/fix', folder: '/work/fix', label: 'fix', detail: '/work/fix', worktree: true }
     ] },
     { machine: 'workbox', label: 'Workbox Test', options: [
       { projectId: 'B', path: 'assembly-remote://workbox/work/B', folder: '/work/B', label: 'B', detail: '/work/B', worktree: false },

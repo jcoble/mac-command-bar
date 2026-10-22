@@ -22,7 +22,8 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use self::push::PushSender;
+use self::push::{spawn_push, PushSender};
+use super::manager::tool_call::ToolCall;
 use super::protocol::{
     AgentConversationEvent, AgentConversationPayload as Payload, AgentNativeSessionMode, EnsureAgentConversationRequest,
     ExecutionEnvironment, RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest,
@@ -51,8 +52,8 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 const CHAT_PAGE_BYTES: u32 = 1024 * 1024;
 const LATEST_CHAT_ITEMS: usize = 100;
 const MAX_PUSH_TOKEN_CHARS: usize = 4096;
-/// A tool call opened on the phone sends at most this much output and diff.
-const MAX_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
+/// A tool call opened on the phone sends at most this much output and diff; streamed command output keeps as much.
+pub(super) const MAX_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
 const MAX_TOOL_DIFF_BYTES: usize = 64 * 1024;
 /// A session's changes send at most this much diff; the file list is always whole.
 const MAX_CHANGES_DIFF_BYTES: usize = 256 * 1024;
@@ -163,43 +164,6 @@ pub(super) async fn start_listener(bind: Option<&str>, state: ServerState) -> bo
         }
     });
     true
-}
-
-/// Rings the phones once for each inbox item that appears. It wakes on any permission request or run
-/// change, recomputes the inbox, and sends for each `(id, version)` it has not seen. It starts from
-/// the items already waiting, so a restart does not ring for them again. A finished reply rings nothing.
-fn spawn_push(state: ServerState, sender: PushSender) {
-    use tokio::sync::broadcast::error::RecvError;
-    tokio::spawn(async move {
-        let mut events = state.events.subscribe();
-        let mut runs = state.workflow.run_changes();
-        let mut seen: HashSet<(String, i64)> = inbox_items(&state).map(|items| item_keys(&items)).unwrap_or_default();
-        loop {
-            let closed = tokio::select! {
-                event = events.recv() => match event {
-                    Ok(event) if !matches!(event.payload, Payload::Approval { .. }) => continue,
-                    Err(RecvError::Closed) => true,
-                    _ => false,
-                },
-                change = runs.recv() => matches!(change, Err(RecvError::Closed)),
-            };
-            if closed { break; }
-            let Ok(items) = inbox_items(&state) else { continue };
-            let store = state.manager.store();
-            let machine = store.phone_machine().unwrap_or(None);
-            for (_, item) in &items {
-                let key = (item["id"].as_str().unwrap_or_default().to_string(), item["version"].as_i64().unwrap_or(0));
-                if let (false, Some(machine)) = (seen.contains(&key), &machine) {
-                    sender.send_inbox_push(store, machine, item).await;
-                }
-            }
-            seen = item_keys(&items);
-        }
-    });
-}
-
-fn item_keys(items: &[(Option<String>, Value)]) -> HashSet<(String, i64)> {
-    items.iter().map(|(_, item)| (item["id"].as_str().unwrap_or_default().to_string(), item["version"].as_i64().unwrap_or(0))).collect()
 }
 
 /// Answers the desktop's phone operations, sent as workflow operations over its
@@ -719,41 +683,6 @@ async fn git_prs(State(state): State<ServerState>, Path(owned_id): Path<String>)
 fn pull_request_rows(list: Vec<crate::git::workspace::PullRequestSummary>) -> Value {
     list.into_iter().map(|pr| json!({ "number": pr.number, "title": pr.title, "state": pr.state, "url": pr.url,
         "branch": pr.head_branch })).collect()
-}
-
-/// One tool call as its events say it. Imported history stores a call's output in a later event with
-/// no name, summary, path or diff, so the events of one item fold in order: each later non-empty
-/// field replaces the earlier one, and the state is the latest event's.
-#[derive(Clone, Copy)]
-struct ToolCall<'a> {
-    name: &'a str,
-    state: ToolState,
-    summary: Option<&'a str>,
-    output: Option<&'a str>,
-    path: Option<&'a str>,
-    diff: Option<&'a str>,
-}
-
-impl<'a> ToolCall<'a> {
-    /// The call `payload` describes, when it is a tool event of item `item_id`.
-    fn of(payload: &'a Payload, item_id: &str) -> Option<Self> {
-        match payload {
-            Payload::Tool { item_id: id, name, state, summary, output, path, diff } if id == item_id =>
-                Some(Self { name, state: *state, summary: summary.as_deref(), output: output.as_deref(), path: path.as_deref(), diff: diff.as_deref() }),
-            _ => None,
-        }
-    }
-
-    fn fold(self, later: Self) -> Self {
-        let newer = |old: Option<&'a str>, new: Option<&'a str>| new.filter(|text| !text.is_empty()).or(old);
-        Self { name: if later.name.is_empty() { self.name } else { later.name }, state: later.state,
-            summary: newer(self.summary, later.summary), output: newer(self.output, later.output),
-            path: newer(self.path, later.path), diff: newer(self.diff, later.diff) }
-    }
-
-    fn has_detail(&self) -> bool {
-        [self.output, self.path, self.diff].iter().any(|field| field.is_some_and(|text| !text.is_empty()))
-    }
 }
 
 /// The `b/` path in a `diff --git` header's text. Git quotes a path with a quote, backslash,
@@ -1437,6 +1366,7 @@ mod tests {
     use futures_util::StreamExt;
     use serde_json::{json, Value};
     use std::time::Duration;
+    mod board_push;
     mod device_removal;
     const PHONE_URL: &str = "https://phone.example.ts.net:8778";
 
@@ -1624,7 +1554,7 @@ mod tests {
 
     fn tool(state: ToolState, summary: Option<&str>) -> Payload {
         Payload::Tool { item_id: "t1".into(), name: "start_run".into(), state, summary: summary.map(str::to_string),
-            output: None, path: None, diff: None }
+            output: None, path: None, diff: None, has_detail: false, added: None, removed: None, }
     }
 
     #[test]
@@ -1714,7 +1644,7 @@ mod tests {
         assert_eq!(again.json::<Value>().await.unwrap(), json!({"error": "stale"}));
         // The engine takes an answer only from the owner, and recorded this one once.
         let run = state.workflow.get_run(&run_id).unwrap();
-        assert_eq!(run.input_snapshot["answers"], json!([{"step": "checks", "decision": "accept", "reply": null}]));
+        assert_eq!(run.input_snapshot["answers"], json!([{"step": "checks", "decision": "accept", "reply": null, "by": "owner", "why": null}]));
         assert_eq!(serde_json::to_value(run.state).unwrap(), "completed");
     }
 
@@ -2190,7 +2120,7 @@ mod tests {
 
     fn edit(output: Option<String>, diff: Option<String>) -> Payload {
         Payload::Tool { item_id: "edit".into(), name: "Edit".into(), state: ToolState::Completed, summary: Some("notes.txt".into()),
-            output, path: Some("/work/notes.txt".into()), diff }
+            output, path: Some("/work/notes.txt".into()), diff, has_detail: false, added: None, removed: None, }
     }
 
     #[tokio::test]
@@ -2200,7 +2130,7 @@ mod tests {
         let diff = "--- a/notes.txt\n+++ b/notes.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n";
         file_session(&state, "lane", vec![
             Payload::Tool { item_id: "edit".into(), name: "Edit".into(), state: ToolState::Started, summary: None,
-                output: None, path: None, diff: None },
+                output: None, path: None, diff: None, has_detail: false, added: None, removed: None, },
             edit(Some("Wrote 2 lines".into()), Some(diff.into())),
             tool(ToolState::Completed, Some("wc -l notes.txt")),
         ]);
@@ -2222,7 +2152,7 @@ mod tests {
         let token = paired(&state, &base).await;
         // Imported history stores the call, then its output in a later event with no name or summary.
         let call = |name: &str, state, summary: Option<&str>, output: Option<&str>| Payload::Tool { item_id: "tool-a".into(),
-            name: name.into(), state, summary: summary.map(str::to_string), output: output.map(str::to_string), path: None, diff: None };
+            name: name.into(), state, summary: summary.map(str::to_string), output: output.map(str::to_string), path: None, diff: None, has_detail: false, added: None, removed: None, };
         file_session(&state, "lane", vec![
             call("shell", ToolState::Started, Some("ls"), None),
             call("", ToolState::Completed, None, Some("result")),

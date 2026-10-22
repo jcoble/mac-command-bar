@@ -24,6 +24,8 @@ image = { version = "0.25.10", default-features = false, features = ["gif", "jpe
 libc = "0.2"
 mcb-core = { path = "../../core" }
 portable-pty = "0.9.0"
+# The official Rust MCP SDK serves the Assembly MCP server; pinned, its majors move fast.
+rmcp = { version = "=3.6.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 # `blocking` is here for the helper module: its transport is one synchronous
 # call made on a blocking task, which keeps the trait behind it plain enough
 # for a test to replace with a fake.
@@ -55,6 +57,11 @@ tokio-tungstenite = "0.29"
 trash = "5"
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-deep-link = "2"
+
+[dev-dependencies]
+rmcp = { version = "=3.6.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest"] }
+# The rmcp client's reqwest is built without a TLS provider; the test installs the ring one already in the tree.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # Already in the tree through tauri/wry; declared here so the browser view can
 # ask the NSWindow for its content inset, which Tauri's window APIs do not

@@ -37,6 +37,21 @@ fn allow_and_deny_answer_with_the_matching_kind_of_option() {
     assert!(permission_response(&[], AgentApprovalDecision::Accept).is_err());
 }
 
+// A policy "allow" must never write a standing rule into the agent's settings.
+#[test]
+fn a_policy_allow_picks_allow_once_and_never_allow_always() {
+    use crate::workflow::policy::Decision;
+    // The option lists the Claude and Codex adapters send.
+    let claude = offered(&[("allow_always", "allow_always"), ("allow", "allow_once"), ("reject", "reject_once")]);
+    let codex = offered(&[("approved-for-session", "allow_always"), ("approved", "allow_once"), ("abort", "reject_once")]);
+    assert_eq!(policy_answer(Decision::Allow, &claude), Some(selected("allow")));
+    assert_eq!(policy_answer(Decision::Allow, &codex), Some(selected("approved")));
+    assert_eq!(policy_answer(Decision::Deny, &claude), Some(selected("reject")));
+    let only_always = offered(&[("allow_always", "allow_always"), ("reject", "reject_once")]);
+    assert_eq!(policy_answer(Decision::Allow, &only_always), None, "a person decides");
+    assert_eq!(policy_answer(Decision::Ask, &claude), None);
+}
+
 #[test]
 fn a_chosen_option_is_sent_as_chosen_and_recorded_as_allowed_or_declined() {
     let options = offered(&[("no-always", "reject_always"), ("yes-always", "allow_always")]);

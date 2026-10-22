@@ -3483,7 +3483,7 @@ fn main() {
                     )?;
                 }
             }
-            let workflow_events = workflow_engine.clone();
+            let workflow_events = workflow_engine.clone(); usage_history::start_acp_usage(usage_history::usage_db_path(app.handle())?, agent_runtime.store_handle());
             let workflow_handle = app.handle().clone();
             agent_runtime.set_emitter(Arc::new(move |event| {
                 let is_terminal_turn = matches!(
@@ -3777,7 +3777,7 @@ fn main() {
             agent_conversation::list_agent_conversation_events,
             agent_conversation::list_agent_conversation_events_before,
             agent_conversation::list_agent_conversation_items_before,
-            agent_conversation::list_agent_conversation_items_after,
+            agent_conversation::list_agent_conversation_items_after, agent_conversation::manager::tool_call::read_agent_conversation_tool_call,
             agent_conversation::update_agent_conversation_session_meta,
             agent_conversation::read_agent_conversation_child_history,
             agent_conversation::stop_agent_conversation_child_history,
@@ -3789,9 +3789,9 @@ fn main() {
             projection_streams::register_agent_conversation_stream,
             projection_streams::acknowledge_agent_conversation_stream,
             projection_streams::unregister_agent_conversation_stream,
-            projection_streams::register_terminal_output_stream,
-            projection_streams::acknowledge_terminal_output_stream,
+            projection_streams::register_terminal_output_stream, projection_streams::acknowledge_terminal_output_stream,
             projection_streams::unregister_terminal_output_stream,
+            agent_conversation::agui::register_agui_stream, agent_conversation::agui::acknowledge_agui_stream, agent_conversation::agui::unregister_agui_stream, agent_conversation::agui::run_agui, agent_conversation::agui::read_agui_snapshot, agent_conversation::agui::list_agui_events_before, agent_conversation::agui::list_agui_events_after, agent_conversation::agui::close_agui_view,
             agent_conversation::save_agent_conversation_attachment,
             agent_conversation::read_agent_conversation_attachments,
             agent_conversation::read_agent_conversation_selected_attachments,

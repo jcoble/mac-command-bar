@@ -1,6 +1,7 @@
 import { Channel } from '@tauri-apps/api/core';
 import type { AgentConversationConfigState } from './shell/conversation/conversationConfig.ts';
-import type { AgentConversationProvider } from './shell/conversation/conversationTypes.ts';
+import type { AgentConversationProvider, AguiPage, AguiSnapshot } from './shell/conversation/conversationTypes.ts';
+import type { StreamChunk } from '@tanstack/ai/client';
 import {
   trackTauriChannel,
   trackTauriListener,
@@ -345,7 +346,7 @@ export type GithubMergeRequest = {
 export type GitBranchSummary = {
   name: string;
   isCurrent: boolean;
-  upstream: string;
+  upstream: string; worktreePath: string; // Where the branch is checked out on the repository's machine, '' when nowhere.
   subject: string;
 };
 
@@ -1332,6 +1333,20 @@ export async function registerAgentConversationStream(
   return registration;
 }
 
+/** The AG-UI channel: one envelope per native event, holding its chunks for the open chat views. */
+export async function registerAguiStream(
+  onEnvelope: (envelope: StreamEnvelope<StreamChunk[]>) => void,
+  onResync: () => void
+): Promise<ProjectionStreamRegistration | null> {
+  return await registerProjectionStream({
+    registerCommand: 'register_agui_stream',
+    acknowledgeCommand: 'acknowledge_agui_stream',
+    unregisterCommand: 'unregister_agui_stream',
+    onEnvelope,
+    onResync
+  });
+}
+
 export async function registerTerminalOutputStream(
   onEnvelope: (envelope: StreamEnvelope<TerminalOutputPayload>) => void
 ): Promise<ProjectionStreamRegistration | null> {
@@ -2157,7 +2172,7 @@ export async function readAgentConversationSelectionFromTauri(
   maxBytes: number,
   minimumGeneration?: number,
   signal?: AbortSignal
-): Promise<AgentConversationSelectionSnapshot | null> {
+): Promise<AguiSnapshot | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
   const requestId = createAgentConversationRequestId();
   const cancel = (): void => { void cancelAgentConversationRequestFromTauri(requestId); };
@@ -2165,8 +2180,9 @@ export async function readAgentConversationSelectionFromTauri(
   try {
     if (signal?.aborted) return null;
     const { invoke } = await import('./workspaceInvoke.ts');
-    const snapshot = await invoke<AgentConversationSelectionSnapshot | null>(
-      'read_agent_conversation_selection',
+    // Opens the session's view on the AG-UI channel as well.
+    const snapshot = await invoke<AguiSnapshot | null>(
+      'read_agui_snapshot',
       { ownedId, requestId, maxBytes, minimumGeneration }
     );
     if (signal?.aborted || !snapshot) return null;
@@ -2526,21 +2542,17 @@ export async function listAgentConversationItemsBeforeFromTauri(
   beforeSequence: number,
   maxBytes: number,
   signal?: AbortSignal
-): Promise<AgentConversationItemPage | null> {
+): Promise<AguiPage | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
   const requestId = createAgentConversationRequestId();
   const cancel = (): void => { void cancelAgentConversationRequestInBackground(requestId); };
   signal?.addEventListener('abort', cancel, { once: true });
   try {
-    const page = await invoke<AgentConversationItemPage>('list_agent_conversation_items_before', {
+    const page = await invoke<AguiPage>('list_agui_events_before', {
       ownedId, beforeSequence, maxBytes, requestId
     });
-    return signal?.aborted ? null : {
-      ...page,
-      beforeCursor: page.beforeCursor ?? undefined,
-      afterCursor: page.afterCursor ?? undefined
-    };
+    return signal?.aborted ? null : { ...page, beforeCursor: page.beforeCursor ?? undefined, afterCursor: page.afterCursor ?? undefined };
   } catch (error) {
     if (signal?.aborted) return null;
     throw error;
@@ -2554,27 +2566,31 @@ export async function listAgentConversationItemsAfterFromTauri(
   afterSequence: number,
   maxBytes: number,
   signal?: AbortSignal
-): Promise<AgentConversationItemPage | null> {
+): Promise<AguiPage | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
   const requestId = createAgentConversationRequestId();
   const cancel = (): void => { void cancelAgentConversationRequestInBackground(requestId); };
   signal?.addEventListener('abort', cancel, { once: true });
   try {
-    const page = await invoke<AgentConversationItemPage>('list_agent_conversation_items_after', {
+    const page = await invoke<AguiPage>('list_agui_events_after', {
       ownedId, afterSequence, maxBytes, requestId
     });
-    return signal?.aborted ? null : {
-      ...page,
-      beforeCursor: page.beforeCursor ?? undefined,
-      afterCursor: page.afterCursor ?? undefined
-    };
+    return signal?.aborted ? null : { ...page, beforeCursor: page.beforeCursor ?? undefined, afterCursor: page.afterCursor ?? undefined };
   } catch (error) {
     if (signal?.aborted) return null;
     throw error;
   } finally {
     signal?.removeEventListener('abort', cancel);
   }
+}
+
+/** A tool call's whole output and diff, read when its row is opened; null outside the app or once `signal` aborts. */
+export async function readAgentConversationToolCallFromTauri(ownedId: string, itemId: string, signal: AbortSignal): Promise<{ output: string | null; diff: string | null } | null> {
+  if (!isTauriRuntime() || signal.aborted) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  const call = await invoke<{ output: string | null; diff: string | null }>('read_agent_conversation_tool_call', { ownedId, itemId });
+  return signal.aborted ? null : call;
 }
 
 /** For an abort listener: cancels the request and reports, rather than throws, a failure. */
@@ -2584,6 +2600,12 @@ export async function cancelAgentConversationRequestInBackground(requestId: numb
   } catch (error) {
     console.warn('Could not cancel the backend request', error);
   }
+}
+
+/** The chat view closed: the backend stops projecting its session to the AG-UI channel. The session goes on. */
+export async function closeAguiViewInBackground(ownedId: string): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try { await (await import('./workspaceInvoke.ts')).invoke('close_agui_view', { ownedId }); } catch (error) { console.warn('Could not close the chat view', error); }
 }
 
 export async function updateAgentConversationSessionMetaFromTauri(input: {

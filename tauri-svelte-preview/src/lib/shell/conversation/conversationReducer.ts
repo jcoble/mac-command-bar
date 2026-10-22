@@ -5,29 +5,6 @@ import type {
   ConversationSessionState
 } from './conversationTypes.ts';
 
-/** Below this the window is not full enough for a fall to mean a compaction;
- * agents report small numbers for other reasons. */
-const COMPACTION_FLOOR_TOKENS = 32_000;
-/** How much of the old total has to survive for the fall to be ordinary. */
-const COMPACTION_DROP_RATIO = 0.6;
-
-/**
- * Whether a reported occupancy falling from `previous` to `used` can only be a
- * compaction. Claude says nothing when it throws the older part of a
- * conversation away — the number dropping off a cliff is the only sign there
- * is. A modest decline is ordinary, an agent reporting its last request rather
- * than the whole session, and means nothing.
- */
-export function usageDropIsCompaction(
-  previous: number | undefined,
-  used: number | undefined
-): boolean {
-  return previous !== undefined
-    && used !== undefined
-    && previous >= COMPACTION_FLOOR_TOKENS
-    && used <= previous * COMPACTION_DROP_RATIO;
-}
-
 export function shouldClearConversationSending(
   event: AgentConversationEvent | AgentEvent
 ): boolean {

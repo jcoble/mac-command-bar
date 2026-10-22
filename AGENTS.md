@@ -150,6 +150,14 @@ one next to it doesn't. Before calling work done, name which of these you covere
   and run `evidence add <file> --task TSK-<id> --desc "<what it proves>"`; `evidence publish
   TSK-<id>` gives the Drive links for the PR and the task. Close every browser and app you opened.
 
+## Review guidelines
+
+For every reviewer, the review bot included: flag only problems that block. A bug, something the task asks for that
+is missing or broken, a security hole an agent could hit by accident, lost data, or a merge or release risk is a
+finding. Naming, wording, style, comments, test tidiness, unlikely edge cases, refactors and nicer ways to write the
+same thing are not; leave them out. On a later push, check the earlier findings and what their fixes changed; don't
+look for new small things.
+
 ## The workbox
 
 - Jesse works in Assembly's own Terminal tab on the workbox: the shell is started by the Assembly
@@ -199,14 +207,20 @@ one next to it doesn't. Before calling work done, name which of these you covere
 ## Reaching Jesse
 
 - A question for Jesse, or a blocker you can't get around, goes on the Build Board right away
-  (`board_update`), with enough context to answer without reading the chat. No answer in 20
-  minutes: send a desktop notification. Still none 10 minutes later: send a phone notification.
-  Keep working on anything that isn't blocked.
+  (`board_update`), with enough context to answer without reading the chat; the board notifies his
+  desktop. Only the main orchestrator messages his phone (`notify: true`), for anything reasonable
+  (a question, something ready to test, a blocker, a finished batch, an emergency), not for routine
+  progress; every other session posts to the Build Board, which notifies his desktop. Until he
+  answers a board question, his phone gets at most 3 of these in 30 minutes and 5 in an hour. A
+  task blocked on him goes on hold; keep working on everything else.
 - Anything he needs to stay caught up (PR ready, check failed, blocker, change from plan, refused
   action) goes on the board in the same turn. Mark questions answered when they are. Helpers
   can't post; they tell their orchestrator.
 - Start agent lanes as Assembly helper sessions (`start_session`), never hidden `codex exec`. Send
   review-bot findings back to the lane that built the PR until the bot is clean.
+- The main orchestrator decides a paused workflow step itself (`decide_step`, with its why) when the
+  findings and the spec give enough to decide. A gate, or a pause that needs Jesse's judgment (scope,
+  a product choice, risk), goes on the Build Board with a phone notification instead.
 
 ## Tasks, plans and docs
 

@@ -1,3 +1,4 @@
+import type { StreamChunk } from '@tanstack/ai/client';
 import type { AgentRuntimeState } from '../ownedSessions.ts';
 
 export type AgentConversationProvider = 'codex' | 'claude' | 'antigravity';
@@ -429,7 +430,7 @@ export type AgentConversationPayload =
   | { kind: 'userMessage'; itemId: string; text: string; completed: boolean; attachmentIds?: string[] }
   | { kind: 'assistantDelta'; itemId: string; delta: string }
   | { kind: 'assistantMessage'; itemId: string; text: string; completed: true }
-  | { kind: 'tool'; itemId: string; name: string; state: ToolState; summary?: string; output?: string; path?: string; diff?: string }
+  | { kind: 'tool'; itemId: string; name: string; state: ToolState; summary?: string; output?: string; path?: string; diff?: string; hasDetail?: boolean; added?: number; removed?: number }
   | {
       kind: 'childUpdate';
       childId: string;
@@ -714,3 +715,9 @@ export interface AgentConversationSelectionSnapshot {
   pendingSequence: number;
   activeTurnId?: string;
 }
+
+/** A page as the chat reads it: its events as AG-UI chunks (`events` is empty). */
+export type AguiPage = AgentConversationItemPage & { chunks: StreamChunk[] };
+
+/** A chat view's opening snapshot as AG-UI chunks, then `runs`: the chat's runs that ended meanwhile, and the requests still waiting. */
+export type AguiSnapshot = AgentConversationSelectionSnapshot & { chunks: StreamChunk[]; runs: StreamChunk[] };

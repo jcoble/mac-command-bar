@@ -1,12 +1,12 @@
 //! Synchronous Tauri commands run on the UI thread, so storage-backed commands are async to keep the interface responsive.
 
-mod attachments;
+pub mod agui; pub mod agui_projection; mod attachments;
 mod broker_status;
 pub mod capabilities;
 pub mod handoff;
 pub mod manager;
 pub mod messaging;
-mod normalization;
+pub(crate) mod normalization;
 mod phone;
 pub mod prompt_content;
 pub mod protocol;

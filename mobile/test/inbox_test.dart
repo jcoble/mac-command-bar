@@ -6,7 +6,9 @@ import 'package:assembly_phone/core/api/machine_client.dart';
 import 'package:assembly_phone/core/live/live_providers.dart';
 import 'package:assembly_phone/features/inbox/inbox_repository.dart';
 import 'package:assembly_phone/features/runs/runs_repository.dart';
+import 'package:assembly_phone/features/inbox/inbox_screen.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -99,7 +101,75 @@ Future<(ProviderContainer, FakeAdapter, FakeLiveSocket)> inboxWith(
   return (container, adapter, socket);
 }
 
+/// [QuestionView] on a phone-sized screen above a stand-in tab bar.
+Future<(List<String>, List<int>)> pumpQuestion(
+  WidgetTester tester,
+  Map<String, Object?> json,
+) async {
+  final answers = <String>[];
+  final stops = <int>[];
+  tester.view.physicalSize = const Size(400, 700);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: QuestionView(
+          item: InboxItem.fromJson(json),
+          busy: false,
+          onAnswer: answers.add,
+          onStop: () => stops.add(1),
+        ),
+        bottomNavigationBar: const SizedBox(key: Key('tab-bar'), height: 64),
+      ),
+    ),
+  );
+  return (answers, stops);
+}
+
 void main() {
+  testWidgets('question_answers_stay_pinned_above_tab_bar_while_scrolling', (
+    tester,
+  ) async {
+    final (answers, _) = await pumpQuestion(tester, {
+      ...pause('r1', 2000),
+      'detail': List.filled(80, 'A long note line.').join('\n'),
+      'evidence': [
+        {'label': 'spec v3', 'text': 'section 4'},
+      ],
+    });
+
+    await tester.drag(find.byType(ListView), const Offset(0, -3000));
+    await tester.pumpAndSettle();
+
+    expect(find.text('TSK-1415 · Phone loop demo').hitTestable(), findsNothing);
+    final bar = tester.getRect(find.byKey(const Key('tab-bar')));
+    for (final label in ['Another round', 'Accept']) {
+      final button = find.text(label).hitTestable();
+      expect(button, findsOneWidget, reason: label);
+      expect(tester.getRect(button).bottom, lessThanOrEqualTo(bar.top));
+    }
+    expect(find.text('spec v3: section 4'), findsOneWidget);
+    await tester.tap(find.text('Another round'));
+    expect(answers, ['another-round']);
+  });
+
+  testWidgets('question_more_holds_stop_and_mute', (tester) async {
+    final (answers, stops) = await pumpQuestion(tester, pause('r1', 2000));
+
+    // Stop is not one of the pinned answers.
+    expect(find.text('Stop'), findsNothing);
+    await tester.tap(find.text('More'));
+    await tester.pumpAndSettle();
+    expect(find.text('Stop'), findsOneWidget);
+    expect(find.text('Mute'), findsOneWidget);
+
+    await tester.tap(find.text('Stop'));
+    await tester.pumpAndSettle();
+    expect(stops, [1]);
+    expect(answers, isEmpty);
+  });
+
   test('inbox_notifier_keeps_backend_options_only', () async {
     final (c, _, _) = await inboxWith(
       (_) => (

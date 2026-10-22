@@ -49,6 +49,7 @@ async fn non_claude_worker_applies_the_effort_advertised_at_session_creation() {
                 effort: Some(wanted.into()),
                 permission: None,
                 starter: None,
+                policy: Default::default(),
             })
             .await;
         let config = manager.conversation_config("effort-worker").unwrap();
@@ -97,9 +98,35 @@ async fn non_claude_worker_applies_the_effort_advertised_at_session_creation() {
 
 #[test]
 fn a_worker_with_no_step_permission_starts_in_auto_under_a_starter_in_default() {
-    use AgentConversationProvider::{Claude, Codex};
+    #[allow(non_snake_case)] let (Claude, Codex) = (AgentConversationProvider::Claude, AgentConversationProvider::Codex);
     assert_eq!(capped_permission(None, Some(Some("default")), Claude).as_deref(), Some("auto"));
     assert_eq!(capped_permission(None, Some(Some("read-only")), Codex).as_deref(), Some("agent"));
     // A step asking for full access under a lower starter falls back to Auto, never below it.
     assert_eq!(capped_permission(Some("bypassPermissions".into()), Some(Some("default")), Claude).as_deref(), Some("auto"));
+}
+
+#[test]
+fn yaml_agent_permission_reaches_the_role() {
+    let (root, _) = yaml_fixture("agent-permission");
+    let path = Path::new(".assembly/workflows/demo.yml");
+    std::fs::write(root.join(path), "name: Permissions\nsteps:\n  explicit:\n    agent: { provider: claude, permission: bypassPermissions }\n    prompt: prompts/build.md\n  omitted:\n    agent: { provider: claude }\n    prompt: prompts/build.md\n").unwrap();
+    let definition = WorkflowEngine::validate_file(&root, path).unwrap();
+    let role = |id: &str| definition.roles.iter().find(|role| role.id == id).unwrap();
+    assert_eq!(role("explicit").permission_policy.value.as_deref(), Some("bypassPermissions"));
+    assert_eq!(role("omitted").permission_policy.value, None);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn yaml_policy_block_reaches_the_definition() {
+    let (root, _) = yaml_fixture("guard-policy");
+    let path = Path::new(".assembly/workflows/demo.yml");
+    std::fs::write(root.join(path), "name: Policy\npolicy:\n  commands: { allow: [pnpm test], deny: [\"curl *\"] }\n  default: deny\nsteps:\n  build:\n    agent: { provider: claude }\n    prompt: prompts/build.md\n").unwrap();
+    let definition = WorkflowEngine::validate_file(&root, path).unwrap();
+    assert_eq!(definition.policy.commands.allow, vec!["pnpm test".to_string()]);
+    assert_eq!(definition.policy.commands.deny, vec!["curl *".to_string()]);
+    assert_eq!(definition.policy.default, policy::Decision::Deny);
+    std::fs::write(root.join(path), "name: Policy\npolicy: { commands: { alow: [ls] } }\nsteps:\n  build:\n    agent: { provider: claude }\n    prompt: prompts/build.md\n").unwrap();
+    assert!(WorkflowEngine::validate_file(&root, path).is_err(), "a misspelt rule list must not be ignored");
+    std::fs::remove_dir_all(root).unwrap();
 }

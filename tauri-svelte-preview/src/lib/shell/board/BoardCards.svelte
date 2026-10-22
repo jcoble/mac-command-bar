@@ -35,7 +35,7 @@
 
   type Entry = { id: string; machine: string; card: BoardCard };
   const SECTIONS = [
-    { state: 'needs_you', label: 'Needs you', hint: 'Only you can move these', dot: 'bg-(--color-attention)' },
+    { state: 'needs_you', label: 'On hold · needs you', hint: 'Waiting on you; the orchestrator clears them', dot: 'bg-(--color-attention)' },
     { state: 'running', label: 'Running', hint: 'Agents are working on these', dot: 'bg-(--color-live)' },
     { state: 'in_review', label: 'In review', hint: 'Checks or a reviewer have it', dot: 'bg-(--color-merged)' }
   ] as const;
@@ -43,7 +43,7 @@
 
   /** Cards dropped while the board is open; each stays as "Dropped · Undo" until it closes. */
   let dropped = $state<Entry[]>([]);
-  /** Cards the owner opened or shut; a Needs you card starts open. */
+  /** Cards the owner opened; every card starts shut, so a waiting card is one small row. */
   let toggled = $state<Record<string, boolean>>({});
   let doneOpen = $state(false);
   let busy = $state(false);
@@ -55,7 +55,7 @@
   const openQuestions = $derived(questions.filter((q) => q.answered_at_ms === null).length);
 
   const snoozed = (card: BoardCard): boolean => card.snoozed_until_ms !== null && card.snoozed_until_ms > Date.now();
-  const isOpen = (entry: Entry): boolean => toggled[entry.id] ?? entry.card.state === 'needs_you';
+  const isOpen = (entry: Entry): boolean => toggled[entry.id] ?? false;
   const isDropped = (entry: Entry): boolean => dropped.some((other) => other.id === entry.id);
   const machineLabel = (machine: string): string => projectMachineLabel(machine === 'mac' ? 'local' : machine, rail.remoteProfiles);
   const sessionTitle = (ownedId: string): string => rail.owned.find((session) => session.ownedId === ownedId)?.title || 'Session';

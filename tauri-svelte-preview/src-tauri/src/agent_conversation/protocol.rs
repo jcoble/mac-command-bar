@@ -51,13 +51,9 @@ pub enum AgentRuntimeState {
     Closed,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AgentConversationProvider {
-    Codex,
-    Claude,
-    Antigravity,
-}
+/// A provider id from `providers/descriptors.json`; its methods and serde are in `providers/descriptors.rs`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct AgentConversationProvider(pub(crate) &'static str);
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -481,19 +477,19 @@ pub enum AgentConversationPayload {
         name: String,
         state: ToolState,
         /// The one line a collapsed row shows.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        summary: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")] summary: Option<String>,
         /// What the call produced, kept whole. A row with nothing here has
         /// nothing to open, which is what a tool call used to be: its content
         /// was flattened into the summary and the rest thrown away.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        output: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] output: Option<String>,
         /// The file the call was about.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] path: Option<String>,
         /// A unified diff, when the call changed a file.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        diff: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] diff: Option<String>,
+        /// On a history page's row, which has no output or diff: whether one is read by id on open, and the diff's line counts.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")] has_detail: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")] added: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")] removed: Option<u32>,
     },
     ChildUpdate {
         child_id: String,
@@ -510,9 +506,9 @@ pub enum AgentConversationPayload {
         latest_activity: Option<String>,
     },
     Approval {
-        request_id: String,
-        state: ApprovalState,
-        summary: String,
+        request_id: String, state: ApprovalState, summary: String,
+        /// `(option id, label, kind)` as the provider offered them on the request; none on a legacy approval or an answer.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")] options: Vec<(String, String, String)>,
     },
     UserInputRequested {
         request_id: String,

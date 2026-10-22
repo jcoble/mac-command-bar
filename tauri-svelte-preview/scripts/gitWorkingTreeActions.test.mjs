@@ -221,6 +221,102 @@ function makeService() {
   );
 }
 
+// ── Amend turns itself off once it has rewritten the commit ─────────────────
+{
+  const { backend, state, git } = makeService();
+  await settle();
+
+  state.amend = true;
+  await git.amendCommit();
+  assert.equal(state.amend, false, 'the next commit is a new one, not a second amend');
+
+  state.amend = true;
+  backend.amend = async () => {
+    throw new Error('There is no commit here yet, so there is nothing to amend');
+  };
+  await git.amendCommit();
+  assert.equal(state.amend, true, 'a failed amend leaves Amend on so the user can retry');
+}
+
+// ── turning Amend on prefills the last commit's message ─────────────────────
+{
+  const { backend, state, git } = makeService();
+  await settle();
+  state.history = [{ subject: 'fix the parser' }];
+
+  git.setAmend(true);
+  assert.equal(state.amend, true);
+  assert.equal(state.commitMessage, 'fix the parser', 'an empty box gets the last commit message');
+
+  git.setAmend(false);
+  assert.equal(state.amend, false);
+  assert.equal(state.commitMessage, '', 'turning it off takes back only the text it put there');
+
+  state.commitMessage = 'my own words';
+  git.setAmend(true);
+  assert.equal(state.commitMessage, 'my own words', 'text the user typed is never overwritten');
+  git.setAmend(false);
+  assert.equal(state.commitMessage, 'my own words');
+
+  git.setAmend(true);
+  state.commitMessage = '';
+  git.setAmend(false);
+  state.commitMessage = 'my own words';
+  git.setAmend(true);
+  git.setAmend(false);
+  assert.equal(state.commitMessage, 'my own words', 'a stale prefill is not remembered');
+
+  // Amending with the prefilled message untouched keeps the whole message, body included.
+  state.commitMessage = '';
+  git.setAmend(true);
+  backend.calls.length = 0;
+  await git.amendCommit();
+  assert.deepEqual(
+    backend.calls.filter(([name]) => name === 'amend'),
+    [['amend', '/repo', '']],
+    'an unchanged prefill amends with git keeping the message'
+  );
+  assert.equal(state.amend, false);
+
+  // An edited prefill is sent as the new message.
+  git.setAmend(true);
+  state.commitMessage = 'fix the lexer';
+  backend.calls.length = 0;
+  await git.amendCommit();
+  assert.deepEqual(
+    backend.calls.filter(([name]) => name === 'amend'),
+    [['amend', '/repo', 'fix the lexer']]
+  );
+
+  // A prefill remembered from another repository is not mistaken for this repository's draft.
+  state.commitMessage = '';
+  git.setAmend(true);
+  state.root = '/other';
+  state.amend = false;
+  state.commitMessage = 'fix the parser';
+  git.setAmend(true);
+  backend.calls.length = 0;
+  await git.amendCommit();
+  assert.deepEqual(
+    backend.calls.filter(([name]) => name === 'amend'),
+    [['amend', '/other', 'fix the parser']],
+    'a draft that matches another repository’s prefill is sent as typed'
+  );
+  state.root = '/repo';
+
+  // No loaded history, or a file's history, leaves the box empty; an empty amend still works.
+  state.commitMessage = '';
+  state.history = [];
+  git.setAmend(true);
+  assert.equal(state.amend, true);
+  assert.equal(state.commitMessage, '');
+  state.history = [{ subject: 'fix the parser' }];
+  state.historyPath = 'src/a.ts';
+  git.setAmend(false);
+  git.setAmend(true);
+  assert.equal(state.commitMessage, '');
+}
+
 // ── pull and push, and the read-only scope the panel can point at ───────────
 {
   const { backend, state, git } = makeService();

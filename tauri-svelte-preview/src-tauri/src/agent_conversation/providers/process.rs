@@ -152,22 +152,13 @@ impl SidecarProcess {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         environment.apply(&mut command);
-        if manifest.id == "codex-acp" && !environment.skip_assembly_tool_approval {
-            let inherited = match environment.values.get("CODEX_CONFIG") {
-                Some(value) => value.clone(),
-                None => std::env::var("CODEX_CONFIG").ok(),
-            };
-            let mut config: serde_json::Map<String, serde_json::Value> = match inherited {
-                Some(value) => serde_json::from_str(&value)
-                    .map_err(|error| format!("Invalid Codex adapter CODEX_CONFIG: {error}"))?,
-                None => serde_json::Map::new(),
-            };
-            // Unattended workers must not stop for Assembly tools: Codex's spelling of acp_client.rs allowedTools; settings probes skip it (TSK-1506).
-            config.insert(
-                "mcp_servers.assembly.default_tools_approval_mode".into(),
-                "approve".into(),
-            );
-            command.env("CODEX_CONFIG", serde_json::Value::Object(config).to_string());
+        // The descriptor's launch arguments and environment; settings probes skip pre-approval (TSK-1506).
+        let wanted = super::descriptors::LaunchFor { pre_approval: !environment.skip_assembly_tool_approval, ..Default::default() };
+        let launch = super::descriptors::for_adapter(&manifest.id).and_then(|descriptor| descriptor.launch(wanted)).unwrap_or_default();
+        command.args(&launch.args);
+        for (key, value) in &launch.env {
+            let inherited = match environment.values.get(key) { Some(value) => value.clone(), None => std::env::var(key).ok() };
+            command.env(key, super::descriptors::env_value(key, inherited.as_deref(), value)?);
         }
         command
             .env(super::super::reaper::SESSION_MARKER_ENV, owned_id)

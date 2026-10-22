@@ -75,7 +75,7 @@ const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_SERVER_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const ATTACHMENT_CHUNK_BYTES: usize = 128 * 1024;
 const OUTBOUND_FRAME_CAPACITY: usize = 8;
-static MESSAGE_CHANGES: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
+pub(super) static MESSAGE_CHANGES: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
     std::sync::LazyLock::new(|| tokio::sync::watch::channel(0).0);
 static MESSAGES_CHANGED_SINK: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 const REPLAY_PAGE_BYTES: u32 = 1024 * 1024;
@@ -146,7 +146,7 @@ impl RelayLink {
 /// interrupted by the last shutdown are recovered before any request is served.
 pub(super) fn server_state(manager: AgentRuntimeManager, data_dir: PathBuf, token: Arc<str>) -> Result<ServerState, String> {
     let (events, _) = broadcast::channel(256);
-    let workflow = crate::workflow::WorkflowEngine::managed(manager.clone(), manager.store_handle());
+    let workflow = crate::workflow::WorkflowEngine::managed(manager.clone(), manager.store_handle()); crate::usage_history::start_acp_usage(data_dir.join("usage-history.sqlite3"), manager.store_handle());
     let event_sender = events.clone();
     let workflow_events = workflow.clone();
     let runtime = tokio::runtime::Handle::current();
@@ -1156,11 +1156,11 @@ impl RemoteConnectionManager {
     }
 
     pub fn owns(&self, owned_id: &str) -> bool {
-        self.remote_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(owned_id)
+        self.remote_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(owned_id)
     }
+
+    /// The key this Mac's saved copy of remote session `owned_id` is stored under.
+    pub(crate) fn history_key(&self, owned_id: &str) -> Result<String, String> { Ok(RemoteHistory::key(&self.profile_for_owned_id(owned_id)?, owned_id)) }
 
     /// A machine may route only ids that are neither this Mac's own sessions nor routed to another machine;
     /// otherwise a hostile backend could list a local session's id and receive its prompts and approvals.
@@ -4259,7 +4259,7 @@ mod connection_tests {
         manager.replace_cached_profile_sessions("workbox", &[listed]).unwrap();
         let mut requested = history_event(90);
         requested.payload = AgentConversationPayload::Approval {
-            request_id: "permission".into(), state: ApprovalState::Requested, summary: "Run command".into(),
+            request_id: "permission".into(), state: ApprovalState::Requested, summary: "Run command".into(), options: Vec::new(),
         };
         let mut replay = history_snapshot(vec![requested.clone()], 90);
         replay.suspended = false;
@@ -4268,7 +4268,7 @@ mod connection_tests {
         manager.complete_replay("workbox", replay, Some(requested), None).unwrap();
         let mut accepted = history_event(91);
         accepted.payload = AgentConversationPayload::Approval {
-            request_id: "permission".into(), state: ApprovalState::Accepted, summary: "Run command".into(),
+            request_id: "permission".into(), state: ApprovalState::Accepted, summary: "Run command".into(), options: Vec::new(),
         };
         let mut completed = history_event(92);
         completed.timestamp_ms = 100;

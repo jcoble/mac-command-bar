@@ -5,12 +5,9 @@ import type {
   AgentEvent,
   AgentItem,
   AgentItemType,
-  AgentApprovalRequest,
   AgentConversationEvent,
   AgentConversationTurnFacts,
   AgentPermissionOption,
-  AgentPermissionRequest,
-  AgentUserInputRequest,
   AgentUserInputField,
   ConversationAttachment
 } from './conversationTypes.ts';
@@ -65,7 +62,7 @@ export type ConversationDisplayItem = (
       toolKind: ConversationToolKind;
       state: ConversationToolState;
       output?: string;
-      diff?: string;
+      diff?: string; hasDetail?: boolean; added?: number; removed?: number;
       path?: string;
       summary?: string;
       timestampMs: number;
@@ -105,7 +102,7 @@ export interface ConversationFileEdit {
   /** The row this edit was folded out of, so the group keys by something stable. */
   readonly itemId: string;
   readonly path: string;
-  readonly diff: string;
+  readonly diff?: string;
   readonly added: number;
   readonly removed: number;
 }
@@ -119,6 +116,7 @@ export interface ConversationTurnGroup {
   readonly elapsedMs: number | null;
   readonly startedAtMs: number | null;
   readonly running: boolean;
+  readonly stopped?: boolean; // The owner stopped it; set on its last part, which ends with a Stopped line.
 }
 
 /**
@@ -286,8 +284,9 @@ function fileEditOf(item: ConversationDisplayItem): ConversationFileEdit | null 
     return { itemId: item.itemId, path, diff, ...diffLineCounts(diff) };
   };
   if (item.kind === 'file') return read(item.metadata?.path, item.metadata?.diff ?? item.text);
-  if (item.kind === 'tool' && item.toolKind === 'file-edit') return read(item.path, item.diff);
-  return null;
+  if (item.kind !== 'tool' || item.toolKind !== 'file-edit') return null;
+  // A history page sends an edit's line counts and no diff; the row reads the diff by id when opened.
+  return item.diff || item.added == null || !item.path?.trim() ? read(item.path, item.diff) : { itemId: item.itemId, path: item.path, added: item.added, removed: item.removed ?? 0 };
 }
 
 /** Collapse each run of neighbouring file changes into one row.
@@ -516,7 +515,8 @@ export function conversationTurnGroups(
       ...known, turnId: partition.turnId ?? '', terminalState: 'completed',
       finalAssistantItemId: known?.finalAssistantItemId ?? partition.items.findLast((item) => item.kind === 'assistant')?.itemId
     };
-    groups.push(turnGroup(partition.turnId, partition.items, activeTurnId !== null && partition.turnId === activeTurnId, ended));
+    const group = turnGroup(partition.turnId, partition.items, activeTurnId !== null && partition.turnId === activeTurnId, ended);
+    groups.push({ ...group, stopped: group.completed && ended?.terminalState === 'interrupted' && !groups.some((later) => later.turnId === group.turnId) });
     if (partition.items.some((item) => item.kind === 'user')) laterPrompt = true;
   }
   return groups.reverse();
@@ -540,6 +540,7 @@ export function turnRows(
     if (folded && (item.kind === 'toolRun' || work.has(item.itemId))) continue;
     result.push(item);
   }
+  if (group.stopped) result.push({ kind: 'unknown', itemId: `stopped:${group.turnId}`, text: 'Stopped', turnId: group.turnId, timestampMs: items.at(-1)?.timestampMs ?? 0 });
   return result;
 }
 
@@ -822,7 +823,7 @@ function toolKindForAgentItem(item: AgentItem): ConversationToolKind {
 }
 
 function payloadHasFileChange(payload: StringRecord): boolean {
-  return (typeof payload.diff === 'string' && payload.diff.trim().length > 0)
+  return (typeof payload.diff === 'string' && payload.diff.trim().length > 0) || typeof payload.added === 'number'
     || firstNestedString(payload.content, ['diff', 'patch']).length > 0;
 }
 
@@ -844,27 +845,6 @@ function toolStateOf(value: unknown): ConversationToolState {
   if (['failed', 'error', 'declined', 'cancelled', 'canceled'].includes(normalized)) return 'failed';
   if (['started', 'updated', 'running', 'in-progress', 'working'].includes(normalized)) return 'running';
   return 'pending';
-}
-
-function permissionOptionsOf(value: unknown): AgentPermissionOption[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (typeof entry === 'string') {
-      const labels: Record<string, string> = { accept: 'Allow', decline: 'Deny', cancel: 'Deny' };
-      return [{ optionId: entry, name: labels[entry] ?? entry }];
-    }
-    const row = recordOf(entry);
-    const optionId = stringOf(row?.optionId, stringOf(row?.id));
-    if (!row || !optionId) return [];
-    return [{ optionId, name: stringOf(row.name, stringOf(row.label, optionId)), kind: stringOf(row.kind) || undefined }];
-  });
-}
-
-function defaultPermissionOptions(): AgentPermissionOption[] {
-  return [
-    { optionId: 'accept', name: 'Allow', kind: 'allow_once', synthetic: true },
-    { optionId: 'decline', name: 'Deny', kind: 'reject_once', synthetic: true }
-  ];
 }
 
 function displayTimestamp(item: AgentItem, fallback: number): number {
@@ -908,7 +888,7 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
       toolKind,
       state: toolStateOf(metadata?.state ?? metadata?.status),
       output: output || undefined,
-      diff: diff || undefined,
+      diff: diff || undefined, hasDetail: metadata?.hasDetail === true || undefined, added: metadata?.added as number | undefined, removed: metadata?.removed as number | undefined,
       path: stringOf(metadata?.path) || undefined,
       summary,
       metadata,
@@ -950,42 +930,6 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
     timestampMs: startedAt,
     metadata
   } as ConversationDisplayItem;
-}
-
-export function displayItemFromApproval(
-  request: AgentPermissionRequest | (AgentApprovalRequest & { state: string }),
-  timestampMs = Date.now()
-): Extract<ConversationDisplayItem, { kind: 'approval' }> {
-  const options = permissionOptionsOf(request.options);
-  const toolTitle = 'toolTitle' in request ? request.toolTitle : request.title;
-  return {
-    kind: 'approval',
-    itemId: `approval:${request.requestId}`,
-    turnId: request.turnId ?? null,
-    requestId: request.requestId,
-    title: request.title || 'Approval requested',
-    toolTitle,
-    summary: request.description ?? toolTitle,
-    state: request.state,
-    options: options.length ? options : defaultPermissionOptions(),
-    timestampMs
-  };
-}
-
-export function displayItemFromInput(
-  request: AgentUserInputRequest,
-  timestampMs = Date.now()
-): ConversationDisplayItem {
-  return {
-    kind: 'input',
-    itemId: `input:${request.requestId}`,
-    turnId: request.turnId ?? null,
-    requestId: request.requestId,
-    title: request.title,
-    description: request.description,
-    fields: request.fields,
-    timestampMs
-  };
 }
 
 /**
@@ -1041,15 +985,14 @@ export function turnFileChanges(
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
     if (item.kind === 'user') break;
-    let diff: string;
+    let counts: { added: number; removed: number };
     if (item.kind === 'file') {
       paths.add(typeof item.metadata?.path === 'string' ? item.metadata.path : item.itemId);
-      diff = typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text;
-    } else if (item.kind === 'tool' && item.state === 'completed' && (item.diff || (item.toolKind === 'file-edit' && item.path))) {
+      counts = diffLineCounts(typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text);
+    } else if (item.kind === 'tool' && item.state === 'completed' && (item.diff || item.added != null || (item.toolKind === 'file-edit' && item.path))) {
       paths.add(item.path ?? item.itemId);
-      diff = item.diff ?? '';
+      counts = item.diff || item.added == null ? diffLineCounts(item.diff ?? '') : { added: item.added, removed: item.removed ?? 0 };
     } else continue;
-    const counts = diffLineCounts(diff);
     added += counts.added;
     removed += counts.removed;
   }
@@ -1212,7 +1155,7 @@ function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, pa
       status,
       summary: stringOf(payload.summary) || undefined,
       output: output || undefined,
-      diff: diff || undefined,
+      diff: diff || undefined, hasDetail: payload.hasDetail === true || undefined, added: payload.added as AgentConfigValue | undefined, removed: payload.removed as AgentConfigValue | undefined,
       path: path || undefined,
       completed: toolStateOf(status) === 'completed'
     })
@@ -1325,9 +1268,6 @@ export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
     type = 'reasoning';
     contentChannel = 'reasoning';
     completed = false;
-  } else if (payloadKind === 'error') {
-    type = 'error';
-    completed = true;
   } else if (channel === 'plan') {
     type = 'plan';
   } else if (channel === 'command-output') {
@@ -1345,39 +1285,6 @@ export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
       streaming: !completed,
       blocks: Array.isArray(payload.blocks) ? (payload.blocks as unknown as AgentConfigValue) : undefined
     })
-  };
-}
-
-export function conversationEventAppendsItemContent(event: ConversationEvent): boolean {
-  const kind = normalizedPayloadKind(event.payload as unknown as StringRecord);
-  return kind === 'assistantDelta'
-    || kind === 'agentMessageChunk'
-    || kind === 'agentThoughtChunk'
-    || kind === 'toolCallUpdate'
-    || kind === 'turnDiff'
-    || ('type' in event && event.type === 'content.delta');
-}
-
-export function permissionRequestFromEvent(event: ConversationEvent): AgentPermissionRequest | null {
-  const payload = event.payload as unknown as StringRecord;
-  const kind = normalizedPayloadKind(payload);
-  if (kind !== 'permissionRequest' && kind !== 'approval') return null;
-  const requestId = ('requestId' in event ? event.requestId : undefined) ?? stringOf(payload.requestId);
-  if (!requestId) return null;
-  const tool = recordOf(payload.toolCall);
-  const toolTitle = stringOf(payload.toolTitle, stringOf(tool?.title, stringOf(payload.title, stringOf(payload.summary, 'Permission requested'))));
-  const options = permissionOptionsOf(payload.options);
-  return {
-    ownedId: event.ownedId,
-    generation: event.generation,
-    requestId,
-    turnId: (('turnId' in event ? event.turnId : undefined) || stringOf(payload.turnId)) || undefined,
-    itemId: (('itemId' in event ? event.itemId : undefined) || stringOf(payload.itemId) || stringOf(payload.toolCallId)) || undefined,
-    title: stringOf(payload.title, 'Approval needed'),
-    toolTitle,
-    description: stringOf(payload.description, stringOf(payload.summary)) || undefined,
-    options: options.length ? options : defaultPermissionOptions(),
-    state: stringOf(payload.state, 'requested')
   };
 }
 

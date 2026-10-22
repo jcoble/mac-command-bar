@@ -198,6 +198,8 @@ pub struct GitBranchSummary {
     pub name: String,
     pub is_current: bool,
     pub upstream: String,
+    /// The folder where this branch is checked out, or '' when no worktree has it.
+    pub worktree_path: String,
     pub subject: String,
 }
 
@@ -377,7 +379,7 @@ pub fn plan_discard(paths: &[String], untracked: &[String]) -> DiscardPlan {
     plan
 }
 
-/// `git branch --format=…` writes one line per branch, four fields separated by
+/// `git branch --format=…` writes one line per branch, five fields separated by
 /// the unit separator, with `*` marking the checked-out one.
 pub fn parse_branch_list(output: &str) -> GitBranchList {
     let mut current = String::new();
@@ -394,17 +396,13 @@ pub fn parse_branch_list(output: &str) -> GitBranchList {
             continue;
         }
         let upstream = fields.next().unwrap_or_default().trim().to_string();
+        let worktree_path = fields.next().unwrap_or_default().trim().to_string();
         let subject = fields.next().unwrap_or_default().trim().to_string();
         let is_current = marker.trim() == "*";
         if is_current {
             current = name.clone();
         }
-        branches.push(GitBranchSummary {
-            name,
-            is_current,
-            upstream,
-            subject,
-        });
+        branches.push(GitBranchSummary { name, is_current, upstream, worktree_path, subject });
     }
     GitBranchList { current, branches, remotes: Vec::new() }
 }
@@ -679,7 +677,7 @@ fn list_git_branches_sync(root: PathBuf) -> Result<GitBranchList, String> {
             "branch",
             "--list",
             "--sort=-committerdate",
-            "--format=%(HEAD)\u{1f}%(refname:short)\u{1f}%(upstream:short)\u{1f}%(contents:subject)",
+            "--format=%(HEAD)\u{1f}%(refname:short)\u{1f}%(upstream:short)\u{1f}%(worktreepath)\u{1f}%(contents:subject)",
         ],
     )?;
     let mut list = parse_branch_list(&output);
@@ -906,7 +904,7 @@ mod tests {
     #[test]
     fn branch_list_marks_the_checked_out_branch() {
         let list = parse_branch_list(
-            "*\u{1f}main\u{1f}origin/main\u{1f}latest work\n \u{1f}spike\u{1f}\u{1f}try it\n",
+            "*\u{1f}main\u{1f}origin/main\u{1f}/repo\u{1f}latest work\n \u{1f}spike\u{1f}\u{1f}/wt/spike\u{1f}try it\n",
         );
         assert_eq!(list.current, "main");
         assert_eq!(list.branches.len(), 2);
@@ -914,6 +912,8 @@ mod tests {
         assert_eq!(list.branches[0].upstream, "origin/main");
         assert!(!list.branches[1].is_current);
         assert_eq!(list.branches[1].upstream, "");
+        assert_eq!(list.branches[1].worktree_path, "/wt/spike");
+        assert_eq!(list.branches[1].subject, "try it");
     }
 
     #[test]

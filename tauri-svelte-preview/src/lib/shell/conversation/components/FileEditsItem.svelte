@@ -1,7 +1,10 @@
 <script lang="ts">
+  import { getContext, onDestroy } from 'svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Pencil from '@lucide/svelte/icons/pencil';
+  import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import type { ConversationDisplayItem, ConversationFileEdit } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { readAgentConversationToolCallFromTauri } from '$lib/tauriSource.ts';
   import FileChangeItem from './FileChangeItem.svelte';
 
   let { item, onFileLink }: {
@@ -19,22 +22,48 @@
      row's title, the same rule the single file-change row already follows. */
   const nameOf = (path: string): string => path.split('/').filter(Boolean).at(-1) ?? path;
 
+  /* An edit from a history page has no diff: an opened file reads it from the backend, and closing
+     the file lets it go. */
+  const disclosure = getContext<ConversationDisclosureContext>(conversationDisclosureContext);
+  const life = new AbortController();
+  onDestroy(() => life.abort());
+  let diffs = $state<Record<string, string>>({});
+
+  async function readDiff(itemId: string): Promise<void> {
+    let diff = '';
+    try { diff = (await readAgentConversationToolCallFromTauri(disclosure?.ownedId ?? '', itemId, life.signal))?.diff ?? ''; } catch { /* shown as not available */ }
+    if (!life.signal.aborted && openPaths.has(itemId)) diffs = { ...diffs, [itemId]: diff };
+  }
+
   function toggleFile(edit: ConversationFileEdit): void {
     const next = new Set(openPaths);
-    if (next.has(edit.itemId)) next.delete(edit.itemId);
-    else next.add(edit.itemId);
+    if (next.has(edit.itemId)) {
+      next.delete(edit.itemId);
+      const { [edit.itemId]: _closed, ...kept } = diffs;
+      diffs = kept;
+    } else {
+      next.add(edit.itemId);
+    }
     openPaths = next;
   }
 
+  /* An opened file with no inline diff reads it, including one opened while its edit ran that
+     lost the inline diff when the edit finished. */
+  $effect(() => {
+    for (const edit of item.edits) {
+      if (openPaths.has(edit.itemId) && edit.diff === undefined && diffs[edit.itemId] === undefined) void readDiff(edit.itemId);
+    }
+  });
+
   /** The diff row this group folded away, in the shape that draws it. */
-  function fileDisplayItem(edit: ConversationFileEdit): Extract<ConversationDisplayItem, { kind: 'file' }> {
+  function fileDisplayItem(edit: ConversationFileEdit, diff: string): Extract<ConversationDisplayItem, { kind: 'file' }> {
     return {
       kind: 'file',
       itemId: edit.itemId,
-      text: edit.diff,
+      text: diff,
       timestampMs: item.timestampMs,
       completed: true,
-      metadata: { path: edit.path, diff: edit.diff }
+      metadata: { path: edit.path, diff }
     };
   }
 </script>
@@ -82,8 +111,10 @@
             </span>
           </div>
           {#if openPaths.has(edit.itemId)}
+            {@const diff = edit.diff ?? diffs[edit.itemId]}
             <div class="diff">
-              <FileChangeItem item={fileDisplayItem(edit)} {onFileLink} />
+              {#if diff}<FileChangeItem item={fileDisplayItem(edit, diff)} {onFileLink} />
+              {:else if diff === ''}<span>Details are not available</span>{/if}
             </div>
           {/if}
         </li>

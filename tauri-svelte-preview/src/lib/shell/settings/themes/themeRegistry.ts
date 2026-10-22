@@ -10,7 +10,8 @@
  *             has no word for).
  *   monaco    the code editor's own theme object. Monaco does not read CSS
  *             custom properties; it wants a theme registered by name.
- *   terminal  Ghostty's authoritative palette, applied to the terminal instance.
+ *   terminal  Ghostty's authoritative palette (in `terminalPalettes.ts`),
+ *             applied to the terminal instance.
  *
  * Assembly is the default: its colors are copied value for value out of
  * `nextTokens.css` and `themeChrome.css`, which paint the first frame before
@@ -23,9 +24,18 @@
  * files and fails if the default theme stops agreeing with them, so the
  * shipped palette cannot drift apart quietly.
  *
- * This module is deliberately plain data with no imports: no DOM, no store, no
- * Svelte runes. Applying a theme is `themeService.ts`'s job.
+ * This module is deliberately plain data; its only import is the terminal
+ * palettes beside it: no DOM, no store, no Svelte runes. Applying a theme is
+ * `themeService.ts`'s job.
  */
+
+import {
+  ASSEMBLY_TERMINAL,
+  DRACULA_TERMINAL,
+  GRAPHITE_TERMINAL,
+  HOUSTON_TERMINAL,
+  TOKYO_NIGHT_TERMINAL
+} from './terminalPalettes.ts';
 
 // ── Shapes ──────────────────────────────────────────────────────────────────
 
@@ -61,6 +71,7 @@ export type TerminalTheme = {
   cursor: string;
   cursorAccent: string;
   selectionBackground: string;
+  selectionForeground: string;
   black: string;
   red: string;
   green: string;
@@ -153,37 +164,6 @@ export const CHROME_TOKEN_NAMES = [
 
 /** Every custom property name a theme is responsible for. */
 export const TOKEN_NAMES: string[] = [...PALETTE_TOKEN_NAMES, ...CHROME_TOKEN_NAMES];
-
-// ── The terminal palette ────────────────────────────────────────────────────
-
-/**
- * The terminal's palette, applied by `ghosttyFactory.ts`. Every theme keeps these
- * Dracula colors on purpose, so switching themes never repaints a terminal.
- * Ghostty draws selected cells in `selectionBackground` with its default dark text.
- */
-const DRACULA_TERMINAL: TerminalTheme = {
-  background: '#282a36',
-  foreground: '#f8f8f2',
-  cursor: '#f8f8f2',
-  cursorAccent: '#282a36',
-  selectionBackground: '#ff79c6',
-  black: '#000000',
-  red: '#ff5555',
-  green: '#50fa7b',
-  yellow: '#f1fa8c',
-  blue: '#bd93f9',
-  magenta: '#ff79c6',
-  cyan: '#8be9fd',
-  white: '#bbbbbb',
-  brightBlack: '#555555',
-  brightRed: '#ff5555',
-  brightGreen: '#50fa7b',
-  brightYellow: '#f1fa8c',
-  brightBlue: '#caa9fa',
-  brightMagenta: '#ff79c6',
-  brightCyan: '#8be9fd',
-  brightWhite: '#ffffff'
-};
 
 // ── Houston ─────────────────────────────────────────────────────────────────
 
@@ -347,7 +327,7 @@ const HOUSTON: ShellTheme = {
       'scrollbarSlider.hoverBackground': '#545864B3'
     }
   },
-  terminal: DRACULA_TERMINAL
+  terminal: HOUSTON_TERMINAL
 };
 
 // ── Dracula ─────────────────────────────────────────────────────────────────
@@ -565,7 +545,7 @@ const ASSEMBLY: ShellTheme = {
     '--color-tab-unfocused-text': '#a7a7a7'
   },
   monaco: { ...HOUSTON.monaco, id: 'assembly' },
-  terminal: DRACULA_TERMINAL
+  terminal: ASSEMBLY_TERMINAL
 };
 
 const TOKYO_NIGHT: ShellTheme = {
@@ -611,7 +591,7 @@ const TOKYO_NIGHT: ShellTheme = {
     '--color-tab-unfocused-text': '#9aa5ce'
   },
   monaco: { ...HOUSTON.monaco, id: 'tokyo-night' },
-  terminal: DRACULA_TERMINAL
+  terminal: TOKYO_NIGHT_TERMINAL
 };
 
 const GRAPHITE: ShellTheme = {
@@ -657,7 +637,7 @@ const GRAPHITE: ShellTheme = {
     '--color-tab-unfocused-text': '#8f9096'
   },
   monaco: { ...HOUSTON.monaco, id: 'graphite' },
-  terminal: DRACULA_TERMINAL
+  terminal: GRAPHITE_TERMINAL
 };
 
 // ── The roster ──────────────────────────────────────────────────────────────
