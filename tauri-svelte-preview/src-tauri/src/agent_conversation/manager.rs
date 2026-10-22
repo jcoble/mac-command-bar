@@ -5984,6 +5984,7 @@ async fn pump_inbound(
                         }
                         break 'update session_is_quiescent(session);
                     }
+                    let prior_output = tools::joined_output_so_far(&session.live_tool_calls, &params);
                     let mut reached_quiescence = update_raw_liveness(session, &params);
                     if let Some(payload) = stopped_background_task_payload(&mut session.background_work, &params) {
                         expect_claude_wake(session);
@@ -6075,7 +6076,7 @@ async fn pump_inbound(
                     let Some(mut payload) = payload_from_session_update_for_turn(&params, turn_id) else {
                         break 'update reached_quiescence;
                     };
-                    tools::join_terminal_output(&mut session.live_tool_calls, &params, &mut payload);
+                    tools::join_terminal_output(&mut session.live_tool_calls, prior_output, &params, &mut payload);
                     // A delta for another message means the agent finished the
                     // one it was streaming.
                     if let AgentConversationPayload::AssistantDelta { item_id, .. } = &payload {

@@ -54,11 +54,20 @@ fn codex_terminal_output_chunks_join_into_the_stored_tool_output() {
             "sessionUpdate": "tool_call_update", "toolCallId": "exec-1", "status": "completed",
             "_meta": { "terminal_exit": { "exit_code": 0, "signal": null, "terminal_id": "exec-1" } }
         } }),
+        // A second command whose finishing frame carries its last chunk.
+        chunk("a\n"),
+        json!({ "update": {
+            "sessionUpdate": "tool_call_update", "toolCallId": "exec-1", "status": "completed",
+            "_meta": { "terminal_output_delta": { "data": "b\n", "terminal_id": "exec-1" } }
+        } }),
     ];
     let mut outputs = Vec::new();
     for params in frames {
         let mut payload = payload_from_session_update_for_turn(&params, Some("turn-1")).unwrap();
-        tools::join_terminal_output(&mut session.live_tool_calls, &params, &mut payload);
+        // The inbound pump's order: a finishing update drops its live call before its chunk joins.
+        let prior = tools::joined_output_so_far(&session.live_tool_calls, &params);
+        update_raw_liveness(session, &params);
+        tools::join_terminal_output(&mut session.live_tool_calls, prior, &params, &mut payload);
         match record_payload_for_session(session, payload).unwrap().payload {
             AgentConversationPayload::Tool { output, .. } => outputs.push(output),
             other => panic!("expected Tool, got {other:?}"),
@@ -69,6 +78,8 @@ fn codex_terminal_output_chunks_join_into_the_stored_tool_output() {
         Some("line-2\n".to_string()),
         Some("line-2\nline-3\n".to_string()),
         Some("line-2\nline-3\n".to_string()),
+        Some("a\n".to_string()),
+        Some("a\nb\n".to_string()),
     ]);
     assert!(session.live_tool_calls.is_empty(), "a finished call keeps no output");
     drop(sessions);
@@ -87,7 +98,7 @@ fn joined_terminal_output_keeps_the_newest_output_within_the_cap() {
     for data in ["é".repeat(20_000), "tail\n".to_string()] {
         let params = chunk(data);
         let mut payload = payload_from_session_update_for_turn(&params, Some("turn-1")).unwrap();
-        tools::join_terminal_output(&mut live_tool_calls, &params, &mut payload);
+        tools::join_terminal_output(&mut live_tool_calls, None, &params, &mut payload);
         let AgentConversationPayload::Tool { output: joined, .. } = payload else { panic!("expected Tool") };
         output = joined;
     }

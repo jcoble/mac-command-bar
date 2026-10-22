@@ -25,9 +25,13 @@ pub(super) fn tool_item_id(update: &Value, turn_id: &str) -> String {
 /// output onto it.
 pub(in crate::agent_conversation) fn join_terminal_output(
     live_tool_calls: &mut HashMap<String, String>,
+    prior: Option<(String, String)>,
     params: &Value,
     payload: &mut AgentConversationPayload,
 ) {
+    if let Some((id, text)) = prior {
+        live_tool_calls.entry(id).or_insert(text);
+    }
     let AgentConversationPayload::Tool { item_id, output, .. } = payload else {
         return;
     };
@@ -42,6 +46,19 @@ pub(in crate::agent_conversation) fn join_terminal_output(
         joined.drain(..joined.ceil_char_boundary(excess));
     }
     *output = Some(joined.clone());
+}
+
+/// The output joined so far for the call this update carries a chunk for. Take it before
+/// `update_raw_liveness` runs: a finishing update drops the call, and its own last chunk
+/// must still join onto what came before. Pass it to `join_terminal_output`.
+pub(in crate::agent_conversation) fn joined_output_so_far(
+    live_tool_calls: &HashMap<String, String>,
+    params: &Value,
+) -> Option<(String, String)> {
+    let update = params.get("update").unwrap_or(params);
+    update.pointer("/_meta/terminal_output_delta/data")?;
+    let id = update.get("toolCallId").and_then(Value::as_str)?;
+    Some((id.to_string(), live_tool_calls.get(id)?.clone()))
 }
 
 /// The parts of an ACP tool call a transcript row can draw.
