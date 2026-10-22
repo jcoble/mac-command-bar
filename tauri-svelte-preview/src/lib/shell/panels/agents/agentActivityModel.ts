@@ -81,6 +81,7 @@ function firstLine(text: string): string {
  */
 function lineFor(message: UIMessage): string {
   const entry = conversationMessageDisplayItem(message);
+  if (!entry) return '';
   switch (entry.kind) {
     case 'user':
       return '';

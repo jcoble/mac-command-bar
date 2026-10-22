@@ -333,7 +333,7 @@ mod tests {
             AgentConversationPayload::Approval {
                 request_id: "child-permission".into(),
                 state: ApprovalState::Requested,
-                summary: "Child permission".into(),
+                summary: "Child permission".into(), options: Vec::new(),
             },
         );
         // The authoritative control cursor can be ahead of the contiguous
@@ -373,7 +373,7 @@ mod tests {
                         AgentConversationPayload::Approval {
                             request_id: "child-permission".into(),
                             state: ApprovalState::Expired,
-                            summary: "Child permission".into(),
+                            summary: "Child permission".into(), options: Vec::new(),
                         },
                     ),
                 ],

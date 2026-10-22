@@ -5,11 +5,14 @@ import 'package:material_symbols_icons/symbols.dart';
 import '../../core/machines/machine_store.dart';
 import '../../core/theme/app_recipes.dart';
 import '../../core/theme/app_tokens.dart';
+import '../runs/run_screen.dart';
+import '../runs/runs_repository.dart';
 import '../runs/runs_screen.dart';
 import 'inbox_repository.dart';
 
 /// Everything waiting for the owner on the selected machine, newest first.
-/// With [focusId] (route `/inbox/:id`) it scrolls to that card and highlights it.
+/// With [focusId] (route `/inbox/:id`) it shows that waiting step as a
+/// [QuestionView], or scrolls to and highlights any other card.
 class InboxScreen extends ConsumerStatefulWidget {
   const InboxScreen({super.key, this.focusId});
 
@@ -28,10 +31,32 @@ class _InboxScreenState extends ConsumerState<InboxScreen> {
   /// elsewhere.
   bool? _focusGone;
 
-  Future<void> _answer(String machineId, InboxItem item, String option) async {
+  Future<void> _answer(String machineId, InboxItem item, String option) =>
+      _send(
+        item,
+        () => ref.read(inboxProvider(machineId).notifier).answer(item, option),
+      );
+
+  /// More → Stop, after the owner says yes: a paused step's own Stop answer,
+  /// or for a gate, which has none, the run's Stop, as on the run page.
+  Future<void> _stop(String machineId, InboxItem item) async {
+    if (!await confirmStop(context) || !mounted) return;
+    if (item.options.any((o) => o.id == 'stop')) {
+      return _answer(machineId, item, 'stop');
+    }
+    await _send(item, () async {
+      await ref
+          .read(runsProvider.notifier)
+          .act(item.runId!, RunAction.stop, confirm: () async => true);
+      await ref.read(inboxProvider(machineId).notifier).refresh();
+    });
+  }
+
+  /// Runs [send] with [item]'s buttons disabled; a refusal shows in a snackbar.
+  Future<void> _send(InboxItem item, Future<void> Function() send) async {
     setState(() => _busy.add(item.id));
     try {
-      await ref.read(inboxProvider(machineId).notifier).answer(item, option);
+      await send();
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -74,6 +99,17 @@ class _InboxScreenState extends ConsumerState<InboxScreen> {
           }
         });
       }
+    }
+    final question = inbox.pending
+        .where((i) => i.id == focus && i.runId != null)
+        .firstOrNull;
+    if (question != null) {
+      return QuestionView(
+        item: question,
+        busy: _busy.contains(question.id),
+        onAnswer: (option) => _answer(machineId, question, option),
+        onStop: () => _stop(machineId, question),
+      );
     }
     // A column, not a lazy list, so the focused card exists to scroll to.
     return SingleChildScrollView(
@@ -245,6 +281,133 @@ class _InboxCard extends StatelessWidget {
         border: Border.all(color: scheme.primary, width: 2),
       ),
       child: Padding(padding: const EdgeInsets.all(2), child: card),
+    );
+  }
+}
+
+/// One waiting step as its own page: the note and files scroll, and the
+/// answers stay pinned at the bottom, above the tab bar. Stop and Mute are
+/// under More.
+class QuestionView extends StatelessWidget {
+  const QuestionView({
+    super.key,
+    required this.item,
+    required this.busy,
+    required this.onAnswer,
+    required this.onStop,
+  });
+
+  final InboxItem item;
+  final bool busy;
+  final ValueChanged<String> onAnswer;
+  final VoidCallback onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final muted = theme.textTheme.bodySmall?.copyWith(
+      color: scheme.onSurfaceVariant,
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+            children: [
+              Text(
+                [
+                  inboxKindLabel(item.kind),
+                  ?item.stepId,
+                ].join(' · ').toUpperCase(),
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: context.tokens.warning,
+                  letterSpacing: 0.6,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                item.title,
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              if (item.detail.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(item.detail, style: theme.textTheme.bodyLarge),
+              ],
+              if (item.evidence.isNotEmpty) ...[
+                const SectionLabel('Files'),
+                for (final e in item.evidence)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Text(
+                      '${e.label}: ${e.text ?? e.url ?? ''}',
+                      style: theme.textTheme.bodyMedium,
+                    ),
+                  ),
+              ],
+            ],
+          ),
+        ),
+        Material(
+          color: scheme.surfaceContainer,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final option in item.options)
+                        if (option.id != 'stop')
+                          _OptionButton(
+                            label: option.label,
+                            style: option.style,
+                            onPressed: busy ? null : () => onAnswer(option.id),
+                          ),
+                    ],
+                  ),
+                ),
+                MenuAnchor(
+                  menuChildren: [
+                    MenuItemButton(
+                      onPressed: busy ? null : onStop,
+                      child: Text(
+                        'Stop',
+                        style: TextStyle(color: scheme.error),
+                      ),
+                    ),
+                    MenuItemButton(
+                      onPressed: null,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text('Mute'),
+                          Text(
+                            'Not available yet: the machine has no mute setting',
+                            style: muted,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  builder: (context, menu, _) => TextButton(
+                    onPressed: () => menu.isOpen ? menu.close() : menu.open(),
+                    child: const Text('More'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

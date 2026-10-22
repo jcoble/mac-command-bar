@@ -2462,10 +2462,10 @@ impl AgentRuntimeManager {
             let session = current_session(&sessions, owned_id, generation)?;
             if let Some(turn_id) = &session.active_turn_id {
                 if !session.capabilities.session.steering {
-                    return Err(
-                        "This provider does not support steering an active turn".to_string()
-                    );
+                    return Err("This provider does not support steering an active turn".to_string());
                 }
+                // Nothing jumps ahead of a waiting request, from any surface (TSK-1592).
+                if !session.permission_requests.is_empty() || !session.user_input_requests.is_empty() { return Err("The agent is waiting for an answer. Answer it first, then send your message.".to_string()); }
                 if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
                     return Err("The structured writer is not the current owner".to_string());
                 }
@@ -2889,7 +2889,7 @@ impl AgentRuntimeManager {
                 AgentConversationPayload::Approval {
                     request_id: request_id.to_string(),
                     state: ApprovalState::Expired,
-                    summary,
+                    summary, options: Vec::new(),
                 },
             )?;
             session.permission_requests.remove(request_id);
@@ -3280,7 +3280,7 @@ impl AgentRuntimeManager {
                 for (request_id, pending) in session.permission_requests.drain().collect::<Vec<_>>() {
                     record_payload_for_session_and_dispatch(session, &self.emitter,
                         AgentConversationPayload::Approval { request_id,
-                            state: ApprovalState::Expired, summary: pending.summary })?;
+                            state: ApprovalState::Expired, summary: pending.summary, options: Vec::new() })?;
                 }
                 for (request_id, _) in session.user_input_requests.drain().collect::<Vec<_>>() {
                     record_payload_for_session_and_dispatch(session, &self.emitter,
@@ -4354,7 +4354,7 @@ impl AgentRuntimeManager {
                     AgentConversationPayload::Approval {
                         request_id,
                         state: ApprovalState::Expired,
-                        summary: pending.summary,
+                        summary: pending.summary, options: Vec::new(),
                     },
                 );
                 pending_permissions.push(pending.wire_id);
@@ -6275,7 +6275,7 @@ async fn pump_inbound(
                     }
                     if let Ok(session) = current_session_mut(&mut sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner), &owned_id, generation) {
                         let (state, summary) = if allowed { (ApprovalState::Accepted, summary) } else { (ApprovalState::Declined, format!("Blocked by the workflow policy: {summary}")) };
-                        let _ = record_payload_for_session_and_dispatch(session, &emitter, AgentConversationPayload::Approval { request_id: format!("perm-{}", uuid::Uuid::new_v4()), state, summary });
+                        let _ = record_payload_for_session_and_dispatch(session, &emitter, AgentConversationPayload::Approval { request_id: format!("perm-{}", uuid::Uuid::new_v4()), state, summary, options: Vec::new() });
                     }
                     continue;
                 }
@@ -6301,7 +6301,7 @@ async fn pump_inbound(
                     AgentConversationPayload::Approval {
                         request_id: request_id.clone(),
                         state: ApprovalState::Requested,
-                        summary: summary.clone(),
+                        summary: summary.clone(), options: options.iter().map(|option| (option.option_id.clone(), option.name.clone(), option.kind.clone())).collect(),
                     },
                     lifecycle,
                 ) {
@@ -6366,7 +6366,7 @@ async fn settle_closed_transport(
                     AgentConversationPayload::Approval {
                         request_id,
                         state: ApprovalState::Expired,
-                        summary: pending.summary,
+                        summary: pending.summary, options: Vec::new(),
                     },
                 );
             }
@@ -7201,7 +7201,7 @@ async fn handle_ordered_session_event(
                 AgentConversationPayload::Approval {
                     request_id,
                     state,
-                    summary,
+                    summary, options: Vec::new(),
                 },
                 lifecycle,
             ) {
@@ -7300,7 +7300,7 @@ async fn handle_ordered_session_event(
                             } else {
                                 ApprovalState::Expired
                             },
-                            summary: pending.summary.clone(),
+                            summary: pending.summary.clone(), options: Vec::new(),
                         },
                     ) {
                         crate::debug_log::stderr_log!(
@@ -8004,7 +8004,7 @@ mod tests {
     mod helper_messages;
     mod checkout;
     mod model_effort; mod permissions;
-    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close; mod lazy_tool_rows; mod terminal_output;
+    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close; mod agui_steer; mod lazy_tool_rows; mod terminal_output;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
@@ -11212,7 +11212,7 @@ mod tests {
                         AgentConversationPayload::Approval {
                             request_id: "permission-1".into(),
                             state: ApprovalState::Requested,
-                            summary: "Pending permission".into(),
+                            summary: "Pending permission".into(), options: Vec::new(),
                         },
                     ),
                 },
@@ -12727,7 +12727,7 @@ mod tests {
                     AgentConversationPayload::Approval {
                         request_id: "expired-request".into(),
                         state,
-                        summary: summary.into(),
+                        summary: summary.into(), options: Vec::new(),
                     },
                 )
                 .unwrap();
@@ -12759,7 +12759,7 @@ mod tests {
             AgentConversationPayload::Approval {
                 request_id,
                 state: ApprovalState::Expired,
-                summary,
+                summary, ..
             } if request_id == "expired-request" && summary == "Read git diff"
         )));
         let second_error = fixture

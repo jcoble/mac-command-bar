@@ -56,7 +56,7 @@ pub(crate) fn without_details(mut event: AgentConversationEvent) -> AgentConvers
     if let AgentConversationPayload::Tool { name, summary, output, diff, has_detail, added, removed, .. } = &mut event.payload {
         let output = output.take().filter(|text| !text.is_empty());
         let diff = diff.take().filter(|text| !text.is_empty());
-        *has_detail = output.is_some() || diff.is_some();
+        *has_detail |= output.is_some() || diff.is_some();
         if let Some(diff) = &diff {
             let (lines_added, lines_removed) = diff_line_counts(diff);
             (*added, *removed) = (Some(lines_added), Some(lines_removed));

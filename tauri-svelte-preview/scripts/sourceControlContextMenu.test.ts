@@ -75,7 +75,7 @@ test('checkout availability follows backend support and preserves session safety
   const source = readFileSync(new URL('../src/lib/shell/git/components/sourceControl/SourceControlPanel.svelte', import.meta.url), 'utf8');
   const body = source.match(/const checkoutDisabledReason = \$derived.by\(\(\) => \{([\s\S]*?)\n  \}\);/)![1];
   const reason = new Function('readOnlyScope', 'onUseSessionCheckout', 'rail', 'ownedId', 'ownedSession', 'conversation', 'activeTool', body);
-  const conversation = { sending: false, pendingApprovals: {}, pendingInputs: {} };
+  const conversation = { sending: false };
   const session = { origin: 'app', executionOwner: 'structured', runtimeState: 'ready', canChangeCheckout: true };
   const check = (ownedSession = session, chat = conversation) => reason(true, () => {}, { activeOwnedId: 's' }, 's', ownedSession, chat, false);
   for (const agent of ['codex', 'claude', 'antigravity']) {
@@ -84,8 +84,8 @@ test('checkout availability follows backend support and preserves session safety
   }
   assert.match(check({ ...session, origin: 'external' }), /Assembly/);
   assert.match(check(session, { ...conversation, sending: true }), /active turn/);
-  assert.match(check(session, { ...conversation, pendingApprovals: { one: {} } }), /permission/);
-  assert.match(check(session, { ...conversation, pendingInputs: { one: {} } }), /input/);
+  assert.match(check({ ...session, pendingPermission: true } as typeof session), /permission/);
+  assert.match(check({ ...session, pendingInput: true } as typeof session), /input/);
 });
 
 test('checkout service reports unsupported sessions and accepts supported providers', async () => {

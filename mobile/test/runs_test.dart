@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:assembly_phone/features/runs/runs_repository.dart';
 import 'package:assembly_phone/features/runs/runs_screen.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -112,7 +113,103 @@ class GatedMachine extends FakeMachine {
   }
 }
 
+/// A run row in [state] last updated at [updatedAt] (ms).
+RunRow at(String id, String state, int updatedAt) =>
+    RunRow.fromJson({...row(id, state), 'updatedAt': updatedAt});
+
+/// The runs list the Runs tab shows, without a machine.
+class _FixedRuns extends RunsNotifier {
+  _FixedRuns(this.runs);
+
+  final RunsList runs;
+
+  @override
+  Future<RunsList> build() async => runs;
+}
+
+Future<void> pumpRuns(WidgetTester tester, RunsList runs) async {
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [runsProvider.overrideWith(() => _FixedRuns(runs))],
+      child: const MaterialApp(home: Scaffold(body: RunsScreen())),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
+
 void main() {
+  test('runs_group_by_needs_you_running_done_today', () {
+    final now = DateTime(2026, 10, 22, 9, 30);
+    final midnight = DateTime(2026, 10, 22).millisecondsSinceEpoch;
+    final groups = groupRuns(
+      RunsList(
+        [
+          at('wait', 'waiting-input', midnight),
+          at('gate', 'waiting-approval', midnight),
+          at('go', 'running', midnight),
+          at('held', 'paused', midnight),
+        ],
+        [
+          at('today', 'completed', midnight + 1),
+          at('failed', 'failed', midnight + 60000),
+          at('yesterday', 'completed', midnight - 1),
+        ],
+      ),
+      now,
+    );
+
+    expect(groups.needsYou.map((r) => r.id), ['wait', 'gate']);
+    expect(groups.running.map((r) => r.id), ['go', 'held']);
+    expect(groups.doneToday.map((r) => r.id), ['today', 'failed']);
+  });
+
+  testWidgets('runs_screen_shows_only_groups_with_runs', (tester) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final today = DateTime.now();
+    final yesterday =
+        DateTime(today.year, today.month, today.day).millisecondsSinceEpoch -
+        3600000;
+    await pumpRuns(
+      tester,
+      RunsList([at('go', 'running', now)], [at('old', 'completed', yesterday)]),
+    );
+
+    expect(find.text('RUNNING · 1'), findsOneWidget);
+    expect(find.textContaining('NEEDS YOU'), findsNothing);
+    expect(find.textContaining('DONE TODAY'), findsNothing);
+    expect(find.text('TSK-old · Run old'), findsNothing);
+  });
+
+  testWidgets('runs_screen_says_so_when_every_group_is_empty', (tester) async {
+    await pumpRuns(tester, const RunsList([], []));
+
+    expect(find.text('No runs today.'), findsOneWidget);
+    expect(find.textContaining('RUNNING'), findsNothing);
+  });
+
+  testWidgets('runs_screen_lists_many_runs_in_order_of_group', (tester) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await pumpRuns(
+      tester,
+      RunsList(
+        [
+          for (var i = 0; i < 40; i++) at('r$i', 'running', now),
+          at('ask', 'waiting-input', now),
+        ],
+        [for (var i = 0; i < 3; i++) at('d$i', 'completed', now)],
+      ),
+    );
+
+    expect(find.text('NEEDS YOU · 1'), findsOneWidget);
+    expect(find.text('RUNNING · 40'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('NEEDS YOU · 1')).dy,
+      lessThan(tester.getTopLeft(find.text('RUNNING · 40')).dy),
+    );
+    await tester.scrollUntilVisible(find.text('DONE TODAY · 3'), 400);
+    expect(find.text('DONE TODAY · 3'), findsOneWidget);
+  });
+
   test('runs_split_active_and_recent', () async {
     final (container, _) = phone({
       'GET runs': {

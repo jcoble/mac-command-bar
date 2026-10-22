@@ -53,7 +53,7 @@ class _RunScreenState extends ConsumerState<RunScreen> {
             widget.runId,
             action,
             confirm: () async {
-              final yes = await _confirmStop();
+              final yes = await confirmStop(context);
               if (yes && mounted) setState(() => _busy = action);
               return yes;
             },
@@ -68,30 +68,6 @@ class _RunScreenState extends ConsumerState<RunScreen> {
       if (mounted) setState(() => _busy = null);
     }
   }
-
-  Future<bool> _confirmStop() async =>
-      await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Stop this run?'),
-          content: const Text('Running turns are cancelled.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: Theme.of(context).colorScheme.error,
-                foregroundColor: Theme.of(context).colorScheme.onError,
-              ),
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Stop'),
-            ),
-          ],
-        ),
-      ) ??
-      false;
 
   @override
   Widget build(BuildContext context) {
@@ -321,6 +297,31 @@ class _RunScreenState extends ConsumerState<RunScreen> {
     return FilledButton(onPressed: onPressed, child: child);
   }
 }
+
+/// Asks before stopping a run; true when the owner says Stop.
+Future<bool> confirmStop(BuildContext context) async =>
+    await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Stop this run?'),
+        content: const Text('Running turns are cancelled.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Stop'),
+          ),
+        ],
+      ),
+    ) ??
+    false;
 
 /// "Stopped at checks: one or more commands failed", as the desktop says it.
 String stoppedLine(RunStep step) {

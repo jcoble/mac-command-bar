@@ -35,7 +35,7 @@
 
   type Entry = { id: string; machine: string; card: BoardCard };
   const SECTIONS = [
-    { state: 'needs_you', label: 'On hold · needs you', hint: 'Only you can move these', dot: 'bg-(--color-attention)' },
+    { state: 'needs_you', label: 'On hold · needs you', hint: 'Waiting on you; the orchestrator clears them', dot: 'bg-(--color-attention)' },
     { state: 'running', label: 'Running', hint: 'Agents are working on these', dot: 'bg-(--color-live)' },
     { state: 'in_review', label: 'In review', hint: 'Checks or a reviewer have it', dot: 'bg-(--color-merged)' }
   ] as const;
