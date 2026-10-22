@@ -11,14 +11,18 @@ use axum::extract::State;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::Router;
+use super::otel_store::{Lookups, OtelStore, RETENTION_DAYS};
 use serde_json::{Map, Value};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
 
 /// Records waiting for the writer. A record is a few hundred bytes to a few
 /// kilobytes, so a full queue holds a few megabytes at most.
 pub const QUEUE_CAPACITY: usize = 4096;
+/// Records written per transaction.
+const BATCH: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
@@ -64,6 +68,45 @@ impl Inbox {
             if self.queue.try_send(record).is_err() {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
             }
+        }
+    }
+}
+
+/// Deletes rows past retention, then starts the writer thread and the
+/// receiver on a free loopback port. Returns the receiver's address.
+pub fn serve(path: &Path, lookups: Lookups) -> Result<String, String> {
+    let store = OtelStore::open(path)?;
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as i64);
+    store.delete_older_than(now_ms - RETENTION_DAYS * 86_400_000)?;
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
+    listener.set_nonblocking(true).map_err(|error| error.to_string())?;
+    let endpoint = format!("http://{}", listener.local_addr().map_err(|error| error.to_string())?);
+    let (queue, records) = sync_channel(QUEUE_CAPACITY);
+    let dropped = Arc::new(AtomicU64::new(0));
+    let inbox = Arc::new(Inbox { queue, dropped: Arc::clone(&dropped) });
+    std::thread::Builder::new().name("otel-writer".into())
+        .spawn(move || write(records, store, lookups, dropped)).map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn(async move {
+        if let Ok(listener) = tokio::net::TcpListener::from_std(listener) {
+            let _ = axum::serve(listener, router(inbox)).await;
+        }
+    });
+    Ok(endpoint)
+}
+
+/// Drains the queue until every sender is gone, one transaction per batch.
+pub(crate) fn write(records: Receiver<Record>, mut store: OtelStore, lookups: Lookups, dropped: Arc<AtomicU64>) {
+    let mut reported = 0;
+    while let Ok(first) = records.recv() {
+        let mut batch = vec![first];
+        batch.extend(records.try_iter().take(BATCH - 1));
+        if let Err(error) = store.insert(&batch, &lookups) {
+            crate::debug_log::stderr_log!("{error}");
+        }
+        let total = dropped.load(Ordering::Relaxed);
+        if total != reported {
+            crate::debug_log::stderr_log!("Telemetry queue was full: {} records dropped", total - reported);
+            reported = total;
         }
     }
 }
@@ -200,11 +243,23 @@ fn log_name(item: &Value, attributes: &Map<String, Value>) -> String {
         .unwrap_or_else(|| "log".into())
 }
 
-/// OTLP `KeyValue` list to a JSON object.
+/// OTLP `KeyValue` list to a JSON object, without the redacted keys.
 fn attributes(list: Option<&Value>) -> Map<String, Value> {
     list.and_then(Value::as_array).into_iter().flatten()
         .filter_map(|entry| Some((entry.get("key")?.as_str()?.to_string(), any_value(entry.get("value")?))))
+        .filter(|(key, _)| !redacted(key))
         .collect()
+}
+
+/// Never kept: who the user is (email, user, account and organization ids)
+/// and any field that can carry prompt, response or tool content. Claude Code
+/// puts all of the identity fields on every record.
+fn redacted(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    let last = key.rsplit('.').next().unwrap_or_default();
+    key == "user.id" || ["email", "account", "organization"].iter().any(|word| key.contains(word))
+        || matches!(last, "prompt" | "prompt_text" | "response" | "content" | "message" | "messages" | "choice" | "body" | "text"
+            | "arguments" | "input" | "output" | "result" | "error" | "tool_input" | "tool_output" | "tool_parameters")
 }
 
 fn any_value(value: &Value) -> Value {
@@ -231,7 +286,6 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::future::IntoFuture;
-    use std::sync::mpsc::{sync_channel, Receiver};
 
     fn kv(key: &str, value: Value) -> Value {
         json!({"key": key, "value": value})
