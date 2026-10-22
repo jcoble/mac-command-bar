@@ -24,7 +24,7 @@
   import { adoptSession } from '$lib/shell/conversation/conversationService.ts';
   import { listAgentMessagesFromTauri, listenAgentMessagesChanged } from '$lib/tauriSource.ts';
   import { parseRemoteWorkspacePath } from '$lib/workspacePaths.ts';
-  import { currentStep, runTask, shortDuration } from './workflowBoard.ts';
+  import { costText, currentStep, runTask, shortDuration } from './workflowBoard.ts';
   import {
     answerWorkflowPause,
     approveWorkflowGate,
@@ -33,13 +33,15 @@
     listWorkflowRunHistory,
     listWorkflowRuns,
     pauseWorkflowRun,
+    readWorkflowUsage,
     resumeWorkflowRun,
     retryWorkflowNode,
     watchWorkflowRuns
   } from './workflowService.ts';
   import { buildWorkflowTimeline, type WorkflowTimelineItem } from './workflowTimeline.ts';
-  import { workflowErrorText, type WorkflowPauseDecision, type WorkflowRunRecord } from './workflowTypes.ts';
+  import { workflowErrorText, type WorkflowPauseDecision, type WorkflowRunRecord, type WorkflowUsageRow } from './workflowTypes.ts';
   import WorkflowBoard from './components/WorkflowBoard.svelte';
+  import WorkflowCost from './components/WorkflowCost.svelte';
   import WorkflowMap from './components/WorkflowMap.svelte';
   import WorkflowStepPanel from './components/WorkflowStepPanel.svelte';
 
@@ -61,6 +63,10 @@
   let busy = $state(false);
   let timeline = $state<{ runId: string; items: WorkflowTimelineItem[]; loading: boolean; error: string } | null>(null);
   let now = $state(Date.now());
+  /** Usage rows of every run, for the board's costs; read when the board shows. */
+  let boardUsage = $state<WorkflowUsageRow[]>([]);
+  /** The open run's usage rows for its Cost tab; null while reading or on another machine. */
+  let runUsage = $state<WorkflowUsageRow[] | null>(null);
   const openRun = $derived(runs.find((run) => run.id === openRunId) ?? null);
   /** The step whose details show: the one chosen on the Map, else where the run is. */
   const shownStep = $derived(openRun
@@ -104,6 +110,7 @@
     };
     if (machine) await listenAgentMessagesChanged(() => void reread(), signal);
     else await followWorkflowRuns(upsert, signal);
+    void readBoardUsage(signal);
     await reread();
   }
 
@@ -111,6 +118,35 @@
     const index = runs.findIndex((candidate) => candidate.id === run.id);
     if (index < 0) runs = [...runs, run];
     else if (run.lastSequence >= runs[index].lastSequence) runs[index] = run;
+  }
+
+  const costOf = (run: WorkflowRunRecord): string => costText(boardUsage.filter((row) => row.nodeRunId.startsWith(`${run.id}:`)));
+
+  async function readBoardUsage(signal: AbortSignal): Promise<void> {
+    try {
+      const rows = await readWorkflowUsage(machine, null);
+      if (!signal.aborted) boardUsage = rows ?? [];
+    } catch {
+      // The board shows no cost rather than an error; the Cost tab reports a failed read.
+    }
+  }
+
+  // The Cost tab reads the open run's usage when it opens and whenever a new record of the run arrives.
+  $effect(() => {
+    const run = runTab === 'cost' ? openRun : null;
+    if (!run) return;
+    const controller = new AbortController();
+    void readRunUsage(run.id, controller.signal);
+    return () => controller.abort();
+  });
+
+  async function readRunUsage(runId: string, signal: AbortSignal): Promise<void> {
+    try {
+      const rows = await readWorkflowUsage(machine, runId);
+      if (!signal.aborted) runUsage = rows;
+    } catch (cause) {
+      if (!signal.aborted) error = `Could not read the run's usage: ${workflowErrorText(cause)}`;
+    }
   }
 
   // The open run's timeline, read again only when the run moves on.
@@ -174,8 +210,10 @@
     chosenStepId = null;
     runTab = 'map';
     timeline = null;
+    runUsage = null;
     // The board holds summaries; the open run is read again in full.
     if (runId) void read(stop.signal);
+    else void readBoardUsage(stop.signal);
   }
 
   async function read(signal: AbortSignal): Promise<void> {
@@ -269,11 +307,13 @@
           onOpenChat={() => void openChat(step.ownedId)}
         />
       {/if}
+    {:else}
+      <WorkflowCost {run} rows={machine ? null : runUsage ?? []} {now} />
     {/if}
   {:else if loaded && runs.length === 0 && !error}
     <p class="text-[13px] text-muted-foreground">No workflow runs yet.</p>
   {:else if runs.length}
-    <WorkflowBoard {runs} {now} costOf={() => ''} onOpen={openRunPage} />
+    <WorkflowBoard {runs} {now} {costOf} onOpen={openRunPage} />
   {/if}
 </div>
 

@@ -3684,7 +3684,7 @@ fn main() {
             resources::read_language_server_log,
             usage_current::read_current_provider_usage,
             usage_history::read_usage_summary,
-            usage_history::read_usage_breakdown,
+            usage_history::read_usage_breakdown, usage_history::read_workflow_usage,
             usage_history::read_usage_provider_summary,
             usage_history::read_usage_daily,
             usage_history::read_usage_daily_totals,

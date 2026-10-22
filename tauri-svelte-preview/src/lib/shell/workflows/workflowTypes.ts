@@ -547,3 +547,17 @@ export function workflowErrorText(error: unknown): string {
     return text;
   }
 }
+
+/** One step attempt's usage with one model (`read_workflow_usage`); `nodeRunId` is `<run>:<step>:<attempt>`. */
+export interface WorkflowUsageRow {
+  nodeRunId: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** What the provider reported; null when it reports no cost. */
+  reportedCostMicros: number | null;
+  /** Tokens times the rate table; null when the model has no rate. */
+  estimatedCostMicros: number | null;
+}

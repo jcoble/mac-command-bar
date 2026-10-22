@@ -36,7 +36,8 @@ import type {
   RetryWorkflowNodeDto,
   StartWorkflowRunDto,
   WorkflowHistoryRow,
-  WorkflowRunRecord
+  WorkflowRunRecord,
+  WorkflowUsageRow
 } from './workflowTypes';
 
 export const workflowSnapshotEvent = 'workflow-run-updated';
@@ -215,4 +216,11 @@ export async function followWorkflowRuns(onRun: (run: WorkflowRunRecord) => void
   }));
   if (signal.aborted) { stop(); return; }
   signal.addEventListener('abort', stop, { once: true });
+}
+
+/** A run's usage per step attempt and model, or every run's when `runId` is null. Null off this Mac. */
+export async function readWorkflowUsage(machine: string | null, runId: string | null): Promise<WorkflowUsageRow[] | null> {
+  if (machine || !isNativeTauriRuntime()) return null;
+  const { invoke } = await import('$lib/workspaceInvoke.ts');
+  return invoke<WorkflowUsageRow[]>('read_workflow_usage', { runId });
 }

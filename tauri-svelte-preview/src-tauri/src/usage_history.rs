@@ -61,6 +61,19 @@ pub async fn read_usage_breakdown(
     .map_err(|error| format!("usage task failed: {error}"))?
 }
 
+/// A run's usage per step attempt and model for its Cost tab, or every run's for the board.
+#[tauri::command]
+pub async fn read_workflow_usage(
+    app: AppHandle,
+    run_id: Option<String>,
+) -> Result<Vec<crate::usage_db::acp::WorkflowUsageRow>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        UsageDb::open(usage_db_path(&app)?)?.read_workflow_usage(run_id.as_deref())
+    })
+    .await
+    .map_err(|error| format!("usage task failed: {error}"))?
+}
+
 #[tauri::command]
 pub async fn read_usage_provider_summary(
     app: AppHandle,

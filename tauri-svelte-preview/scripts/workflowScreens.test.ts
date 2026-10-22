@@ -1,7 +1,7 @@
 // The Workflows screen's two pure functions: which Board column a run sits in, and where
 // each step's box goes on the Map. Logic only.
 import assert from 'node:assert/strict';
-import { boardColumn, stepGlyph } from '../src/lib/shell/workflows/workflowBoard.ts';
+import { boardColumn, costText, stepGlyph } from '../src/lib/shell/workflows/workflowBoard.ts';
 import { layoutWorkflowMap } from '../src/lib/shell/workflows/workflowMapLayout.ts';
 import type { WorkflowNodeState, WorkflowRunRecord, WorkflowRunState } from '../src/lib/shell/workflows/workflowTypes.ts';
 
@@ -77,6 +77,16 @@ function run(state: WorkflowRunState, states: Partial<Record<string, WorkflowNod
     [glyph('completed'), glyph('running'), glyph('failed'), glyph('waiting-input'), glyph('cancelled'), glyph('skipped'), glyph('blocked'), glyph('ready', 2)],
     ['passed', 'running', 'failed', 'needs-you', 'stopped', 'skipped', 'waiting', 'sent-back']
   );
+}
+
+
+{ // costs_read_reported_first_and_label_estimates
+  const row = (reportedCostMicros: number | null, estimatedCostMicros: number | null) => ({ reportedCostMicros, estimatedCostMicros });
+  assert.equal(costText([row(1_070_000, 900_000)]), '$1.07');
+  assert.equal(costText([row(1_070_000, null), row(null, 740_000)]), '$1.07 + $0.74 est.');
+  assert.equal(costText([row(null, 740_000)]), '$0.74 est.');
+  assert.equal(costText([row(null, null)]), '');
+  assert.equal(costText([]), '');
 }
 
 console.log('workflow screens tests passed');
