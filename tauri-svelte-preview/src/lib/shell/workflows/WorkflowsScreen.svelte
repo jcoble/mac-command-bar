@@ -29,11 +29,13 @@
     answerWorkflowPause,
     approveWorkflowGate,
     cancelWorkflowRun,
+    followWorkflowRuns,
     listWorkflowRunHistory,
     listWorkflowRuns,
     pauseWorkflowRun,
     resumeWorkflowRun,
-    retryWorkflowNode
+    retryWorkflowNode,
+    watchWorkflowRuns
   } from './workflowService.ts';
   import { buildWorkflowTimeline, type WorkflowTimelineItem } from './workflowTimeline.ts';
   import { workflowErrorText, type WorkflowPauseDecision, type WorkflowRunRecord } from './workflowTypes.ts';
@@ -79,10 +81,19 @@
 
   onMount(() => {
     void follow(stop.signal);
-    return () => stop.abort();
+    return () => {
+      stop.abort();
+      if (!machine) void watchWorkflowRuns(false, null);
+    };
   });
 
-  /** Reads the runs, then again on every change, one read at a time. */
+  // This Mac's engine sends the board a summary of each changed run and the open run in full.
+  $effect(() => {
+    const runId = openRunId;
+    if (!machine) untrack(() => void watchWorkflowRuns(true, runId));
+  });
+
+  /** Reads the runs, then follows changes: pushed by this Mac's engine, or read again from a remote one. */
   async function follow(signal: AbortSignal): Promise<void> {
     let reading = false, again = false;
     const reread = async (): Promise<void> => {
@@ -91,8 +102,15 @@
       do { again = false; await read(signal); } while (again && !signal.aborted);
       reading = false;
     };
-    await listenAgentMessagesChanged(() => void reread(), signal);
+    if (machine) await listenAgentMessagesChanged(() => void reread(), signal);
+    else await followWorkflowRuns(upsert, signal);
     await reread();
+  }
+
+  function upsert(run: WorkflowRunRecord): void {
+    const index = runs.findIndex((candidate) => candidate.id === run.id);
+    if (index < 0) runs = [...runs, run];
+    else if (run.lastSequence >= runs[index].lastSequence) runs[index] = run;
   }
 
   // The open run's timeline, read again only when the run moves on.
@@ -128,10 +146,7 @@
     error = '';
     try {
       const run = await action();
-      if (stop.signal.aborted || !run) return;
-      runs = runs.some((candidate) => candidate.id === run.id)
-        ? runs.map((candidate) => (candidate.id === run.id && run.lastSequence >= candidate.lastSequence ? run : candidate))
-        : [...runs, run];
+      if (!stop.signal.aborted && run) upsert(run);
     } catch (cause) {
       if (!stop.signal.aborted) error = `${label}: ${workflowErrorText(cause)}`;
     } finally {
@@ -159,6 +174,8 @@
     chosenStepId = null;
     runTab = 'map';
     timeline = null;
+    // The board holds summaries; the open run is read again in full.
+    if (runId) void read(stop.signal);
   }
 
   async function read(signal: AbortSignal): Promise<void> {

@@ -199,3 +199,20 @@ export function stopWorkflowSnapshotSubscription(): void {
   stopWorkflowSnapshotListener();
   listeners.clear();
 }
+
+/** Tells this Mac's engine what the Workflows screen shows: the board, and the run it has open. */
+export async function watchWorkflowRuns(board: boolean, runId: string | null): Promise<void> {
+  if (!isNativeTauriRuntime()) return;
+  const { invoke } = await import('$lib/workspaceInvoke.ts');
+  await invoke('watch_workflow_runs', { board, runId });
+}
+
+/** Hands each changed run the engine sends the screen to `onRun`, until `signal` ends. */
+export async function followWorkflowRuns(onRun: (run: WorkflowRunRecord) => void, signal: AbortSignal): Promise<void> {
+  if (!isNativeTauriRuntime() || signal.aborted) return;
+  const stop = trackTauriListener(await listen<WorkflowRunRecord>('workflow-run-changed', ({ payload }) => {
+    if (!signal.aborted) onRun(payload);
+  }));
+  if (signal.aborted) { stop(); return; }
+  signal.addEventListener('abort', stop, { once: true });
+}
