@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+
 use serde_json::Value;
 use similar::TextDiff;
 
 use super::super::history::transcript;
+use super::super::phone::MAX_TOOL_OUTPUT_BYTES;
+use super::super::protocol::AgentConversationPayload;
 use super::text_from_value;
 
 pub(super) fn tool_item_id(update: &Value, turn_id: &str) -> String {
@@ -11,6 +15,33 @@ pub(super) fn tool_item_id(update: &Value, turn_id: &str) -> String {
         .and_then(Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(|| format!("tool-{turn_id}"))
+}
+
+/// codex-acp 2.x streams a command's output as `_meta.terminal_output_delta`
+/// chunks (2.2.2 frame logs, TSK-1589), and a stored tool event's output
+/// replaces the one before it, so each chunk's event carries everything so
+/// far. `live_tool_calls` holds the joined text and drops it when the call
+/// finishes; the finishing frame has no chunk and the store carries the joined
+/// output onto it.
+pub(in crate::agent_conversation) fn join_terminal_output(
+    live_tool_calls: &mut HashMap<String, String>,
+    params: &Value,
+    payload: &mut AgentConversationPayload,
+) {
+    let AgentConversationPayload::Tool { item_id, output, .. } = payload else {
+        return;
+    };
+    let update = params.get("update").unwrap_or(params);
+    let Some(chunk) = update.pointer("/_meta/terminal_output_delta/data").and_then(Value::as_str) else {
+        return;
+    };
+    let joined = live_tool_calls.entry(item_id.clone()).or_default();
+    joined.push_str(chunk);
+    // Keep the newest output, at most what a tool call ever sends.
+    if let Some(excess) = joined.len().checked_sub(MAX_TOOL_OUTPUT_BYTES) {
+        joined.drain(..joined.ceil_char_boundary(excess));
+    }
+    *output = Some(joined.clone());
 }
 
 /// The parts of an ACP tool call a transcript row can draw.
@@ -94,11 +125,11 @@ pub(in crate::agent_conversation) fn tool_details(update: &Value) -> ToolDetails
         None => {}
     }
 
+    // codex-acp 1.x sends a command's output whole; 2.x only in terminal chunks.
     if output.is_empty() {
-        if let Some(text) = update
-            .pointer("/rawOutput/formatted_output")
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
+        if let Some(text) = ["/rawOutput/formatted_output", "/_meta/terminal_output_delta/data"]
+            .into_iter()
+            .find_map(|pointer| update.pointer(pointer).and_then(Value::as_str).filter(|text| !text.is_empty()))
         {
             output.push(text.to_string());
         }

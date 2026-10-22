@@ -22,7 +22,7 @@ use super::handoff::{
 };
 use super::normalization::{
     is_replay_session_update, is_session_state_update, payload_from_session_update_for_turn,
-    session_update_kind, text_from_value,
+    session_update_kind, text_from_value, tools,
 };
 use super::protocol::{
     AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities,
@@ -228,7 +228,7 @@ pub struct ManagedAgentSession {
     store: Arc<SessionStore>,
     created_at_ms: u128,
     last_activity_ms: u128,
-    live_tool_calls: HashSet<String>,
+    live_tool_calls: HashMap<String, String>, // with each command's joined terminal output
     /// The reply the agent is streaming: its message id, the text of the
     /// deltas stored for it so far, and the autonomous turn it belongs to.
     streaming_reply: Option<(String, String, Option<String>)>,
@@ -273,7 +273,7 @@ struct SessionEventCandidate {
     connection: AgentConversationConnection,
     writer_owner: AgentWriterLeaseOwner,
     last_activity_ms: u128,
-    live_tool_calls: HashSet<String>,
+    live_tool_calls: HashMap<String, String>,
 }
 
 #[derive(Clone, Copy)]
@@ -1943,7 +1943,7 @@ impl AgentRuntimeManager {
                 store: Arc::clone(&self.store),
                 created_at_ms,
                 last_activity_ms: created_at_ms,
-                live_tool_calls: HashSet::new(),
+                live_tool_calls: HashMap::new(),
                 streaming_reply: None,
                 background_work: HashMap::new(),
                 autonomous_turn_id: None,
@@ -5134,7 +5134,7 @@ fn recovered_session_from_row(
         store: Arc::clone(store),
         created_at_ms: row.created_at_ms.max(0) as u128,
         last_activity_ms: row.last_activity_at_ms.max(0) as u128,
-        live_tool_calls: HashSet::new(),
+        live_tool_calls: HashMap::new(),
         streaming_reply: None,
         background_work: HashMap::new(),
         autonomous_turn_id: None,
@@ -5368,7 +5368,7 @@ fn record_payload_for_session_with_lifecycle(
     match &payload {
         AgentConversationPayload::Tool { item_id, state, .. } => match state {
             ToolState::Started | ToolState::Updated => {
-                candidate.live_tool_calls.insert(item_id.clone());
+                candidate.live_tool_calls.entry(item_id.clone()).or_default();
             }
             ToolState::Completed | ToolState::Failed => {
                 candidate.live_tool_calls.remove(item_id);
@@ -6071,14 +6071,11 @@ async fn pump_inbound(
                             .get_or_insert_with(|| format!("turn-{}", uuid::Uuid::new_v4()))
                             .clone()
                     });
-                    let Some(payload) = payload_from_session_update_for_turn(
-                        &params,
-                        autonomous_turn_id
-                            .as_deref()
-                            .or(session.active_turn_id.as_deref()),
-                    ) else {
+                    let turn_id = autonomous_turn_id.as_deref().or(session.active_turn_id.as_deref());
+                    let Some(mut payload) = payload_from_session_update_for_turn(&params, turn_id) else {
                         break 'update reached_quiescence;
                     };
+                    tools::join_terminal_output(&mut session.live_tool_calls, &params, &mut payload);
                     // A delta for another message means the agent finished the
                     // one it was streaming.
                     if let AgentConversationPayload::AssistantDelta { item_id, .. } = &payload {
@@ -6843,7 +6840,7 @@ fn update_raw_liveness(session: &mut ManagedAgentSession, params: &Value) -> boo
         if terminal {
             session.live_tool_calls.remove(&identifier);
         } else {
-            session.live_tool_calls.insert(identifier);
+            session.live_tool_calls.entry(identifier).or_default();
         }
         return session_is_quiescent(session);
     }
@@ -7966,7 +7963,7 @@ mod tests {
     mod helper_messages;
     mod checkout;
     mod model_effort;
-    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close;
+    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close; mod terminal_output;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
@@ -12241,7 +12238,7 @@ mod tests {
             let session = sessions.get_mut(&fixture.owned_id).unwrap();
             session.state = AgentRuntimeState::Working;
             session.active_turn_id = Some("turn-live".into());
-            session.live_tool_calls.insert("tool-live".into());
+            session.live_tool_calls.insert("tool-live".into(), String::new());
         }
         assert!(!fixture
             .manager
@@ -15221,7 +15218,7 @@ mod tests {
         let emitted = seen.lock().unwrap();
         let completion = emitted.last().unwrap();
         assert_eq!(completion.sequence + 1, session.next_sequence);
-        assert!(!session.live_tool_calls.contains("edit-1"));
+        assert!(!session.live_tool_calls.contains_key("edit-1"));
         match &completion.payload {
             AgentConversationPayload::Tool { state, path, diff, .. } => {
                 assert_eq!(*state, ToolState::Completed);

@@ -570,11 +570,11 @@ impl AcpClient {
             )]));
         }
         if provider == AgentConversationProvider::Codex {
-            // Current policy advertises recommendedValue for Codex default effort; Claude ACP 0.88/0.93 also read it (l9/y3, runtime bytes 82788482/92449895).
-            request.client_capabilities.meta = Some(serde_json::Map::from_iter([(
-                "jetbrains".to_string(),
-                json!({"air": {"version": 1, "capabilities": ["recommendedValue"]}}),
-            )]));
+            // Current policy advertises recommendedValue for Codex default effort; Claude ACP 0.88/0.93 also read it (l9/y3, runtime bytes 82788482/92449895). codex-acp 2.2.2 sends command output only to a client that takes terminal_output_delta (TSK-1589 frame logs).
+            request.client_capabilities.meta = Some(serde_json::Map::from_iter([
+                ("jetbrains".to_string(), json!({"air": {"version": 1, "capabilities": ["recommendedValue"]}})),
+                ("terminal_output_delta".to_string(), json!(true)),
+            ]));
         }
         let mut request = json!(request);
         if provider == AgentConversationProvider::Claude {
@@ -2314,8 +2314,8 @@ done"#,
         let initialize = frames.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
             .find(|frame| frame["method"] == "initialize").unwrap();
         assert_eq!(
-            initialize["params"]["clientCapabilities"]["_meta"]["jetbrains"]["air"]["capabilities"],
-            json!(["recommendedValue"])
+            initialize["params"]["clientCapabilities"]["_meta"],
+            json!({"jetbrains": {"air": {"version": 1, "capabilities": ["recommendedValue"]}}, "terminal_output_delta": true})
         );
         let configured = result.expect("model reply makes effort available in the same update");
         assert_eq!(configured.model.as_deref(), Some("sonnet"));
