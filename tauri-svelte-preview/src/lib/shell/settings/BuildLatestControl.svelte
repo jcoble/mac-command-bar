@@ -19,15 +19,15 @@
     </Button>
   </div>
   {#if buildLatestState.phase === 'running'}
-    <p class="max-w-[360px] truncate text-right text-[12px] leading-[1.4] text-[var(--color-text-2)]" title={buildLatestState.text}>
+    <p class="max-w-[260px] truncate text-right text-[12px] leading-[1.4] text-[var(--color-text-2)]" title={buildLatestState.text}>
       Step {buildLatestState.step} of {buildLatestState.total}: {buildLatestState.text}
     </p>
   {:else if buildLatestState.phase === 'restarting'}
-    <p class="max-w-[360px] text-right text-[12px] leading-[1.4] text-[var(--color-text-2)]">
+    <p class="max-w-[260px] text-right text-[12px] leading-[1.4] text-[var(--color-text-2)]">
       {buildLatestState.text}. The new build opens once Assembly quits.
     </p>
   {:else if buildLatestState.phase === 'failed'}
-    <p class="max-w-[360px] text-right text-[12px] leading-[1.4] text-destructive [overflow-wrap:anywhere]" role="alert">
+    <p class="max-w-[260px] text-right text-[12px] leading-[1.4] text-destructive [overflow-wrap:anywhere]" role="alert">
       {buildLatestState.error}
     </p>
   {/if}

@@ -33,6 +33,15 @@ export function relaunchCommand(checkoutRoot: string, appPid: number, logPath: s
   return { file: '/bin/sh', args: ['-c', script, 'sh', String(appPid), logPath], cwd: checkoutRoot };
 }
 
+/**
+ * The variables `cargo run` (under tauri dev) set for the running app, which this script inherits.
+ * Build scripts such as ring's rerun when they change, so left in, this build and the next
+ * tauri dev build would each recompile part of the tree instead of reusing the cache.
+ */
+export function cargoRunVariables(env: Record<string, string | undefined>): string[] {
+  return Object.keys(env).filter((key) => /^CARGO_(PKG_|MANIFEST_|TERM_PROGRESS_|CRATE_NAME$|BIN_NAME$|PRIMARY_PACKAGE$)/.test(key));
+}
+
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -120,6 +129,7 @@ async function main(): Promise<void> {
   const appPid = Number(argValue(args, '--pid'));
   const logPath = argValue(args, '--log');
   const checkoutRoot = path.resolve(fileURLToPath(new URL('../..', import.meta.url)));
+  for (const key of cargoRunVariables(process.env)) delete process.env[key];
   // The app may quit while this runs; the log keeps the rest.
   process.stdout.on('error', () => {});
   writeFileSync(logPath, '');

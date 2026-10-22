@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildLatestDev, relaunchCommand, type BuildLatestOptions } from './buildLatestDev.ts';
+import { buildLatestDev, cargoRunVariables, relaunchCommand, type BuildLatestOptions } from './buildLatestDev.ts';
 
 type Call = [string, string[], string];
 
@@ -113,4 +113,17 @@ test('the restart waits for this app to quit, then starts pnpm app:dev into the 
   assert.match(script, /while kill -0 "\$1"/);
   assert.match(script, /exec pnpm app:dev >>"\$2" 2>&1$/);
   assert.match(script, /-gt 600/, 'gives up after ten minutes if the app never quits');
+});
+
+test('drops the variables cargo run set for the app, so the build matches tauri dev and reuses its cache', () => {
+  const env = {
+    CARGO_PKG_NAME: 'mac-command-bar-webview-preview', CARGO_PKG_VERSION_MAJOR: '0', CARGO_MANIFEST_DIR: '/checkout/src-tauri',
+    CARGO_MANIFEST_PATH: '/checkout/src-tauri/Cargo.toml', CARGO_CRATE_NAME: 'app', CARGO_BIN_NAME: 'app', CARGO_PRIMARY_PACKAGE: '1',
+    CARGO_TERM_PROGRESS_WHEN: 'always', CARGO_TERM_PROGRESS_WIDTH: '80',
+    CARGO_HOME: '/home/me/.cargo', CARGO_TARGET_DIR: '/cache/target', CARGO_BUILD_JOBS: '3', TAURI_ENV_TARGET_TRIPLE: 'x86_64', PATH: '/bin'
+  };
+  assert.deepEqual(cargoRunVariables(env).sort(), [
+    'CARGO_BIN_NAME', 'CARGO_CRATE_NAME', 'CARGO_MANIFEST_DIR', 'CARGO_MANIFEST_PATH', 'CARGO_PKG_NAME', 'CARGO_PKG_VERSION_MAJOR',
+    'CARGO_PRIMARY_PACKAGE', 'CARGO_TERM_PROGRESS_WHEN', 'CARGO_TERM_PROGRESS_WIDTH'
+  ]);
 });
