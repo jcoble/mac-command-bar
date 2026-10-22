@@ -8,26 +8,29 @@ const packages = ['@agentclientprotocol/codex-acp', '@agentclientprotocol/claude
 const installScripts = ['preinstall', 'install', 'postinstall'];
 
 // The fields of `npm view <pkg>@<version> --json` this check reads. npm prints people as
-// "name <email>" strings.
+// `{ name, email }` objects; people are compared by name.
+type NpmPerson = { name: string; email?: string };
 export type NpmRelease = {
-  _npmUser?: string;
-  maintainers?: string[];
+  _npmUser?: NpmPerson;
+  maintainers?: NpmPerson[];
   scripts?: Record<string, string>;
   dist?: { attestations?: { provenance?: unknown } };
 };
 
 export function releaseConcerns(previous: NpmRelease, next: NpmRelease): string[] {
   const concerns: string[] = [];
-  const maintainers = previous.maintainers ?? [];
+  const maintainers = (previous.maintainers ?? []).map((person) => person.name);
+  const publisher = next._npmUser?.name;
   // Both adapters publish from GitHub Actions trusted publishing, whose user is never a
   // maintainer, so the previous release's publisher counts as known too.
-  if (next._npmUser !== previous._npmUser && !maintainers.includes(next._npmUser ?? '')) {
-    concerns.push(`was published by ${next._npmUser ?? 'an unknown user'}, who is neither the previous `
-      + `publisher (${previous._npmUser}) nor one of its maintainers`);
+  if (publisher !== previous._npmUser?.name && !maintainers.includes(publisher ?? '')) {
+    concerns.push(`was published by ${publisher ?? 'an unknown user'}, who is neither the previous `
+      + `publisher (${previous._npmUser?.name}) nor one of its maintainers`);
   }
-  const sorted = (list: string[] | undefined) => [...(list ?? [])].sort().join(', ');
-  if (sorted(next.maintainers) !== sorted(maintainers)) {
-    concerns.push(`has its maintainers changed from [${sorted(maintainers)}] to [${sorted(next.maintainers)}]`);
+  const sorted = (names: string[]) => [...names].sort().join(', ');
+  const nextMaintainers = (next.maintainers ?? []).map((person) => person.name);
+  if (sorted(nextMaintainers) !== sorted(maintainers)) {
+    concerns.push(`has its maintainers changed from [${sorted(maintainers)}] to [${sorted(nextMaintainers)}]`);
   }
   for (const script of installScripts) {
     if (next.scripts?.[script] && !previous.scripts?.[script]) {

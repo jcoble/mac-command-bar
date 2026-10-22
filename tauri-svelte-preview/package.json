@@ -144,7 +144,7 @@
     "test:session-history-host": "node --experimental-strip-types scripts/sessionHistoryHost.test.ts",
     "test:tasks-view": "node --experimental-strip-types scripts/tasksView.test.ts",
     "test:settings-store": "node --experimental-strip-types src/lib/shell/settings/settingsStore.test.ts",
-    "test:provider-updates": "node --experimental-strip-types scripts/providerUpdateService.test.ts && node --experimental-strip-types scripts/providerCliUpdateService.test.ts && node --experimental-strip-types scripts/providerLauncher.test.ts && node --import ./scripts/svelteRuneTestSetup.ts --experimental-strip-types src/lib/shell/providers/providerUpdateService.test.ts"
+    "test:provider-updates": "node --experimental-strip-types scripts/checkAdapterRelease.test.ts && node --experimental-strip-types scripts/providerUpdateService.test.ts && node --experimental-strip-types scripts/providerCliUpdateService.test.ts && node --experimental-strip-types scripts/providerLauncher.test.ts && node --import ./scripts/svelteRuneTestSetup.ts --experimental-strip-types src/lib/shell/providers/providerUpdateService.test.ts"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.90.0",

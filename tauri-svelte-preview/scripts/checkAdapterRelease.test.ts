@@ -1,10 +1,44 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { releaseConcerns, type NpmRelease } from './checkAdapterRelease.ts';
 
-// Shapes copied from `npm view @agentclientprotocol/codex-acp@1.13.1 --json`.
-const ci = 'GitHub Actions <npm-oidc-no-reply@github.com>';
-const maintainers = ['benbrandt <benjamin.j.brandt@gmail.com>', 'aguzubiaga <sup@aguz.me>', 'cirwin <conrad.irwin@gmail.com>'];
+// Registry documents (trimmed to the fields the check reads) for the releases that were pinned
+// before and after the daily update: `npm view <package>@<version> --json`.
+const releases: Record<string, NpmRelease> = JSON.parse(
+  readFileSync(new URL('./fixtures/adapterReleases.json', import.meta.url), 'utf8'),
+);
+
+test('the real release pairs the daily update compares pass', () => {
+  for (const [before, after] of [
+    ['@agentclientprotocol/codex-acp@1.13.1', '@agentclientprotocol/codex-acp@2.2.2'],
+    ['@agentclientprotocol/claude-agent-acp@0.90.0', '@agentclientprotocol/claude-agent-acp@0.94.0'],
+  ]) {
+    assert.deepEqual(releaseConcerns(releases[before], releases[after]), [], after);
+  }
+});
+
+test('a real release published by a stranger fails and names the stranger', () => {
+  const [before, after] = [releases['@agentclientprotocol/codex-acp@1.13.1'], releases['@agentclientprotocol/codex-acp@2.2.2']];
+  const concerns = releaseConcerns(before, { ...after, _npmUser: { name: 'mallory', email: 'm@example.com' } });
+  assert.equal(concerns.length, 1);
+  assert.match(concerns[0], /published by mallory,/);
+  assert.match(concerns[0], /previous publisher \(GitHub Actions\)/);
+});
+
+test('a real release with a changed maintainer list fails', () => {
+  const [before, after] = [releases['@agentclientprotocol/codex-acp@1.13.1'], releases['@agentclientprotocol/codex-acp@2.2.2']];
+  const concerns = releaseConcerns(before, { ...after, maintainers: [...(after.maintainers ?? []), { name: 'mallory' }] });
+  assert.equal(concerns.length, 1);
+  assert.match(concerns[0], /maintainers changed from \[aguzubiaga, benbrandt, cirwin\] to \[aguzubiaga, benbrandt, cirwin, mallory\]/);
+});
+
+const ci = { name: 'GitHub Actions', email: 'npm-oidc-no-reply@github.com' };
+const maintainers = [
+  { name: 'benbrandt', email: 'benjamin.j.brandt@gmail.com' },
+  { name: 'aguzubiaga', email: 'sup@aguz.me' },
+  { name: 'cirwin', email: 'conrad.irwin@gmail.com' },
+];
 const previous: NpmRelease = {
   _npmUser: ci,
   maintainers,
@@ -21,13 +55,13 @@ test('a release by one of the previous maintainers passes', () => {
 });
 
 test('a publisher who is neither the previous publisher nor a maintainer fails', () => {
-  const concerns = releaseConcerns(previous, { ...previous, _npmUser: 'mallory <m@example.com>' });
+  const concerns = releaseConcerns(previous, { ...previous, _npmUser: { name: 'mallory', email: 'm@example.com' } });
   assert.equal(concerns.length, 1);
   assert.match(concerns[0], /mallory/);
 });
 
 test('a changed maintainer list fails', () => {
-  const concerns = releaseConcerns(previous, { ...previous, maintainers: [...maintainers, 'mallory <m@example.com>'] });
+  const concerns = releaseConcerns(previous, { ...previous, maintainers: [...maintainers, { name: 'mallory', email: 'm@example.com' }] });
   assert.equal(concerns.length, 1);
   assert.match(concerns[0], /maintainers changed/);
 });
