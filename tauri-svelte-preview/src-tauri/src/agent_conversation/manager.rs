@@ -1053,7 +1053,7 @@ impl AgentRuntimeManager {
             // session/new may leave a provider-native empty session, but its
             // adapter process never remains resident and no Assembly row is saved.
             let stopped = adapter.detach_session().await;
-            let config = result.map_err(|error| error.to_string())?;
+            let config = result.map_err(|error| authentication::explain(provider, error.to_string()))?;
             stopped.map_err(|error| error.to_string())?;
             Ok(config)
         };
