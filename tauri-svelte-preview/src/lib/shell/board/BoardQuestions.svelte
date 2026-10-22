@@ -11,6 +11,7 @@
   import { cn } from '$lib/utils.js';
   import { answerQuestion, questionState } from '../workflows/ownerInboxActions.ts';
   import type { BoardQuestion, MachineBoard } from './boardSource.ts';
+  import { isFoldOpen, readFolds, writeFolds } from './boardQuestionFolds.ts';
 
   interface Props {
     boards: MachineBoard[];
@@ -32,12 +33,21 @@
   const ended = (row: Row): boolean => row.q.session_state === 'closed' || row.q.session_state === 'failed';
   const liveOpen = $derived(open.filter((row) => !ended(row)));
 
-  /** Rows the owner opened or shut; an open question starts expanded. */
-  let toggled = $state<Record<string, boolean>>({});
+  /** Rows the owner opened or shut, saved so closing the board or the app keeps them. */
+  let folds = $state(readFolds(localStorage));
   let drafts = $state<Record<string, string>>({});
-  let answeredOpen = $state(false);
+  const ANSWERED_OPEN_KEY = 'assembly.board.answeredOpen';
+  let answeredOpen = $state(localStorage.getItem(ANSWERED_OPEN_KEY) === 'true');
 
-  const isOpen = (row: Row): boolean => toggled[row.id] ?? row.q.answered_at_ms === null;
+  const isOpen = (row: Row): boolean => isFoldOpen(folds, row.id, row.q.answered_at_ms !== null);
+  function fold(row: Row, value: boolean): void {
+    folds[row.id] = value;
+    writeFolds(localStorage, folds, rows.map((each) => each.id));
+  }
+  function toggleAnswered(): void {
+    answeredOpen = !answeredOpen;
+    localStorage.setItem(ANSWERED_OPEN_KEY, String(answeredOpen));
+  }
   const machineLabel = (machine: string): string => projectMachineLabel(machine === 'mac' ? 'local' : machine, rail.remoteProfiles);
 
   function when(ms: number): string {
@@ -45,6 +55,12 @@
     return date.toDateString() === new Date().toDateString()
       ? date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
       : date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+
+  /** "asked 2 days ago" for an open question older than a day, so stale ones stand out. */
+  function age(q: BoardQuestion): string {
+    const days = Math.floor((Date.now() - q.asked_at_ms) / 86_400_000);
+    return q.answered_at_ms === null && days >= 1 ? `asked ${days} ${days === 1 ? 'day' : 'days'} ago` : '';
   }
 
   /** Sends "Q<n>: <text>" to the question's session; `record` false leaves it open. */
@@ -70,45 +86,48 @@
   {@const status = questionState(`${row.id}:${q.asked_at_ms}`)}
   {@const locked = status.busy || ended(row)}
   <li class="card">
-    <button type="button" class="chead" aria-expanded={expanded} onclick={() => (toggled[row.id] = !expanded)}>
+    <button type="button" class="chead" aria-expanded={expanded} onclick={() => fold(row, !expanded)}>
       <ChevronRight class={cn('size-3.5 shrink-0 text-(--color-text-3) transition-transform', expanded && 'rotate-90')} aria-hidden="true" />
       <span class="key">Q{q.id}</span>
       <span class="ctitle">{q.title}</span>
       <span class="ctime">{q.answered_at_ms === null ? when(q.asked_at_ms) : `Answered ${when(q.answered_at_ms)}`}</span>
     </button>
-    <p class="sum one">{[q.session_name || 'Session', boards.length > 1 ? machineLabel(row.machine) : '', ended(row) ? 'Session ended' : ''].filter(Boolean).join(' · ')}</p>
-    {#if q.answered_at_ms !== null}<p class="sum one">You answered: {q.answer}</p>{/if}
+    <p class="src">{[q.session_name || 'Session', boards.length > 1 ? machineLabel(row.machine) : '', ended(row) ? 'Session ended' : '', age(q)].filter(Boolean).join(' · ')}</p>
+    {#if q.answered_at_ms !== null}<p class="sum one">{q.answer === 'dismissed' ? 'Dismissed' : `You answered: ${q.answer}`}</p>{/if}
     {#if expanded}
       <div class="detail">
-        {#if q.body}<p class="sum">{q.body}</p>{/if}
+        {#if q.body}<p class="body">{q.body}</p>{/if}
         {#if q.answered_at_ms === null}
           {#if q.recommended}<div class="well"><span>Recommended</span><p>{q.recommended}</p></div>{/if}
-          {#if status.unrecorded}
-            <p class="sum">Sent, but not recorded.</p>
-            <div class="actions">
-              <Button size="sm" variant="secondary" disabled={status.busy} onclick={() => void send(row, status.unrecorded ?? '')}>Retry</Button>
-              <Button size="sm" variant="secondary" onclick={() => onOpenSession(q.session_owned_id)}><ExternalLink />Open</Button>
-            </div>
-          {:else}
-            <Input
-              bind:value={drafts[row.id]}
-              maxlength={600}
-              placeholder="Type an answer…"
-              aria-label={`Answer Q${q.id}`}
-              disabled={locked}
-              onkeydown={(event) => keydown(event, row)}
-              class="h-[30px] rounded-(--radius-sm) border-0 bg-[color-mix(in_srgb,var(--color-bg)_44%,transparent)] text-[13px] dark:bg-[color-mix(in_srgb,var(--color-bg)_44%,transparent)]"
-            />
-            <div class="actions">
-              {#if q.recommended}
-                {@const recommended = q.recommended}
-                <Button size="sm" variant="secondary" disabled={locked} onclick={() => void send(row, recommended)}>As recommended</Button>
-              {/if}
-              <Button size="sm" variant="secondary" disabled={locked} onclick={() => void send(row, 'no')}>No</Button>
-              <Button size="sm" variant="secondary" disabled={locked} onclick={() => void send(row, 'explain more', false)}>Explain more</Button>
-              <Button size="sm" variant="secondary" onclick={() => onOpenSession(q.session_owned_id)}><ExternalLink />Open</Button>
-            </div>
-          {/if}
+          <div class="foot">
+            {#if status.unrecorded}
+              <p class="sum">Sent, but not recorded.</p>
+              <div class="actions">
+                <Button size="sm" variant="secondary" disabled={status.busy} onclick={() => void send(row, status.unrecorded ?? '')}>Retry</Button>
+                <Button size="sm" variant="secondary" onclick={() => onOpenSession(q.session_owned_id)}><ExternalLink />Open</Button>
+              </div>
+            {:else}
+              <Input
+                bind:value={drafts[row.id]}
+                maxlength={600}
+                placeholder="Type an answer…"
+                aria-label={`Answer Q${q.id}`}
+                disabled={locked}
+                onkeydown={(event) => keydown(event, row)}
+                class="h-[30px] rounded-(--radius-sm) border-0 bg-[color-mix(in_srgb,var(--color-bg)_44%,transparent)] text-[13px] dark:bg-[color-mix(in_srgb,var(--color-bg)_44%,transparent)]"
+              />
+              <div class="actions">
+                {#if q.recommended}
+                  {@const recommended = q.recommended}
+                  <Button size="sm" variant="secondary" disabled={locked} onclick={() => void send(row, recommended)}>As recommended</Button>
+                {/if}
+                <Button size="sm" variant="secondary" disabled={locked} onclick={() => void send(row, 'no')}>No</Button>
+                <Button size="sm" variant="secondary" disabled={locked} onclick={() => void send(row, 'explain more', false)}>Explain more</Button>
+                <Button size="sm" variant="secondary" disabled={locked} onclick={() => void send(row, 'dismissed')}>Dismiss</Button>
+                <Button size="sm" variant="secondary" onclick={() => onOpenSession(q.session_owned_id)}><ExternalLink />Open</Button>
+              </div>
+            {/if}
+          </div>
         {:else}
           <div class="actions">
             <Button size="sm" variant="secondary" onclick={() => onOpenSession(q.session_owned_id)}><ExternalLink />Open</Button>
@@ -130,7 +149,7 @@
     {#if showAnswered}
       <div class="flex items-center gap-2 pt-1.5">
         <h3 class="min-w-0 flex-1">
-          <button type="button" class="done-toggle" aria-expanded={answeredOpen} onclick={() => (answeredOpen = !answeredOpen)}>
+          <button type="button" class="done-toggle" aria-expanded={answeredOpen} onclick={toggleAnswered}>
             <i class="dot bg-(--color-good)"></i>Answered today
             <span class="ml-auto font-normal text-(--color-text-2) tabular-nums">{answered.length}</span>
             <ChevronDown class={cn('size-3.5 text-(--color-text-2) transition-transform', answeredOpen && 'rotate-180')} aria-hidden="true" />
@@ -155,19 +174,24 @@
   .muted { margin: 0; min-width: 0; overflow: hidden; color: var(--color-text-2); font-size: 0.76rem; line-height: 1.45; text-overflow: ellipsis; }
   .ph .muted { white-space: nowrap; }
   .dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 2px; }
-  .list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; gap: 6px; }
-  .card { min-width: 0; padding: 9px 12px; border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-elevated) 52%, var(--color-surface)); }
+  .list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; gap: 13px; }
+  /* Each question is its own card, the same recipe as the Stats & Usage panels (UsageWorkspace.svelte .panel). */
+  .card { min-width: 0; padding: 15px; border: 1px solid color-mix(in srgb, var(--color-border) 36%, transparent); border-radius: var(--radius-lg, 12px); background: color-mix(in srgb, var(--color-elevated) 38%, var(--color-surface)); }
   .chead, .done-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; border-radius: var(--radius-sm); text-align: left; }
   .done-toggle { padding: 2px 4px; font: inherit; font-weight: 600; }
   .chead:focus-visible, .done-toggle:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   .key { flex: none; padding: 1px 6px; border-radius: var(--radius-xs); background: color-mix(in srgb, var(--color-bg) 44%, transparent); color: var(--color-text-2); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .ctitle { min-width: 0; overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
   .ctime { flex: none; margin-left: auto; color: var(--color-text-3); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+  .src { margin: 3px 0 0 22px; overflow: hidden; color: var(--color-text-3); font-size: 0.75rem; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+  .body { margin: 0; color: var(--color-text); font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+  /* The answer area and Recommended are raised tiles, like the Stats & Usage provider cards and metrics. */
+  .foot { display: flex; flex-direction: column; gap: 10px; padding: 13px 14px; border-radius: var(--radius-md, 10px); background: color-mix(in srgb, var(--color-elevated) 52%, var(--color-surface)); }
   .sum { margin: 3px 0 0; color: var(--color-text-2); font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
   .sum.one { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .detail { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .detail { display: flex; flex-direction: column; gap: 13px; margin-top: 13px; }
   .actions { display: flex; flex-wrap: wrap; gap: 6px; }
-  .well { display: grid; gap: 2px; padding: 7px 10px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-bg) 48%, transparent); }
+  .well { display: grid; gap: 3px; padding: 13px 14px; border-radius: var(--radius-md, 10px); background: color-mix(in srgb, var(--color-elevated) 56%, var(--color-surface)); }
   .well > span { font-size: 0.75rem; font-weight: 600; }
   .well p { margin: 0; color: var(--color-text-2); font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
 </style>
