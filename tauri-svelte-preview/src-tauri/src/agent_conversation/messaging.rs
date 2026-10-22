@@ -1,5 +1,4 @@
 use agent_client_protocol::schema::v1 as acp;
-use axum::{extract::State, http::{HeaderMap, StatusCode}, response::{IntoResponse, Response}, routing::post, Json, Router};
 use serde_json::{json, Value};
 use mcb_core::{broker::{MessageKind, TrafficQuery}, session_store::SessionStore};
 use super::{manager::AgentRuntimeManager, protocol::AgentConversationProvider};
@@ -7,6 +6,7 @@ use std::{collections::HashMap, future::Future, pin::Pin, sync::{Arc, Mutex, Onc
 
 pub(super) const MAX_MESSAGE_PAGE: i64 = 500;
 pub mod board;
+mod mcp;
 
 /// Carries one messaging operation (`directory`, `enqueue`, `status`) to the
 /// other machines. The desktop routes it itself; a remote server asks the
@@ -260,7 +260,7 @@ impl MessagingEndpoint {
         let endpoint = Arc::new(Self { url, callers: Mutex::new(HashMap::new()), task: Mutex::new(None), relay: Mutex::new(None),
             workflow: Mutex::new(None), starting_helpers: Arc::default(),
             run_starts: Mutex::new(()) });
-        let router = Router::new().route("/mcp", post(Self::post)).with_state(Arc::downgrade(&endpoint));
+        let router = mcp::router(Arc::downgrade(&endpoint));
         *endpoint.task.lock().unwrap() = Some(tauri::async_runtime::spawn(async move {
             if let Ok(listener) = tokio::net::TcpListener::from_std(listener) {
                 let _ = axum::serve(listener, router).await;
@@ -513,59 +513,6 @@ impl MessagingEndpoint {
             }
             _ => Err("Tool not allowed".into()),
         }
-    }
-
-    async fn post(State(endpoint): State<Weak<Self>>, headers: HeaderMap, Json(request): Json<Value>) -> Response {
-        let Some(endpoint) = endpoint.upgrade() else { return StatusCode::SERVICE_UNAVAILABLE.into_response(); };
-        let token = headers.get("Authorization").and_then(|h| h.to_str().ok())
-            .and_then(|h| h.strip_prefix("Bearer ")).unwrap_or("");
-        if endpoint.caller(token).is_err() { return StatusCode::UNAUTHORIZED.into_response(); }
-        let result = match request["method"].as_str() {
-            Some("notifications/initialized") => return StatusCode::ACCEPTED.into_response(),
-            Some("initialize") => json!({"protocolVersion":"2024-11-05","capabilities":{"tools":{}},
-                "serverInfo":{"name":"assembly","version":"1"},
-                "instructions":format!("{OWNER_AUTHORITY} Report work with receipts: commit hashes, run ids, step results from get_workflow_run, test output.")}),
-            Some("tools/list") => json!({"tools":[
-                {"name":"list_sessions","description":"List Assembly sessions on this machine and on the other machines connected to the desktop. Each has a handle, a name and the machine it runs on; send to handle@machine.",
-                 "inputSchema":{"type":"object","properties":{}}},
-                {"name":"send_message","description":OWNER_AUTHORITY.to_string() + " Send a message to an Assembly session you may reach (see list_sessions), addressed by its handle (such as brisk-heron), its name, or its owned id; add @machine (brisk-heron@workbox-test) for a session on another machine. A handle never changes when the session is renamed.",
-                 "inputSchema":{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}},
-                {"name":"start_session","description":"Start a Codex, Claude or Antigravity helper session. It works in folder (an absolute path on your machine, such as a worktree) or, without one, in your folder. It is listed with your agents, and its final reply is sent to you as a message when it finishes.",
-                 "inputSchema":{"type":"object","properties":{"provider":{"type":"string","enum":["codex","claude","antigravity"]},
-                     "model":{"type":"string"},"prompt":{"type":"string"},"name":{"type":"string"},"folder":{"type":"string"}},"required":["provider","prompt","name"]}},
-                {"name":"workflow_format","description":"Read the reference for writing an Assembly workflow (.assembly/workflows/*.yml).",
-                 "inputSchema":{"type":"object","properties":{}}},
-                {"name":"check_workflow","description":"Check a workflow file in a registered project on this machine, or your current project when project is omitted. Returns ok, its steps and any warnings, or the first error.",
-                 "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"project":{"type":"string","description":"Registered project title or root path on this machine; omit to use your current project."}},"required":["path"]}},
-                {"name":"start_workflow","description":"Start a workflow from a registered project's .assembly/workflows on this machine, or your current project when project is omitted. You are messaged when it waits for the owner or ends. At most 3 of your runs can be unfinished. `inputs` sets the workflow's inputs, e.g. {\"i_merge\": true} so the run leaves the merge to the owner.",
-                 "inputSchema":{"type":"object","properties":{"path":{"type":"string"},"project":{"type":"string","description":"Registered project title or root path on this machine; omit to use your current project."},
-                     "task":{"type":"object","properties":{"key":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"}},"required":["key","title","body"]},"inputs":{"type":"object"}},
-                     "required":["path","task"]}},
-                {"name":"list_workflow_runs","description":"List the workflow runs on this machine.",
-                 "inputSchema":{"type":"object","properties":{}}},
-                {"name":"get_workflow_run","description":"Read what happened in a workflow run, step by step: state, attempt, worker, failure, command exit codes, review verdict and findings, pull request.",
-                 "inputSchema":{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"]}},
-                {"name":"stop_workflow_run","description":"Stop a workflow run you started.",
-                 "inputSchema":{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"]}},
-                {"name":"decide_step","description":"Main orchestrator only: decide a review step that is waiting (at its round limit, or because its turn gave no report) when its findings and the task spec give enough to decide. accept completes it as it is, another-round redoes it, stop ends the run. why, one or two sentences, is recorded in the run for the owner. Gates, and anything that needs the owner's judgment (scope, a product choice, risk), stay the owner's: post those on the Build Board and send the owner a phone notification.",
-                 "inputSchema":{"type":"object","properties":{"run_id":{"type":"string"},"step":{"type":"string"},
-                     "decision":{"type":"string","enum":["accept","another-round","stop"]},"why":{"type":"string"}},
-                     "required":["run_id","step","decision","why"]}},
-                {"name":"report_review","description":"Workflow review steps only: a verdict must be recorded once; retry a rejected or failed call. Use pass with no findings, or fail with each finding.",
-                 "inputSchema":{"type":"object","properties":{"verdict":{"type":"string","enum":["pass","fail"]},
-                     "findings":{"type":"array","items":{"type":"string"}}},"required":["verdict","findings"]}},
-                {"name":"message_status","description":"Read whether a message you sent is queued, delivered or failed.",
-                 "inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}},
-                board::tool()
-            ]}),
-            Some("tools/call") => match endpoint.handle(token, request["params"].clone()).await {
-                Ok(value) => value,
-                Err(error) => json!({"isError":true,"content":[{"type":"text","text":error}]}),
-            },
-            _ => return Json(json!({"jsonrpc":"2.0","id":request["id"],
-                "error":{"code":-32601,"message":"Method not found"}})).into_response(),
-        };
-        Json(json!({"jsonrpc":"2.0","id":request["id"],"result":result})).into_response()
     }
 }
 impl Drop for MessagingEndpoint {

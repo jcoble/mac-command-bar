@@ -1768,7 +1768,7 @@ await test('leaving a session ends every wait on its stream and readiness and wr
     getConversationSession: () => session,
     ensureConversationSession: () => session,
     evictConversationSession: () => undefined,
-    restoreSelectedConversationAttachments: () => undefined,
+    restoreSelectedConversationAttachments: () => undefined, closeAguiViewInBackground: () => undefined,
     subscribeSelectedConversation: async () => {
       const id = ++subscriptions;
       return () => { stopped.push(id); };
