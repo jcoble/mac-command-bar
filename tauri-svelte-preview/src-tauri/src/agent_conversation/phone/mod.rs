@@ -115,7 +115,7 @@ pub(super) fn router(state: ServerState) -> Router {
         .route("/phone/v1/inbox", get(inbox))
         .route("/phone/v1/inbox/{id}/answer", post(answer))
         .route("/phone/v1/live", get(live))
-        .route("/phone/v1/push-token", post(push_token))
+        .route("/phone/v1/push-token", post(push_token)).route("/phone/v1/mute", post(push::mute))
         .route_layer(from_fn_with_state(state.clone(), require_device));
     Router::new()
         .route("/phone/v1/pair", post(pair))

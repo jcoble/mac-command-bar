@@ -3,15 +3,20 @@
   Mounted only while open; closing it drops everything it read.
 -->
 <script lang="ts">
+  import Bell from '@lucide/svelte/icons/bell';
+  import BellOff from '@lucide/svelte/icons/bell-off';
   import { untrack } from 'svelte';
 
+  import { buttonVariants } from '$lib/components/ui/button/index.js';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import * as Popover from '$lib/components/ui/popover/index.js';
   import { readNotionTaskSettings } from '$lib/shell/notionTasks.ts';
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
   import { openInboxSession } from '$lib/shell/workflows/ownerInboxActions.ts';
   import BoardCards from './BoardCards.svelte';
   import BoardLive from './BoardLive.svelte';
-  import { readBoard, type MachineBoard } from './boardSource.ts';
+  import { cn } from '$lib/utils.js';
+  import { muteBoard, readBoard, type MachineBoard } from './boardSource.ts';
 
   interface Props {
     /** The button's badge number: what needs the owner. */
@@ -99,6 +104,22 @@
     { value: 'all', label: 'All' }, { value: 'needs_you', label: 'Needs you' }, { value: 'running', label: 'Running' },
     { value: 'in_review', label: 'In review' }, { value: 'done', label: 'Done' }
   ] as const;
+  /** When the last machine's mute ends; null when nothing is muted. */
+  const mutedUntil = $derived(Math.max(0, ...boards.map((board) => board.value.muted_until_ms ?? 0)) || null);
+
+  /** Mutes every machine on the board until `until` (null unmutes); cards keep showing. */
+  async function mute(until: number | null): Promise<void> {
+    actionError = '';
+    const results = await Promise.allSettled(boards.map((board) => muteBoard(board.machine, until, shown.signal)));
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed && !shown.signal.aborted) actionError = `Could not change the mute: ${message(failed.reason)}`;
+    await load();
+  }
+
+  function tomorrowAtEight(): number {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 8).getTime();
+  }
   const time = (ms: number): string => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 </script>
 
@@ -121,10 +142,29 @@
           `${count('running')} running`, `${count('in_review')} in review`, `${count('done')} done today`].filter(Boolean).join(' · ')}
       </p>
     </div>
-    <div class="range-selector" role="group" aria-label="Show">
-      {#each FILTERS as item (item.value)}
-        <button type="button" class:active={filter === item.value} aria-pressed={filter === item.value} onclick={() => (filter = item.value)}>{item.label}</button>
-      {/each}
+    <div class="flex flex-none items-center gap-2">
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger
+          class={cn(buttonVariants({ variant: 'secondary', size: 'sm' }), 'h-7 rounded-full px-3 text-[13px] [&_svg]:size-[15px]')}
+          aria-label={mutedUntil ? `Notifications muted until ${time(mutedUntil)}` : 'Mute notifications'}
+        >
+          {#if mutedUntil}<BellOff aria-hidden="true" />Muted until {time(mutedUntil)}{:else}<Bell aria-hidden="true" />Mute{/if}
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Content align="end" class="w-60">
+          <DropdownMenu.Label class="text-xs font-normal text-muted-foreground">Desktop and phone notifications. Cards still show here.</DropdownMenu.Label>
+          <DropdownMenu.Item onSelect={() => void mute(Date.now() + 3_600_000)}>For 1 hour</DropdownMenu.Item>
+          <DropdownMenu.Item onSelect={() => void mute(tomorrowAtEight())}>Until tomorrow, {time(tomorrowAtEight())}</DropdownMenu.Item>
+          {#if mutedUntil}
+            <DropdownMenu.Separator />
+            <DropdownMenu.Item onSelect={() => void mute(null)}>Unmute</DropdownMenu.Item>
+          {/if}
+        </DropdownMenu.Content>
+      </DropdownMenu.Root>
+      <div class="range-selector" role="group" aria-label="Show">
+        {#each FILTERS as item (item.value)}
+          <button type="button" class:active={filter === item.value} aria-pressed={filter === item.value} onclick={() => (filter = item.value)}>{item.label}</button>
+        {/each}
+      </div>
     </div>
   </header>
   {#if actionError || loadError}<p role="alert" class="flex-none px-3.5 pb-2 text-[13px] text-destructive">{actionError || loadError}</p>{/if}
