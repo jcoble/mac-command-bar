@@ -430,7 +430,7 @@ export type AgentConversationPayload =
   | { kind: 'userMessage'; itemId: string; text: string; completed: boolean; attachmentIds?: string[] }
   | { kind: 'assistantDelta'; itemId: string; delta: string }
   | { kind: 'assistantMessage'; itemId: string; text: string; completed: true }
-  | { kind: 'tool'; itemId: string; name: string; state: ToolState; summary?: string; output?: string; path?: string; diff?: string }
+  | { kind: 'tool'; itemId: string; name: string; state: ToolState; summary?: string; output?: string; path?: string; diff?: string; hasDetail?: boolean; added?: number; removed?: number }
   | {
       kind: 'childUpdate';
       childId: string;

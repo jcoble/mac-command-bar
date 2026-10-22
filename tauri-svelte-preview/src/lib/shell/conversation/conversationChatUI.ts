@@ -19,6 +19,8 @@ export type ConversationToolContext = {
 
 export const conversationDisclosureContext = Symbol('conversation-disclosures');
 export type ConversationDisclosureContext = {
+  /** The session whose history the rows belong to, which an opened row reads its details from. */
+  readonly ownedId: string;
   get(key: string): boolean | undefined;
   set(key: string, open: boolean): void;
 };

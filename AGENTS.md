@@ -150,6 +150,14 @@ one next to it doesn't. Before calling work done, name which of these you covere
   and run `evidence add <file> --task TSK-<id> --desc "<what it proves>"`; `evidence publish
   TSK-<id>` gives the Drive links for the PR and the task. Close every browser and app you opened.
 
+## Review guidelines
+
+For every reviewer, the review bot included: flag only problems that block. A bug, something the task asks for that
+is missing or broken, a security hole an agent could hit by accident, lost data, or a merge or release risk is a
+finding. Naming, wording, style, comments, test tidiness, unlikely edge cases, refactors and nicer ways to write the
+same thing are not; leave them out. On a later push, check the earlier findings and what their fixes changed; don't
+look for new small things.
+
 ## The workbox
 
 - Jesse works in Assembly's own Terminal tab on the workbox: the shell is started by the Assembly

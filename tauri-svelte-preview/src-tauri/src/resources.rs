@@ -524,7 +524,7 @@ pub async fn read_resource_totals(
             let rss_bytes = process.memory();
             totals.cpu_percent += process.cpu_usage();
             totals.physical_footprint_bytes +=
-                mcb_core::scanners::resources::phys_footprint_bytes(pid).unwrap_or(rss_bytes);
+                mcb_core::scanners::resources::process_footprint_bytes(pid, &process.name().to_string_lossy(), rss_bytes);
             totals.rss_bytes += rss_bytes;
             totals.process_count += 1;
             alive_process_ids.push(pid);
@@ -806,13 +806,13 @@ fn observe_processes(system: &mut System, app_pid: u32) -> Vec<ObservedProcess> 
                 parent_pid = Some(app_pid);
             }
             let rss_bytes = process.memory();
+            let physical_footprint_bytes = mcb_core::scanners::resources::process_footprint_bytes(pid, &name, rss_bytes);
             ObservedProcess {
                 pid,
                 parent_pid,
                 name,
                 cpu_percent: process.cpu_usage(),
-                physical_footprint_bytes: mcb_core::scanners::resources::phys_footprint_bytes(pid)
-                    .unwrap_or(rss_bytes),
+                physical_footprint_bytes,
                 rss_bytes,
             }
         })

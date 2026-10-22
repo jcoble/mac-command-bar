@@ -62,7 +62,7 @@ export type ConversationDisplayItem = (
       toolKind: ConversationToolKind;
       state: ConversationToolState;
       output?: string;
-      diff?: string;
+      diff?: string; hasDetail?: boolean; added?: number; removed?: number;
       path?: string;
       summary?: string;
       timestampMs: number;
@@ -102,7 +102,7 @@ export interface ConversationFileEdit {
   /** The row this edit was folded out of, so the group keys by something stable. */
   readonly itemId: string;
   readonly path: string;
-  readonly diff: string;
+  readonly diff?: string;
   readonly added: number;
   readonly removed: number;
 }
@@ -284,8 +284,9 @@ function fileEditOf(item: ConversationDisplayItem): ConversationFileEdit | null 
     return { itemId: item.itemId, path, diff, ...diffLineCounts(diff) };
   };
   if (item.kind === 'file') return read(item.metadata?.path, item.metadata?.diff ?? item.text);
-  if (item.kind === 'tool' && item.toolKind === 'file-edit') return read(item.path, item.diff);
-  return null;
+  if (item.kind !== 'tool' || item.toolKind !== 'file-edit') return null;
+  // A history page sends an edit's line counts and no diff; the row reads the diff by id when opened.
+  return item.diff || item.added == null || !item.path?.trim() ? read(item.path, item.diff) : { itemId: item.itemId, path: item.path, added: item.added, removed: item.removed ?? 0 };
 }
 
 /** Collapse each run of neighbouring file changes into one row.
@@ -822,7 +823,7 @@ function toolKindForAgentItem(item: AgentItem): ConversationToolKind {
 }
 
 function payloadHasFileChange(payload: StringRecord): boolean {
-  return (typeof payload.diff === 'string' && payload.diff.trim().length > 0)
+  return (typeof payload.diff === 'string' && payload.diff.trim().length > 0) || typeof payload.added === 'number'
     || firstNestedString(payload.content, ['diff', 'patch']).length > 0;
 }
 
@@ -887,7 +888,7 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
       toolKind,
       state: toolStateOf(metadata?.state ?? metadata?.status),
       output: output || undefined,
-      diff: diff || undefined,
+      diff: diff || undefined, hasDetail: metadata?.hasDetail === true || undefined, added: metadata?.added as number | undefined, removed: metadata?.removed as number | undefined,
       path: stringOf(metadata?.path) || undefined,
       summary,
       metadata,
@@ -984,15 +985,14 @@ export function turnFileChanges(
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
     if (item.kind === 'user') break;
-    let diff: string;
+    let counts: { added: number; removed: number };
     if (item.kind === 'file') {
       paths.add(typeof item.metadata?.path === 'string' ? item.metadata.path : item.itemId);
-      diff = typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text;
-    } else if (item.kind === 'tool' && item.state === 'completed' && (item.diff || (item.toolKind === 'file-edit' && item.path))) {
+      counts = diffLineCounts(typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text);
+    } else if (item.kind === 'tool' && item.state === 'completed' && (item.diff || item.added != null || (item.toolKind === 'file-edit' && item.path))) {
       paths.add(item.path ?? item.itemId);
-      diff = item.diff ?? '';
+      counts = item.diff || item.added == null ? diffLineCounts(item.diff ?? '') : { added: item.added, removed: item.removed ?? 0 };
     } else continue;
-    const counts = diffLineCounts(diff);
     added += counts.added;
     removed += counts.removed;
   }
@@ -1155,7 +1155,7 @@ function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, pa
       status,
       summary: stringOf(payload.summary) || undefined,
       output: output || undefined,
-      diff: diff || undefined,
+      diff: diff || undefined, hasDetail: payload.hasDetail === true || undefined, added: payload.added as AgentConfigValue | undefined, removed: payload.removed as AgentConfigValue | undefined,
       path: path || undefined,
       completed: toolStateOf(status) === 'completed'
     })

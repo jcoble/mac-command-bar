@@ -26,7 +26,7 @@ import { sendTurnRunning } from '../src/lib/shell/conversation/conversationScrol
 import { conversationItemHasVisibleContent } from '../src/lib/shell/conversation/conversationItemVisibility.ts';
 import { conversationDisplayItems } from '../src/lib/shell/conversation/conversationMessages.ts';
 import { EventType, StreamProcessor, type StreamChunk } from '@tanstack/ai/client';
-// The backend's projection in brief: a call message whose result is its last payload,
+// The backend's projection in brief: a call message whose result is its last payload less its output and diff (read by id),
 // text messages with their row facts, and an activity holding any other row's native event.
 const conversationMessagesFromEvents = (events: AgentConversationEvent[]) => {
   const processor = new StreamProcessor();
@@ -41,7 +41,7 @@ const conversationMessagesFromEvents = (events: AgentConversationEvent[]) => {
         metadata: { ...facts, itemType: 'mcp-tool' } }, ...(payload.summary ? [{ type: EventType.TOOL_CALL_ARGS, toolCallId, delta: JSON.stringify({ summary: payload.summary }) }] : []));
       started.add(toolCallId);
       if (payload.state === 'completed' || payload.state === 'failed') send({ type: EventType.TOOL_CALL_END, toolCallId },
-        { type: EventType.TOOL_CALL_RESULT, toolCallId, messageId: `${toolCallId}:result`, content: JSON.stringify(payload) });
+        { type: EventType.TOOL_CALL_RESULT, toolCallId, messageId: `${toolCallId}:result`, content: JSON.stringify({ ...payload, output: undefined, diff: undefined, hasDetail: !!(payload.output || payload.diff) || undefined }) });
     } else if (payload.kind === 'userMessage' || payload.kind === 'assistantMessage') {
       const [role, itemType] = payload.kind === 'userMessage' ? ['user', 'user-message'] : ['assistant', 'assistant-message'];
       send({ type: EventType.TEXT_MESSAGE_START, messageId: toolCallId, role, metadata: { ...facts, itemType } },
@@ -521,7 +521,7 @@ for (const [name, summary, output, toolKind] of [
     assert.equal(item.title, name);
     assert.equal(item.summary, summary, 'completion retains every command line');
     assert.equal(item.toolKind, toolKind, 'input words do not classify an MCP tool');
-    assert.equal(item.output, output);
+    assert.deepEqual([item.output, item.hasDetail], [undefined, true], 'a finished call reads its output by id when opened');
     assert.equal(item.state, 'completed');
   }
 }

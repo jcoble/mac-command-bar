@@ -317,7 +317,7 @@ impl View {
                 }
                 self.text(&mut out, item_id, "assistant", text, *completed, reply_facts(event), end);
             }
-            Payload::Tool { item_id, name, state, summary, path, output, diff } => {
+            Payload::Tool { item_id, name, state, summary, path, output, diff, .. } => {
                 self.open(&mut out, thread, sequence);
                 self.tool(&mut out, event, item_id, name, *state, [summary, path, output, diff]);
             }

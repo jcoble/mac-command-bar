@@ -1,4 +1,4 @@
-#[path = "session_project.rs"] pub mod session_project; mod helper_close; pub mod turn_usage;
+#[path = "session_project.rs"] pub mod session_project; mod helper_close; pub mod tool_call; pub mod turn_usage;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -201,6 +201,8 @@ pub struct ManagedAgentSession {
     /// The session that started this one with `start_session`; each turn this
     /// session finishes is reported back to it as a message.
     helper_of: Option<String>,
+    /// A workflow step's guard policy, checked against each command the agent asks to run.
+    guard_policy: Option<crate::workflow::policy::GuardPolicy>,
     pub owner: AgentExecutionOwner,
     pub state: AgentRuntimeState,
     pub capabilities: AgentCapabilities,
@@ -1916,6 +1918,7 @@ impl AgentRuntimeManager {
                     .and_then(|session| session.project_id.clone())
                     .or(request.project_id.clone()),
                 helper_of: prior.as_ref().and_then(|session| session.helper_of.clone()),
+                guard_policy: prior.as_ref().and_then(|session| session.guard_policy.clone()),
                 owner: AgentExecutionOwner::Stopped,
                 state: AgentRuntimeState::Starting,
                 capabilities: empty_capabilities(request.provider),
@@ -3886,6 +3889,13 @@ impl AgentRuntimeManager {
             .ok_or_else(|| "Conversation session was not found after metadata update".to_string())
     }
 
+    /// Puts a workflow step's guard policy on its session.
+    pub(crate) fn set_guard_policy(&self, owned_id: &str, policy: crate::workflow::policy::GuardPolicy) -> Result<(), String> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        sessions.get_mut(owned_id).ok_or_else(|| format!("No session {owned_id}"))?.guard_policy = Some(policy);
+        Ok(())
+    }
+
     pub fn set_workflow_session_title(&self, owned_id: &str, title: &str) -> Result<(), String> {
         let set_title = |session: &mut ManagedAgentSession| {
             if !session_title_is_empty(session.rail_meta.title.as_deref()) {
@@ -5107,6 +5117,7 @@ fn recovered_session_from_row(
         generation: stored.generation,
         project_id: row.project_id,
         helper_of: stored.helper_of.clone(),
+        guard_policy: None,
         owner: stored.owner,
         state,
         capabilities: stored.capabilities,
@@ -5463,7 +5474,7 @@ pub(super) fn selected_item_page(page: ItemPage) -> Result<AgentConversationItem
         events: page
             .events
             .into_iter()
-            .map(stored_event)
+            .map(|row| stored_event(row).map(tool_call::without_details))
             .collect::<Result<Vec<_>, _>>()?,
         turns: page
             .turns
@@ -6253,6 +6264,21 @@ async fn pump_inbound(
                     if let Err(error) = transport_runtime.respond(wire_id, answer).await { crate::debug_log::stderr_log!("Could not pre-approve an Assembly tool: {error}"); }
                     continue;
                 }
+                // A workflow step's policy answers what it names; `ask`, or an allow with no allow-once option, reaches a person.
+                let decided = sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&owned_id)
+                    .and_then(|session| Some(session.guard_policy.as_ref()?.decide(command.as_deref()?)))
+                    .and_then(|decision| Some((decision, policy_answer(decision, &options)?)));
+                if let Some((decision, response)) = decided {
+                    let allowed = decision == crate::workflow::policy::Decision::Allow;
+                    if let Err(error) = transport_runtime.respond(wire_id, response).await {
+                        crate::debug_log::stderr_log!("Could not answer a permission request from the policy: {error}");
+                    }
+                    if let Ok(session) = current_session_mut(&mut sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner), &owned_id, generation) {
+                        let (state, summary) = if allowed { (ApprovalState::Accepted, summary) } else { (ApprovalState::Declined, format!("Blocked by the workflow policy: {summary}")) };
+                        let _ = record_payload_for_session_and_dispatch(session, &emitter, AgentConversationPayload::Approval { request_id: format!("perm-{}", uuid::Uuid::new_v4()), state, summary, options: Vec::new() });
+                    }
+                    continue;
+                }
                 let mut sessions = sessions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -6369,7 +6395,7 @@ async fn settle_closed_transport(
                             ),
                             output: None,
                             path: None,
-                            diff: None,
+                            diff: None, has_detail: false, added: None, removed: None,
                         },
                     );
                 }
@@ -6909,7 +6935,7 @@ fn stopped_background_task_payload(
         summary: Some("Stopped".into()),
         output: None,
         path: None,
-        diff: None,
+        diff: None, has_detail: false, added: None, removed: None,
     })
 }
 
@@ -6959,7 +6985,7 @@ fn background_task_payload(params: &Value) -> Option<AgentConversationPayload> {
         summary,
         output: None,
         path: None,
-        diff: None,
+        diff: None, has_detail: false, added: None, removed: None,
     })
 }
 
@@ -7497,6 +7523,19 @@ fn permission_response(
     }
 }
 
+/// What a workflow policy answers for the agent. Allow picks the allow-once
+/// option, never one that allows for good; with none offered, or on ask, a
+/// person is asked instead.
+fn policy_answer(decision: crate::workflow::policy::Decision, options: &[PermissionOption]) -> Option<Value> {
+    use crate::workflow::policy::Decision;
+    let selected = |option: &PermissionOption| serde_json::json!({ "outcome": { "outcome": "selected", "optionId": option.option_id } });
+    match decision {
+        Decision::Allow => options.iter().find(|option| option.kind == "allow_once").map(selected),
+        Decision::Deny => Some(options.iter().find(|option| is_reject_kind(&option.kind)).map_or_else(|| serde_json::json!({ "outcome": { "outcome": "cancelled" } }), selected)),
+        Decision::Ask => None,
+    }
+}
+
 fn permission_response_for_selection(
     options: &[PermissionOption],
     selection: &PermissionSelection,
@@ -7964,8 +8003,8 @@ mod tests {
     use crate::agent_conversation::protocol::AgentCommandDescriptor;
     mod helper_messages;
     mod checkout;
-    mod model_effort;
-    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close; mod agui_steer; mod terminal_output;
+    mod model_effort; mod permissions;
+    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close; mod agui_steer; mod lazy_tool_rows; mod terminal_output;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
@@ -11876,7 +11915,7 @@ mod tests {
             owned_id: "owned-step".into(), provider: "codex".into(),
             cwd: worktree.to_string_lossy().into_owned(), title: "Build · build".into(),
             prompt: "Build it".into(), role_id: "build".into(), model: None, effort: None,
-            permission: None, starter: None,
+            permission: None, starter: None, policy: Default::default(),
         }).await.expect("dispatch");
         let row = store.get_session("owned-step").unwrap().unwrap();
         assert_eq!(row.project_id.as_deref(), Some("project-demo"));
@@ -13095,94 +13134,6 @@ mod tests {
                 ..
             }
         ));
-        fs::remove_dir_all(fixture.root).unwrap();
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn respond_agent_conversation_permission_round_trips_through_fake_agent() {
-        let fixture = fixture_manager_with_acp_session("permission_midturn").await;
-        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
-        let sink = Arc::clone(&seen);
-        fixture
-            .manager
-            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
-        fixture
-            .manager
-            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
-            .await
-            .expect("prompt starts");
-        wait_until(|| {
-            seen.lock().unwrap().iter().any(|event| {
-                matches!(
-                    event.payload,
-                    AgentConversationPayload::Approval {
-                        state: super::super::protocol::ApprovalState::Requested,
-                        ..
-                    }
-                )
-            })
-        })
-        .await;
-        let request_id = seen
-            .lock()
-            .unwrap()
-            .iter()
-            .find_map(|event| match &event.payload {
-                AgentConversationPayload::Approval { request_id, .. } => Some(request_id.clone()),
-                _ => None,
-            })
-            .unwrap();
-        fixture
-            .manager
-            .respond_legacy_approval(
-                &fixture.owned_id,
-                fixture.generation,
-                request_id,
-                super::super::protocol::ApprovalDecision::Accept,
-            )
-            .await
-            .expect("permission response");
-        wait_until(|| {
-            seen.lock().unwrap().iter().any(|event| {
-                matches!(
-                    event.payload,
-                    AgentConversationPayload::Turn {
-                        state: super::super::protocol::TurnState::Completed,
-                        ..
-                    }
-                )
-            })
-        })
-        .await;
-
-        assert!(seen.lock().unwrap().iter().any(|event| {
-            matches!(
-                event.payload,
-                AgentConversationPayload::Approval {
-                    state: ApprovalState::Accepted,
-                    ..
-                }
-            )
-        }));
-        assert!(seen.lock().unwrap().iter().any(|event| {
-            matches!(
-                &event.payload,
-                AgentConversationPayload::AssistantDelta { delta, .. }
-                    if delta == "continued after approval"
-            )
-        }));
-        let fixture_log = fs::read_to_string(fixture.root.join("permission_midturn.jsonl"))
-            .expect("permission fixture log");
-        assert!(
-            fixture_log.contains(r#""outcome":{"outcome":"selected","optionId":"allow""#),
-            "permission response must select a valid allow option: {fixture_log}"
-        );
-
-        fixture
-            .manager
-            .close(&fixture.owned_id, fixture.generation)
-            .await
-            .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -15213,7 +15164,7 @@ mod tests {
         ] {
             record_payload_for_session_and_dispatch(session, &manager.emitter, AgentConversationPayload::Tool {
                 item_id: "edit-1".into(), name: "Edit".into(), state,
-                summary: None, output: None, path, diff,
+                summary: None, output: None, path, diff, has_detail: false, added: None, removed: None,
             }).unwrap();
         }
         let emitted = seen.lock().unwrap();

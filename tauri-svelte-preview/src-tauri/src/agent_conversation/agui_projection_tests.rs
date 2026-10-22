@@ -89,7 +89,7 @@ fn reply(id: &str, text: &str) -> Payload { Payload::AssistantMessage { item_id:
 fn user(id: &str, text: &str) -> Payload { Payload::UserMessage { item_id: id.into(), text: text.into(), completed: true, attachment_ids: vec!["shot-1".into()] } }
 fn tool(id: &str, state: ToolState, summary: Option<&str>, output: Option<&str>) -> Payload {
     Payload::Tool { item_id: id.into(), name: "Write".into(), state, summary: summary.map(str::to_string),
-        output: output.map(str::to_string), path: summary.map(|_| "notes/hello.txt".into()), diff: None }
+        output: output.map(str::to_string), path: summary.map(|_| "notes/hello.txt".into()), diff: None, has_detail: false, added: None, removed: None }
 }
 fn permission(id: &str, state: ApprovalState) -> Payload {
     let options = if state == ApprovalState::Requested {
@@ -358,7 +358,7 @@ fn output_sent_before_a_status_only_completion_is_kept() {
     let mut script = Script::open();
     script.send(turn(TurnState::Started));
     let call = |state: ToolState, output: Option<&str>, diff: Option<&str>| Payload::Tool { item_id: "tool-1".into(), name: "Edit".into(), state,
-        summary: None, output: output.map(str::to_string), path: None, diff: diff.map(str::to_string) };
+        summary: None, output: output.map(str::to_string), path: None, diff: diff.map(str::to_string), has_detail: false, added: None, removed: None };
     script.send(call(ToolState::Started, None, None));
     assert!(script.send(call(ToolState::Updated, Some("Edited notes.txt"), Some("+hello"))).is_empty());
     let done = script.send(call(ToolState::Completed, None, None));
@@ -372,7 +372,7 @@ fn arguments_that_change_before_a_call_ends_reach_the_client() {
     let mut script = Script::open();
     script.send(turn(TurnState::Started));
     let task = |state: ToolState, summary: &str| Payload::Tool { item_id: "background-task:1".into(), name: "Background command".into(), state,
-        summary: Some(summary.into()), output: None, path: None, diff: None };
+        summary: Some(summary.into()), output: None, path: None, diff: None, has_detail: false, added: None, removed: None };
     assert_eq!(types(&script.send(task(ToolState::Started, "npm test"))), ["TOOL_CALL_START", "TOOL_CALL_ARGS"]);
     assert!(script.send(task(ToolState::Updated, "npm test: 40 of 90")).is_empty());
     let done = script.send(task(ToolState::Completed, "Completed"));
