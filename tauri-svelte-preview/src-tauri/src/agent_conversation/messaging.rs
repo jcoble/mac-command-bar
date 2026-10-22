@@ -428,7 +428,7 @@ impl MessagingEndpoint {
                     }
                     loop {
                         let run = engine.create_run_from_file(std::path::Path::new(&project), std::path::Path::new(path), task.clone(),
-                            json!({"started_by":owned_id}), key.clone()).map_err(workflow_error)?;
+                            json!({"started_by":owned_id,"inputs":args["inputs"]}), key.clone()).map_err(workflow_error)?;
                         // A repeated key returns the run as it was created; its state now is what counts.
                         let run = engine.get_run(&run.id).map_err(workflow_error)?;
                         if !matches!(run.state, crate::workflow::WorkflowRunState::Completed
@@ -494,9 +494,9 @@ impl MessagingEndpoint {
                  "inputSchema":{"type":"object","properties":{}}},
                 {"name":"check_workflow","description":"Check a workflow file in your project, the same way starting it would. Returns ok, its steps and any warnings, or the first error.",
                  "inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
-                {"name":"start_workflow","description":"Start a workflow from your project's .assembly/workflows on this machine for a task. You are messaged when it waits for the owner or ends. At most 3 of your runs can be unfinished.",
+                {"name":"start_workflow","description":"Start a workflow from your project's .assembly/workflows on this machine for a task. You are messaged when it waits for the owner or ends. At most 3 of your runs can be unfinished. `inputs` sets the workflow's inputs, e.g. {\"i_merge\": true} so the run leaves the merge to the owner.",
                  "inputSchema":{"type":"object","properties":{"path":{"type":"string"},
-                     "task":{"type":"object","properties":{"key":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"}},"required":["key","title","body"]}},
+                     "task":{"type":"object","properties":{"key":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"}},"required":["key","title","body"]},"inputs":{"type":"object"}},
                      "required":["path","task"]}},
                 {"name":"list_workflow_runs","description":"List the workflow runs on this machine.",
                  "inputSchema":{"type":"object","properties":{}}},
