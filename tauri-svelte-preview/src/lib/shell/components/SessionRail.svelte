@@ -13,9 +13,10 @@
 	import { onMount } from "svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
+	import { Chip } from "$lib/components/ui/chip/index.js";
 	import { railRowStatuses, type OwnedSession, type RailRowStatus } from "$lib/shell/ownedSessions";
 	import { rail } from "$lib/shell/stores/sessionRailStore.svelte";
-	import { projectBadge } from "$lib/shell/projects/projects";
+	import { projectBadge, projectMachineLabel } from "$lib/shell/projects/projects";
 	import { deriveOwnedLibraryState } from "$lib/shell/history/library/sessionLibraryModel";
 	import {
 		buildMyWorkGroups,
@@ -274,6 +275,13 @@
 					</Badge>
 				{/if}
 				<span class="name">{group.label}</span>
+				<!-- The machines its sessions are on, as on the Projects screen. A repository's
+				     copies on two machines share one heading, so it can name more than one. -->
+				{#if projectHeading && group.key !== "none" && !group.key.endsWith("::none")}
+					{#each [...new Set(allSessions.map((session) => projectMachineLabel(session.executionEnvironment === "remote" ? (session.remoteProfileId ?? "") : "local", rail.remoteProfiles)))].sort() as machine (machine)}
+						<Chip class="text-xs">{machine}</Chip>
+					{/each}
+				{/if}
 				<span data-testid="session-rail-section-count" class="count">{allSessions.length}</span>
 				{#if needsYouCount > 0}
 					<span

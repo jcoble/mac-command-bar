@@ -20,7 +20,7 @@ import {
   type SerializedGridviewComponent
 } from 'dockview-core';
 
-import { gridPanelIds } from './layoutStorage';
+import { gridPanelIds, storedColumnWidth } from './layoutStorage';
 
 export type ShellRegionId = 'sessions' | 'center' | 'tools' | 'dock';
 
@@ -424,6 +424,15 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
         if (disposed || layoutVersion !== expectedVersion) return;
         try {
           api.fromJSON(stored as never);
+          // fromJSON scales every column by today's grid width over the saved
+          // one, and applies the saved limits only after that. A layout saved
+          // in a narrower grid therefore came back with a wider sessions
+          // column, which was saved and scaled again on the next launch. Give
+          // the column back the width it was saved at, never above its
+          // maximum. A width below the minimum is a folded column; the page
+          // decides on that once the frame is ready.
+          const sessions = storedColumnWidth(stored, 'sessions');
+          if (sessions !== null) setRegionWidth('sessions', Math.min(sessions, SESSIONS_MAX_WIDTH));
         } catch {
           try {
             api.clear();

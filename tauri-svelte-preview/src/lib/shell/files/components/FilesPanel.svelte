@@ -39,7 +39,7 @@
 		} from "./fileTreeModel.ts";
 	import { watchFileTree } from "./fileTreeWatch.ts";
 	import { onWorkspaceFileChange, publishWorkspaceFileChange } from "$lib/shell/workspaceFileChangeBus.ts";
-	import { workspaceChangePath } from "$lib/workspacePaths.ts";
+	import { nativeWorkspacePath, revealDisabledReason, workspaceChangePath } from "$lib/workspacePaths.ts";
 	import { editorState } from "$lib/shell/files/editor/editorStore.svelte";
 	import { gitService } from "$lib/shell/git/gitService";
 	import { openFileInEditor, openFileTimeline } from "$lib/shell/workbenchNavigation";
@@ -87,6 +87,7 @@
 		readOnlyReason?: string | null;
 		/** Raised by the page (the `+` menu's "Open file…") to focus the filter. */
 		filterFocusRequest?: number;
+		viewing?: boolean; // `root` is a project the session only views, so it is not called "(session)".
 	}
 
 	type PendingEntry = {
@@ -124,6 +125,7 @@
 		onUseSessionCheckout,
 		readOnlyReason = null,
 		filterFocusRequest = 0,
+		viewing = false,
 	}: Props = $props();
 
 	// A request counts once, and only while the panel is on screen; the filter
@@ -205,19 +207,17 @@
 		sessionRoot === ""
 			? []
 			: [
-					{ path: sessionRoot, label: `${folderName(sessionRoot)} (session)` },
+					{ path: sessionRoot, label: viewing ? folderName(sessionRoot) : `${folderName(sessionRoot)} (session)` },
 					...checkouts
 						.filter((checkout) => canonicalPath(checkout.path) !== canonicalPath(sessionRoot))
 						.map((checkout) => ({
 							path: checkout.path,
-							label: checkout.branch.trim()
-								? `${folderName(checkout.path)} — ${checkout.branch.trim()}`
-								: folderName(checkout.path),
+							label: checkout.branch.trim() ? `${folderName(checkout.path)} — ${checkout.branch.trim()}` : folderName(checkout.path),
 						})),
 				],
 	);
 	const scopeValue = $derived(projectRoot || sessionRoot);
-	/** The picker shows the session's own folder by its bare name; the list still marks it "(session)". */
+	/** The picker shows the session's own folder by its bare name; the list marks it "(session)" unless it is only being viewed. */
 	const scopeLabel = $derived.by(() => {
 		const option = scopeOptions.find((candidate) => canonicalPath(candidate.path) === canonicalPath(scopeValue));
 		if (!option) return "Session folder";
@@ -937,7 +937,7 @@
 				beginEntry(node, id);
 			} else if (id === "copy-path") {
 				const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
-				await writeText(node.path);
+				await writeText(nativeWorkspacePath(node.path));
 			} else if (id === "reveal-in-finder") {
 				const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
 				await revealItemInDir(node.path);
@@ -1044,12 +1044,8 @@
 				title: mutationReason,
 				onselect: () => void runAction(node, "delete"),
 			},
-			{
-				id: "reveal-in-finder",
-				label: "Reveal in Finder",
-				separatorBefore: true,
-				onselect: () => void runAction(node, "reveal-in-finder"),
-			},
+			{ id: "reveal-in-finder", label: "Reveal in Finder", separatorBefore: true, disabled: revealDisabledReason(node.path) !== null,
+				title: revealDisabledReason(node.path) ?? undefined, onselect: () => void runAction(node, "reveal-in-finder") },
 			{
 				id: "toggle-excluded",
 				label: explorer.includeExcluded ? "Hide Excluded Files" : "Show Excluded Files",
@@ -1111,16 +1107,12 @@
 				<!-- Developer diagnostic, dev builds only: compares the windowed tree with
 				     every row rendered. Icon-sized so the folder picker keeps its room. -->
 				{#if dev}
-					<Button
-						size="icon-sm"
-						variant="ghost"
-						aria-pressed={virtualized}
-						aria-label="Compare virtualized and all file-tree rows"
-						title="Virtualized rows (dev only)"
+					<IconButton
+						label={virtualized ? "Showing visible rows only (dev only). Click to show every row" : "Showing every row (dev only). Click to show visible rows only"}
 						onclick={() => (virtualized = !virtualized)}
 					>
 						<Rows3 class="size-[14px]" strokeWidth={2} aria-hidden="true" />
-					</Button>
+					</IconButton>
 				{/if}
 				<IconButton label="New file" disabled={!rootListed || readOnlyInspection} onclick={() => beginRootEntry("new-file")}>
 					<FilePlus class="size-[14px]" />
@@ -1129,7 +1121,7 @@
 					<FolderPlus class="size-[14px]" />
 				</IconButton>
 				<IconButton
-					label={sortDirection === "ascending" ? "Sort Z to A" : "Sort A to Z"}
+					label={sortDirection === "ascending" ? "Sorted A to Z. Click to sort Z to A" : "Sorted Z to A. Click to sort A to Z"}
 					onclick={() => (sortDirection = sortDirection === "ascending" ? "descending" : "ascending")}
 				>
 					{#if sortDirection === "ascending"}<ArrowDownAZ class="size-[14px]" />{:else}<ArrowUpZA class="size-[14px]" />{/if}

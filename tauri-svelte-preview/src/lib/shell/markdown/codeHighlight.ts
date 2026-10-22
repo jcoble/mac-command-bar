@@ -21,6 +21,13 @@ import type { HighlightedLine } from './syntaxTokens.ts';
 /** Anything longer than this stays plain: colouring it costs more than it helps. */
 const MAX_HIGHLIGHT_CHARS = 40_000;
 
+/** The latest coloured blocks, by language and code. The oldest go first when there are 300, or when
+ *  their code passes 100,000 characters: a block streaming in is coloured once per version. */
+const HIGHLIGHT_CACHE_SIZE = 300;
+const HIGHLIGHT_CACHE_CHARS = 100_000;
+const highlighted = new Map<string, HighlightedLine[]>();
+let highlightedChars = 0;
+
 /**
  * Fence spellings people actually type, mapped to the language ids the scanner
  * knows. A spelling with no grammar behind it falls back to plain text rather
@@ -99,5 +106,21 @@ export function highlightCode(value: string, language: string): HighlightedLine[
   if (!hasGrammar(language) || value.length > MAX_HIGHLIGHT_CHARS) {
     return plainHighlightedLines(value);
   }
-  return highlightSource(value, language);
+  const key = `${language}\n${value}`;
+  const cached = highlighted.get(key);
+  if (cached) return cached;
+  const lines = highlightSource(value, language);
+  highlighted.set(key, lines);
+  highlightedChars += value.length;
+  for (const [oldest] of highlighted) {
+    if (highlighted.size <= HIGHLIGHT_CACHE_SIZE && highlightedChars <= HIGHLIGHT_CACHE_CHARS) break;
+    highlighted.delete(oldest);
+    highlightedChars -= oldest.length - oldest.indexOf('\n') - 1;
+  }
+  return lines;
+}
+
+/** The colouring of a block coloured before, so a row scrolled back into view draws it at once. */
+export function cachedHighlight(value: string, language: string): HighlightedLine[] | undefined {
+  return highlighted.get(`${language}\n${value}`);
 }
