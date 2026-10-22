@@ -40,7 +40,7 @@ const reason = (result: { lines: string[] }) => result.lines.at(-1);
 const file = (filename: string, patch: string, status = 'modified') =>
   ({ filename, status, additions: patch.split('\n').filter((l) => l.startsWith('+')).length, deletions: 0, patch });
 
-function withFile(entry: ReturnType<typeof file> & { previous_filename?: string }, contents?: { base: string; head: string }): Gate {
+function withFile(entry: Gate['files'][number], contents?: { base: string; head: string }): Gate {
   const gate = cleanGate();
   gate.files.push(entry);
   if (contents) gate.contents[entry.filename] = contents;
@@ -182,7 +182,7 @@ test('a CODEOWNERS read that fails for any reason but a missing file stops the g
 });
 
 test('a changed source file without a readable diff is a tap', () => {
-  assertTap(withFile({ filename: 'core/src/huge.rs', status: 'modified', additions: 4000, deletions: 0 } as ReturnType<typeof file>),
+  assertTap(withFile({ filename: 'core/src/huge.rs', status: 'modified', additions: 4000, deletions: 0 }),
     /^TAP: diff too large to read: core\/src\/huge\.rs$/m);
-  assert.equal(evaluate(withFile({ filename: 'docs/a.ts', status: 'renamed', previous_filename: 'docs/b.ts', additions: 0, deletions: 0 } as ReturnType<typeof file>), HEAD, []).exitCode, 0);
+  assert.equal(evaluate(withFile({ filename: 'docs/a.ts', status: 'renamed', previous_filename: 'docs/b.ts', additions: 0, deletions: 0 }), HEAD, []).exitCode, 0);
 });
