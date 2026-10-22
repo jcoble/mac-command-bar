@@ -300,6 +300,24 @@ function makeService() {
   assert.equal(state.commitMessage, '', 'a read for another repository is dropped');
   state.root = '/repo';
 
+  // A prefill remembered from another repository is not mistaken for this repository's draft.
+  backend.readHistory = async () => ({ commits: [{ subject: 'same subject' }] });
+  state.commitMessage = '';
+  state.amend = false;
+  await git.setAmend(true);
+  state.root = '/other';
+  state.amend = false;
+  state.commitMessage = 'same subject';
+  await git.setAmend(true);
+  backend.calls.length = 0;
+  await git.amendCommit();
+  assert.deepEqual(
+    backend.calls.filter(([name]) => name === 'amend'),
+    [['amend', '/other', 'same subject']],
+    'a draft that matches another repository’s prefill is sent as typed'
+  );
+  state.root = '/repo';
+
   // A history that cannot be read leaves the box empty; an empty amend still works.
   backend.readHistory = async () => {
     throw new Error('no history');

@@ -8,14 +8,17 @@ import type { GitBackend } from './gitService.ts';
 import type { GitPanelState } from './gitPanelStore.svelte.ts';
 
 export function createGitAmend(state: GitPanelState, backend: GitBackend) {
-  /** What Amend put in the box, or '' when it put nothing. */
+  /** What Amend put in the box, and the repository it came from; '' when it put nothing. */
   let prefill = '';
+  let prefillRoot = '';
+  const putByAmend = () => (state.root === prefillRoot ? prefill : '');
   return {
     async set(on: boolean): Promise<void> {
       state.amend = on;
+      const put = putByAmend();
+      prefill = '';
       if (!on) {
-        if (prefill !== '' && state.commitMessage === prefill) state.commitMessage = '';
-        prefill = '';
+        if (put !== '' && state.commitMessage === put) state.commitMessage = '';
         return;
       }
       const root = state.root;
@@ -29,10 +32,11 @@ export function createGitAmend(state: GitPanelState, backend: GitBackend) {
       // The repository, the switch or the box may have changed while git was answering.
       if (state.root !== root || !state.amend || state.commitMessage.trim() !== '') return;
       state.commitMessage = prefill = subject;
+      prefillRoot = root;
     },
     /** The message to hand git for this amend. */
     messageFor(text: string): string {
-      return text === prefill ? '' : text;
+      return text === putByAmend() ? '' : text;
     },
     /** The amend happened: the box is empty again, and the next commit is a new one, not a second amend. */
     finish(): void {
