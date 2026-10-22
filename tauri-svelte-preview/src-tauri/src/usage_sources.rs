@@ -311,10 +311,10 @@ fn parse_codex_usage_event(
     let usage = value
         .pointer("/payload/info/last_token_usage")?
         .as_object()?;
-    let input_tokens = value_u64(usage, "input_tokens");
     let output_tokens = value_u64(usage, "output_tokens");
     let cache_read_tokens = value_u64(usage, "cached_input_tokens");
     let cache_write_tokens = value_u64(usage, "cache_write_input_tokens");
+    let input_tokens = value_u64(usage, "input_tokens").saturating_sub(cache_read_tokens + cache_write_tokens); // Codex counts cached input inside input_tokens; rows store uncached input.
     let reasoning_tokens = value_u64(usage, "reasoning_output_tokens");
     if input_tokens == 0 && output_tokens == 0 && cache_read_tokens == 0 && reasoning_tokens == 0 {
         return None;
@@ -722,7 +722,7 @@ mod tests {
         );
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].owned_id.as_deref(), Some("session-2"));
-        assert_eq!(events[0].input_tokens, 20);
+        assert_eq!(events[0].input_tokens, 15);
         assert_eq!(events[0].cache_read_tokens, 5);
         assert_eq!(events[0].output_tokens, 9);
         assert_eq!(events[0].reasoning_tokens, 4);

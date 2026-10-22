@@ -150,4 +150,18 @@ writes.length = 0;
 await closing.dispose();
 assert.deepEqual(writes, ['closing'], 'the final save writes the closing session');
 assert.deepEqual((saved.get('closing') as { fileStates?: unknown }).fileStates, [{ path: '/closing/a.md', content: 'unsaved on close' }]);
-console.log('editorWorkspaceRecovery: deleted outgoing session, repeat switching, save/read failures, cancellation, changes during a save, aborted switches and the save on close passed');
+// TSK-1545: a remote session opened before its machine connects reads its saved
+// workspace once the machine is connected, instead of keeping the default view
+// it was opened with, and the editor shown while offline is not saved over it.
+const reconnecting = new ControllerClass();
+(dependencies.rail.owned as object[]).push({ ownedId: 'remote', executionEnvironment: 'remote', remoteProfileId: 'box' });
+assert.equal(await reconnecting.restoreEditorWorkspaceForSession('remote', '', false, signal), null);
+(dependencies.rail.remoteConnections as Record<string, string>).box = 'connected';
+reads.length = 0;
+writes.length = 0;
+reconnecting.rememberWorkspaceState({ rightTab: 'files' });
+const reconnected = await reconnecting.restoreEditorWorkspaceForSession('remote', '/remote', true, signal);
+assert.deepEqual(reads, ['remote'], 'the saved workspace is read once the machine connects');
+assert.deepEqual(reconnected, { openPaths: [], activePath: null, owner: 'remote' });
+assert.deepEqual(writes, [], 'nothing is saved over the remote workspace');
+console.log('editorWorkspaceRecovery: deleted outgoing session, repeat switching, save/read failures, cancellation, changes during a save, aborted switches, the save on close and the read after a remote machine connects passed');

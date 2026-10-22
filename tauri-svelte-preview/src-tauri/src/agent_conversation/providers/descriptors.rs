@@ -3,7 +3,8 @@
 //! Adding an ACP agent is a new descriptor plus its release-bundle entry.
 //!
 //! Evidence for today's values:
-//! - `initialize_meta`: Codex reads `recommendedValue` for its default effort; Claude ACP 0.88/0.93
+//! - `initialize_meta`: Codex reads `recommendedValue` for its default effort, and codex-acp 2.2.2 sends
+//!   command output only to a client that takes `terminal_output_delta` (TSK-1589 frame logs); Claude ACP 0.88/0.93
 //!   read `asyncTasks`, `nativeSubagentSessions` and `backgroundSubagents` (l9/y3, runtime bytes
 //!   82788482/92449895). Claude answers forms through `elicitation`.
 //! - `effort_in_model_id`: Codex ACP 1.13.1/2.2.2 emit `model[effort]` (codex-1.13.1-isolated.jsonl:6).

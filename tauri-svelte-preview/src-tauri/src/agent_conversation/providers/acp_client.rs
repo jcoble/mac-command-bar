@@ -2302,8 +2302,8 @@ done"#,
         let initialize = frames.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
             .find(|frame| frame["method"] == "initialize").unwrap();
         assert_eq!(
-            initialize["params"]["clientCapabilities"]["_meta"]["jetbrains"]["air"]["capabilities"],
-            json!(["recommendedValue"])
+            initialize["params"]["clientCapabilities"]["_meta"],
+            json!({"jetbrains": {"air": {"version": 1, "capabilities": ["recommendedValue"]}}, "terminal_output_delta": true})
         );
         let configured = result.expect("model reply makes effort available in the same update");
         assert_eq!(configured.model.as_deref(), Some("sonnet"));

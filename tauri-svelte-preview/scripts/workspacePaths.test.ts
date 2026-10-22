@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertSaveAllowed, mapWorkspaceSnapshotPaths, nativeWorkspacePath, parseRemoteWorkspacePath, revealDisabledReason, qualifyWorkspaceResult, remoteWorkspacePath, remoteWorkspaceRequest, sessionWorkspaceRoot, workspaceChangePath } from '../src/lib/workspacePaths.ts';
+import { assertSaveAllowed, mapWorkspaceSnapshotPaths, nativeWorkspacePath, parseRemoteWorkspacePath, revealDisabledReason, qualifyWorkspaceResult, remoteWorkspacePath, remoteWorkspaceRequest, sessionCheckoutRoot, sessionWorkspaceRoot, workspaceChangePath } from '../src/lib/workspacePaths.ts';
 
 test('a workspace keeps its machine even when another session is selected', () => {
   const first = remoteWorkspacePath('workbox', '/home/me/project/a.ts');
@@ -41,6 +41,14 @@ test('a session is rooted at its project, not the folder it works in', () => {
   assert.equal(sessionWorkspaceRoot({ cwd: '/srv/worktrees/a', projectId: 'p2', executionEnvironment: 'remote', remoteProfileId: 'box' }, projects), 'assembly-remote://box/srv/edi');
   // A project on another machine never roots the session.
   assert.equal(sessionWorkspaceRoot({ cwd: '/worktrees/tsk-1', projectId: 'p2', executionEnvironment: 'local' }, projects), '/worktrees/tsk-1');
+});
+
+test('Source Control follows the folder the session works in, even when a project roots its files', () => {
+  assert.equal(sessionCheckoutRoot({ cwd: '/worktrees/repo/feature-x', projectId: 'p1', executionEnvironment: 'local' }), '/worktrees/repo/feature-x');
+  assert.equal(
+    sessionCheckoutRoot({ cwd: '/srv/worktrees/a', projectId: 'p2', executionEnvironment: 'remote', remoteProfileId: 'box' }),
+    'assembly-remote://box/srv/worktrees/a'
+  );
 });
 
 test('saved workspace paths round trip without retaining a client profile or rewriting drafts', () => {

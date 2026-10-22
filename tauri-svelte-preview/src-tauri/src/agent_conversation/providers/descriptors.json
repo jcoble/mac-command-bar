@@ -4,7 +4,7 @@
       "id": "codex",
       "adapter_id": "codex-acp",
       "display_name": "Codex",
-      "initialize_meta": { "jetbrains": { "air": { "version": 1, "capabilities": ["recommendedValue"] } } },
+      "initialize_meta": { "jetbrains": { "air": { "version": 1, "capabilities": ["recommendedValue"] } }, "terminal_output_delta": true },
       "effort_in_model_id": true,
       "unattended": { "mode": "agent" },
       "pre_approval": { "env": { "CODEX_CONFIG": { "mcp_servers.assembly.default_tools_approval_mode": "approve" } } },

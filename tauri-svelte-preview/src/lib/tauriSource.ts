@@ -346,7 +346,7 @@ export type GithubMergeRequest = {
 export type GitBranchSummary = {
   name: string;
   isCurrent: boolean;
-  upstream: string;
+  upstream: string; worktreePath: string; // Where the branch is checked out on the repository's machine, '' when nowhere.
   subject: string;
 };
 

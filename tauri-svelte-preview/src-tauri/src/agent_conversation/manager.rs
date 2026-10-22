@@ -1,4 +1,4 @@
-#[path = "session_project.rs"] pub mod session_project; mod helper_close;
+#[path = "session_project.rs"] pub mod session_project; mod helper_close; pub mod turn_usage;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ use super::handoff::{
 };
 use super::normalization::{
     is_replay_session_update, is_session_state_update, payload_from_session_update_for_turn,
-    session_update_kind, text_from_value,
+    session_update_kind, text_from_value, tools,
 };
 use super::protocol::{
     AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities,
@@ -228,7 +228,7 @@ pub struct ManagedAgentSession {
     store: Arc<SessionStore>,
     created_at_ms: u128,
     last_activity_ms: u128,
-    live_tool_calls: HashSet<String>,
+    live_tool_calls: HashMap<String, String>, // with each command's joined terminal output
     /// The reply the agent is streaming: its message id, the text of the
     /// deltas stored for it so far, and the autonomous turn it belongs to.
     streaming_reply: Option<(String, String, Option<String>)>,
@@ -250,6 +250,7 @@ pub struct ManagedAgentSession {
     /// recorded carries none, and counts as the first prompt.
     title_source: Option<String>,
     suspending: bool,
+    turn_usage: turn_usage::TurnUsageState, // When the prompt went out and the latest reported cost total.
 }
 
 #[derive(Clone, Debug)]
@@ -273,7 +274,7 @@ struct SessionEventCandidate {
     connection: AgentConversationConnection,
     writer_owner: AgentWriterLeaseOwner,
     last_activity_ms: u128,
-    live_tool_calls: HashSet<String>,
+    live_tool_calls: HashMap<String, String>,
 }
 
 #[derive(Clone, Copy)]
@@ -1943,7 +1944,7 @@ impl AgentRuntimeManager {
                 store: Arc::clone(&self.store),
                 created_at_ms,
                 last_activity_ms: created_at_ms,
-                live_tool_calls: HashSet::new(),
+                live_tool_calls: HashMap::new(),
                 streaming_reply: None,
                 background_work: HashMap::new(),
                 autonomous_turn_id: None,
@@ -1966,7 +1967,7 @@ impl AgentRuntimeManager {
                 title_source: prior
                     .as_ref()
                     .and_then(|session| session.title_source.clone()),
-                suspending: false,
+                suspending: false, turn_usage: Default::default(),
             },
         );
         let session = sessions
@@ -2276,9 +2277,8 @@ impl AgentRuntimeManager {
         }
         // An adapter that named an effort control owns the effort from now on.
         let adapter_offers_effort = !started.config.available_efforts.is_empty();
-        let started_new = expected_native_session_id.is_none();
-        if let Some(expected_native_session_id) = expected_native_session_id {
-            if started.native_session_id != expected_native_session_id {
+        if let Some(expected_native_session_id) = &expected_native_session_id {
+            if started.native_session_id != *expected_native_session_id {
                 let _ = self
                     .release_pool_scope(&pool_key, owned_id, Some(&started.native_session_id), true)
                     .await;
@@ -2303,6 +2303,7 @@ impl AgentRuntimeManager {
         }
         session.native_session_id = Some(started.native_session_id.clone());
         session.connection.native_session_id = Some(started.native_session_id);
+        session.turn_usage.resumed = expected_native_session_id.is_some();
         session.adapter_offers_effort = adapter_offers_effort;
         session.config = started.config;
         session.connection.config = session.config.clone();
@@ -2342,7 +2343,7 @@ impl AgentRuntimeManager {
         )?;
         let connection = session.connection.clone();
         drop(sessions);
-        if started_new {
+        if expected_native_session_id.is_none() {
             let transcript = super::history::transcript::discover(provider, connection.native_session_id.as_deref().unwrap_or_default()).ok().flatten();
             if let Err(error) = super::history::track_new_transcript(&self.store, owned_id, transcript.as_ref().map(|location| location.canonical_path.as_path())) { crate::debug_log::stderr_log!("Could not track the new transcript: {error}"); }
         }
@@ -2552,7 +2553,7 @@ impl AgentRuntimeManager {
                 super::protocol::TurnState::Completed,
                 AgentRuntimeState::Ready,
             );
-            session.active_turn_id = Some(turn_id.clone());
+            session.active_turn_id = Some(turn_id.clone()); turn_usage::turn_started(session);
             if session_title_is_empty(session.rail_meta.title.as_deref()) {
                 let is_first_user_prompt = session
                     .store
@@ -5134,7 +5135,7 @@ fn recovered_session_from_row(
         store: Arc::clone(store),
         created_at_ms: row.created_at_ms.max(0) as u128,
         last_activity_ms: row.last_activity_at_ms.max(0) as u128,
-        live_tool_calls: HashSet::new(),
+        live_tool_calls: HashMap::new(),
         streaming_reply: None,
         background_work: HashMap::new(),
         autonomous_turn_id: None,
@@ -5146,7 +5147,7 @@ fn recovered_session_from_row(
         claude_children: stored.claude_children,
         rail_meta: stored.rail_meta,
         title_source: row.title_source,
-        suspending: false,
+        suspending: false, turn_usage: Default::default(),
     };
     Ok(session)
 }
@@ -5368,7 +5369,7 @@ fn record_payload_for_session_with_lifecycle(
     match &payload {
         AgentConversationPayload::Tool { item_id, state, .. } => match state {
             ToolState::Started | ToolState::Updated => {
-                candidate.live_tool_calls.insert(item_id.clone());
+                candidate.live_tool_calls.entry(item_id.clone()).or_default();
             }
             ToolState::Completed | ToolState::Failed => {
                 candidate.live_tool_calls.remove(item_id);
@@ -5984,7 +5985,8 @@ async fn pump_inbound(
                         }
                         break 'update session_is_quiescent(session);
                     }
-                    let mut reached_quiescence = update_raw_liveness(session, &params);
+                    let prior_output = tools::joined_output_so_far(&session.live_tool_calls, &params);
+                    let mut reached_quiescence = update_raw_liveness(session, &params); turn_usage::note_reported_cost(session, &params);
                     if let Some(payload) = stopped_background_task_payload(&mut session.background_work, &params) {
                         expect_claude_wake(session);
                         reached_quiescence |= session_is_quiescent(session);
@@ -6071,14 +6073,11 @@ async fn pump_inbound(
                             .get_or_insert_with(|| format!("turn-{}", uuid::Uuid::new_v4()))
                             .clone()
                     });
-                    let Some(payload) = payload_from_session_update_for_turn(
-                        &params,
-                        autonomous_turn_id
-                            .as_deref()
-                            .or(session.active_turn_id.as_deref()),
-                    ) else {
+                    let turn_id = autonomous_turn_id.as_deref().or(session.active_turn_id.as_deref());
+                    let Some(mut payload) = payload_from_session_update_for_turn(&params, turn_id) else {
                         break 'update reached_quiescence;
                     };
+                    tools::join_terminal_output(&mut session.live_tool_calls, prior_output, &params, &mut payload);
                     // A delta for another message means the agent finished the
                     // one it was streaming.
                     if let AgentConversationPayload::AssistantDelta { item_id, .. } = &payload {
@@ -6850,7 +6849,7 @@ fn update_raw_liveness(session: &mut ManagedAgentSession, params: &Value) -> boo
         if terminal {
             session.live_tool_calls.remove(&identifier);
         } else {
-            session.live_tool_calls.insert(identifier);
+            session.live_tool_calls.entry(identifier).or_default();
         }
         return session_is_quiescent(session);
     }
@@ -7300,7 +7299,7 @@ async fn handle_ordered_session_event(
                         return false;
                     }
                 }
-                record_finished_reply(session, &emitter);
+                record_finished_reply(session, &emitter); turn_usage::report_turn_usage(session, &turn_id, result.as_ref().unwrap_or(&Value::Null));
                 let payload = match result {
                     Ok(_) if cancelled => AgentConversationPayload::Turn {
                         turn_id: turn_id.clone(),
@@ -7966,7 +7965,7 @@ mod tests {
     mod helper_messages;
     mod checkout;
     mod model_effort;
-    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close; mod agui_steer;
+    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close; mod agui_steer; mod terminal_output;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
@@ -12241,7 +12240,7 @@ mod tests {
             let session = sessions.get_mut(&fixture.owned_id).unwrap();
             session.state = AgentRuntimeState::Working;
             session.active_turn_id = Some("turn-live".into());
-            session.live_tool_calls.insert("tool-live".into());
+            session.live_tool_calls.insert("tool-live".into(), String::new());
         }
         assert!(!fixture
             .manager
@@ -12610,7 +12609,6 @@ mod tests {
             .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
-
 
     // Claude keeps a transcript this side can read. When it holds no turn — the
     // process was stopped before it wrote one — there is nothing on Claude's
@@ -15221,7 +15219,7 @@ mod tests {
         let emitted = seen.lock().unwrap();
         let completion = emitted.last().unwrap();
         assert_eq!(completion.sequence + 1, session.next_sequence);
-        assert!(!session.live_tool_calls.contains("edit-1"));
+        assert!(!session.live_tool_calls.contains_key("edit-1"));
         match &completion.payload {
             AgentConversationPayload::Tool { state, path, diff, .. } => {
                 assert_eq!(*state, ToolState::Completed);

@@ -116,6 +116,7 @@ export interface ConversationTurnGroup {
   readonly elapsedMs: number | null;
   readonly startedAtMs: number | null;
   readonly running: boolean;
+  readonly stopped?: boolean; // The owner stopped it; set on its last part, which ends with a Stopped line.
 }
 
 /**
@@ -513,7 +514,8 @@ export function conversationTurnGroups(
       ...known, turnId: partition.turnId ?? '', terminalState: 'completed',
       finalAssistantItemId: known?.finalAssistantItemId ?? partition.items.findLast((item) => item.kind === 'assistant')?.itemId
     };
-    groups.push(turnGroup(partition.turnId, partition.items, activeTurnId !== null && partition.turnId === activeTurnId, ended));
+    const group = turnGroup(partition.turnId, partition.items, activeTurnId !== null && partition.turnId === activeTurnId, ended);
+    groups.push({ ...group, stopped: group.completed && ended?.terminalState === 'interrupted' && !groups.some((later) => later.turnId === group.turnId) });
     if (partition.items.some((item) => item.kind === 'user')) laterPrompt = true;
   }
   return groups.reverse();
@@ -537,6 +539,7 @@ export function turnRows(
     if (folded && (item.kind === 'toolRun' || work.has(item.itemId))) continue;
     result.push(item);
   }
+  if (group.stopped) result.push({ kind: 'unknown', itemId: `stopped:${group.turnId}`, text: 'Stopped', turnId: group.turnId, timestampMs: items.at(-1)?.timestampMs ?? 0 });
   return result;
 }
 
@@ -1265,9 +1268,6 @@ export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
     type = 'reasoning';
     contentChannel = 'reasoning';
     completed = false;
-  } else if (payloadKind === 'error') {
-    type = 'error';
-    completed = true;
   } else if (channel === 'plan') {
     type = 'plan';
   } else if (channel === 'command-output') {

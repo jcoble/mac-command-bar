@@ -46,6 +46,13 @@ export function sessionWorkspaceRoot(
   return path && session.remoteProfileId ? remoteWorkspacePath(session.remoteProfileId, path) : '';
 }
 
+/** The folder a session's agent works in. A project roots the files, but a checkout change moves this one, and Source Control follows it. */
+export function sessionCheckoutRoot(
+  session: { cwd: string; projectId: string | null; executionEnvironment?: string; remoteProfileId?: string | null }
+): string {
+  return sessionWorkspaceRoot(session, []);
+}
+
 type WorkingSession = { cwd: string; executionEnvironment: string; remoteProfileId?: string | null; state: string; runtimeState?: string; title?: string | null };
 /** A running session's working folder on its machine, without a trailing slash; null when it is not running. */
 export function runningSessionFolder(session: WorkingSession): string | null {
