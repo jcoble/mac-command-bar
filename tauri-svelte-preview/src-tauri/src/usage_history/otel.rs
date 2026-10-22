@@ -14,7 +14,6 @@ use axum::Router;
 use super::otel_store::{Lookups, OtelStore, RETENTION_DAYS};
 use crate::agent_conversation::manager::AgentRuntimeManager;
 use crate::agent_conversation::providers::process::SidecarEnvironment;
-use crate::workflow::WorkflowEngine;
 use serde_json::{Map, Value};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -78,16 +77,15 @@ impl Inbox {
 /// The receiver's address while it runs; agent launches export to it.
 static ENDPOINT: OnceLock<String> = OnceLock::new();
 
-/// Starts the receiver for the app. Rows are tied to live sessions through the
-/// agent manager and to workflow steps through the engine.
-pub fn start(app: &tauri::AppHandle, runtime: AgentRuntimeManager, workflow: WorkflowEngine) {
+/// Starts the receiver in the usage database at `path`. Rows are tied to
+/// sessions, and to the workflow step they ran, through the agent manager.
+pub fn start(path: &Path, runtime: AgentRuntimeManager) {
+    let steps = runtime.clone();
     let lookups = Lookups {
         owned_for_session: Box::new(move |native_session_id| runtime.owned_id_for_native_session(native_session_id)),
-        step_for_owned: Box::new(move |owned_id| workflow.list_runs().ok()?.into_iter().find_map(|run| {
-            run.nodes.iter().find(|node| node.owned_id == owned_id).map(|node| (run.id.clone(), node.id.clone()))
-        })),
+        step_for_owned: Box::new(move |owned_id| steps.run_and_step_for_session(owned_id)),
     };
-    match super::usage_db_path(app).and_then(|path| serve(&path, lookups)) {
+    match serve(path, lookups) {
         Ok(endpoint) => {
             let _ = ENDPOINT.set(endpoint);
         }

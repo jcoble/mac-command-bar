@@ -38,6 +38,23 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not find the session for that conversation", error))
     }
 
+    /// The workflow run and step attempt a session ran, from the session's latest workflow
+    /// event that names a step attempt, so a step retried since still finds its old session.
+    pub fn run_and_step_for_session(&self, owned_id: &str) -> Result<Option<(String, String)>> {
+        self.lock()?
+            .query_row(
+                "SELECT run_id, json_extract(payload_json,'$.nodeRunId')
+                 FROM orchestration_events
+                 WHERE json_extract(payload_json,'$.ownedId') = ?1
+                   AND json_extract(payload_json,'$.nodeRunId') IS NOT NULL
+                 ORDER BY sequence DESC LIMIT 1",
+                [owned_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| StoreError::sqlite("could not find the session's workflow run", error))
+    }
+
     /// The workflow step attempt a session runs and its workflow, from the session's latest
     /// workflow event (one indexed read).
     pub fn workflow_step_for_session(&self, owned_id: &str) -> Result<(Option<String>, Option<String>)> {
@@ -119,5 +136,20 @@ mod tests {
         assert_eq!(step("agent-a"), (Some("run-1:build:1".into()), Some("spec-to-pr".into())));
         assert_eq!(step("agent-b"), (Some("run-1:review:1".into()), Some("spec-to-pr".into())));
         assert_eq!(step("chat"), (None, None));
+    }
+
+    #[test]
+    fn run_and_step_for_session_finds_an_earlier_attempt_after_a_retry() {
+        let store = store();
+        store.lock_write().unwrap().execute_batch(
+            r#"INSERT INTO orchestration_events (id, run_id, kind, timestamp, sequence, payload_json) VALUES
+                ('e1','run-1','workflow.node.started','1',1,'{"ownedId":"old-agent","nodeRunId":"run-1:build:1"}'),
+                ('e2','run-1','workflow.node.started','2',2,'{"ownedId":"new-agent","nodeRunId":"run-1:build:2"}'),
+                ('e3','run-1','workflow.run.updated','3',3,'{"ownedId":"old-agent"}');"#,
+        ).unwrap();
+        let found = |owned_id: &str| store.run_and_step_for_session(owned_id).unwrap();
+        assert_eq!(found("old-agent"), Some(("run-1".into(), "run-1:build:1".into())));
+        assert_eq!(found("new-agent"), Some(("run-1".into(), "run-1:build:2".into())));
+        assert_eq!(found("chat"), None);
     }
 }

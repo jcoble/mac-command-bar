@@ -3424,7 +3424,7 @@ fn main() {
             let workflow_store = agent_runtime.store_handle();
             let remote_session_store = Arc::clone(&workflow_store);
             let workflow_engine = WorkflowEngine::managed(agent_runtime.clone(), workflow_store);
-            usage_history::otel::start(app.handle(), agent_runtime.clone(), workflow_engine.clone());
+            usage_history::otel::start(&usage_history::usage_db_path(app.handle())?, agent_runtime.clone());
             let recovered_runs = workflow_engine.recover_after_restart().map_err(|error| error.to_string())?;
             let recovery_engine = workflow_engine.clone();
             tauri::async_runtime::spawn(async move {

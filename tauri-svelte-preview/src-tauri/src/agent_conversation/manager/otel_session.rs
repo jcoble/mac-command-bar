@@ -12,4 +12,10 @@ impl AgentRuntimeManager {
             .map(|session| session.owned_id.clone());
         live.or_else(|| self.store.owned_id_for_native_session(native_session_id).ok().flatten())
     }
+
+    /// The workflow run and step attempt an Assembly session ran, read from the
+    /// durable workflow events so a retried step's old session is still found.
+    pub fn run_and_step_for_session(&self, owned_id: &str) -> Option<(String, String)> {
+        self.store.run_and_step_for_session(owned_id).ok().flatten()
+    }
 }
