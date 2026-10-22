@@ -143,18 +143,16 @@ impl AguiProjector {
             if fresh.requests.is_empty() {
                 fresh.paused_run = None;
             }
-            // History leaves runs out and carries no turn ends, so the session
-            // says whether a turn still runs. The client's run goes on while it
-            // does and ends once it is over; a run the replay opened was never
-            // shown, so live content starts its own. A pause lasts while its requests do.
+            // History carries no turn ends, so the session says whether a turn still runs: the
+            // client's run goes on while it does and ends after; a run the replay opened was never
+            // shown, so live content starts its own. The client's pause lasts while its requests do.
             match view.open_run.take() {
                 Some(old) if !running => opened.runs.push(agui::run_finished(owned_id, &old, None, None)),
                 old => fresh.open_run = old,
             }
             match view.paused_run.take() {
                 Some(old) if fresh.paused_run.is_none() => opened.runs.push(agui::run_finished(owned_id, &old, None, None)),
-                Some(old) => fresh.paused_run = Some(old),
-                None => {}
+                old => fresh.paused_run = old.or(fresh.paused_run.take()),
             }
             fresh.last_sequence = Some(fresh.last_sequence.map_or(head, |last| last.max(head)));
             opened.events = agui::history(chunks);
@@ -333,7 +331,12 @@ impl View {
             // Withdrawn, not answered: the turn's end usually follows (Stop, a failure).
             Payload::Approval { request_id, state: ApprovalState::Expired, .. }
             | Payload::UserInputResolved { request_id, cancelled: true } => {
+                let before = self.requests.len();
                 self.requests.retain(|open| open.id != *request_id);
+                if self.requests.len() < before {
+                    // What still waits is shown again; with nothing left it is empty.
+                    out.extend(self.pause_chunk(thread));
+                }
             }
             Payload::Approval { request_id, .. } | Payload::UserInputResolved { request_id, .. } => {
                 self.answered(&mut out, thread, request_id);

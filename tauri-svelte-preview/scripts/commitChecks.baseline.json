@@ -9,7 +9,7 @@
     "tauri-svelte-preview/scripts/gitPanelStore.test.ts": 1051,
     "tauri-svelte-preview/scripts/localSourceFs.test.ts": 874,
     "tauri-svelte-preview/scripts/nextTerminalService.test.ts": 1106,
-    "tauri-svelte-preview/src-tauri/src/agent_conversation/agui_projection_tests.rs": 675,
+    "tauri-svelte-preview/src-tauri/src/agent_conversation/agui_projection_tests.rs": 683,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/attachments.rs": 704,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/manager.rs": 15807,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/mod.rs": 1418,

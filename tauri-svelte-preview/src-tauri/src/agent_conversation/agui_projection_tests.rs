@@ -381,6 +381,14 @@ fn arguments_that_change_before_a_call_ends_reach_the_client() {
 }
 
 #[test]
+fn withdrawing_one_of_two_requests_shows_the_other_again() {
+    let mut script = Script::open();
+    [turn(TurnState::Started), permission("perm-1", ApprovalState::Requested), question("ask-1")].map(|payload| script.send(payload));
+    let rest = &script.send(permission("perm-1", ApprovalState::Expired))[0]["outcome"]["interrupts"];
+    assert_eq!((rest.as_array().unwrap().len(), &rest[0]["id"]), (1, &json!("ask-1")));
+}
+
+#[test]
 fn a_second_request_joins_the_pause_and_the_first_answer_leaves_the_other_open() {
     let mut script = Script::open();
     script.send(turn(TurnState::Started));
