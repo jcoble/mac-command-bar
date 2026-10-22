@@ -25,7 +25,7 @@ pub(crate) async fn list_agent_sessions(
         let (sessions, common_dirs) = remote.scan_transcripts(&profile, None, roots).await?;
         return grouped(&store, &profile, sessions, |folder| common_dirs.get(folder).cloned());
     }
-    tauri::async_runtime::spawn_blocking(move || grouped(&store, "local", scan_sessions(), crate::project_folders::git_common_dir))
+    tauri::async_runtime::spawn_blocking(move || grouped(&store, "local", crate::proof_mode::past_sessions(scan_sessions), crate::project_folders::git_common_dir))
         .await
         .map_err(|error| format!("Agent session scan task failed: {error}"))?
 }
@@ -36,7 +36,7 @@ pub(crate) async fn list_agent_sessions_for_project(
     project_path: String,
 ) -> Result<Vec<AgentSessionRecord>, String> {
     let store = manager.store_handle();
-    tauri::async_runtime::spawn_blocking(move || grouped(&store, "local", scan_sessions_for_project(&project_path), crate::project_folders::git_common_dir))
+    tauri::async_runtime::spawn_blocking(move || grouped(&store, "local", crate::proof_mode::past_sessions(|| scan_sessions_for_project(&project_path)), crate::project_folders::git_common_dir))
         .await
         .map_err(|error| format!("Agent session scan task failed: {error}"))?
 }

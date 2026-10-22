@@ -19,6 +19,7 @@ fn json(value: impl Serialize) -> Result<Value, String> {
 }
 
 pub(super) async fn execute(operation: String, args: Value) -> Result<Value, String> {
+    crate::proof_mode::refuse_command(&operation, &Value::Null)?;
     // Both accept `~`, so they run before the absolute-path check below and
     // apply that check themselves after expanding it.
     if operation == "list_folders" || operation == "inspect_project_folder" {
