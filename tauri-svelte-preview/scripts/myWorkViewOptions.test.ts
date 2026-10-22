@@ -226,6 +226,23 @@ function shape(groups: MyWorkGroup[]): unknown[] {
     ['helper', 'main', 'main-helper', 'orphan', 'parent']);
 }
 
+// finished_helper_leaves_parent_when_grouped_by_status: with status groups on, a Done or
+// Settled helper sits in its own status group, not under its working parent; a working
+// helper stays under the parent, and with status groups off every helper stays nested.
+{
+  const rows = [
+    session('parent', { title: 'p' }),
+    session('busy', { title: 'b', helperOf: 'parent' }),
+    session('done', { title: 'd', helperOf: 'parent', completedAt: '2026-08-09T10:00:00.000Z' }),
+    session('settled', { title: 's', helperOf: 'parent', completedAt: '2026-08-08T10:00:00.000Z', settledAt: '2026-08-09T12:00:00.000Z' })
+  ];
+  const byStatus = buildMyWorkGroups(rows, { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc', groupByProject: false, groupByStatus: true });
+  assert.deepEqual(shape(byStatus), [['working', 'Working', ['parent']], ['done', 'Done', ['done']], ['settled', 'Settled', ['settled']]]);
+  assert.deepEqual(byStatus[0].helpers?.parent?.map((row) => row.ownedId), ['busy']);
+  const plain = buildMyWorkGroups(rows, { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc' });
+  assert.deepEqual(plain[0].helpers?.parent?.map((row) => row.ownedId), ['busy', 'done', 'settled']);
+}
+
 // workers_group_under_machine_and_run_once: each run's workers form one section,
 // named for the run, after the project sections; a worker is in no other section.
 {

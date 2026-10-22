@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import { presentAgentError } from '../src/lib/shell/errorPresentation.ts';
+import { presentAgentError, presentProbeError } from '../src/lib/shell/errorPresentation.ts';
 
 const mappedCases = [
   {
@@ -125,6 +125,18 @@ for (const example of mappedCases) {
     assert.doesNotMatch(presented.summary, /\{|-?\d{3,}|^[a-z]+(?:-[a-z]+)+:/i);
   });
 }
+
+test('a failed settings probe says what failed and where to update the adapter', () => {
+  assert.equal(
+    presentProbeError('transport: agent process exited with status 1', 'Codex'),
+    "The agent stopped unexpectedly. Update the Codex adapter in Settings → Updates."
+  );
+});
+
+test('a failed settings probe does not repeat an update hint already in the message', () => {
+  const raw = `transport: ACP sidecar exited: /a/node_modules/.bin/claude-agent-acp:2\n| SyntaxError: missing )`;
+  assert.equal(presentProbeError(raw, 'Claude'), presentAgentError(raw).summary);
+});
 
 test('unknown errors use their actual text and retain their detail', () => {
   const raw = 'provider-meltdown: impossible state 47';

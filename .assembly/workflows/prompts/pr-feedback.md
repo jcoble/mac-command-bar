@@ -6,6 +6,7 @@ The pull request for this branch is open. The repository's review bot reviews ev
 2. For each finding, read the code it points at and decide:
    - Real: fix it test-first (a failing test, then the fix), run the targeted tests, and commit (`Task: ${{ task.key }}`, the architecture line, `Committed-by: Claude`, no Co-Authored-By line). Reply with what you changed and the commit hash, then resolve the thread.
    - Not real: reply with the reason, citing `path:line`, then resolve the thread.
+   - Minor (style, naming, wording, comments, an unlikely edge case, a nicer way to write it): reply that it is accepted as minor, with no code change, then resolve the thread.
    - Real but outside this task: reply that it is tracked separately, list it under `Follow-ups` in your report, then resolve the thread.
 3. `git push`, then run the script again. Repeat until it exits 0, at most three rounds. If findings remain after three rounds, stop and list them in your report; the final review decides.
 

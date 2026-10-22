@@ -521,7 +521,7 @@ for (const [name, summary, output, toolKind] of [
     assert.equal(item.title, name);
     assert.equal(item.summary, summary, 'completion retains every command line');
     assert.equal(item.toolKind, toolKind, 'input words do not classify an MCP tool');
-    assert.equal(item.output, output);
+    assert.deepEqual([item.output, item.hasDetail], [undefined, true], 'a finished call reads its output by id when opened');
     assert.equal(item.state, 'completed');
   }
 }
