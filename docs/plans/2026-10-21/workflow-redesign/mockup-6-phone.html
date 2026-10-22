@@ -1,0 +1,60 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Phone</title><style>
+:root{--bg:#000;--card:#121212;--elev:#1f1f1f;--hover:#242424;--text:#f5f5f5;--t2:#a7a7a7;--t3:#6e6e6e;--line:rgba(255,255,255,.08);
+--good:#1ed760;--good-bg:rgba(30,215,96,.12);--bad:#f15e6c;--bad-bg:rgba(241,94,108,.12);--att:#f3c969;--att-bg:rgba(243,201,105,.12);
+--live:#6fb6ff;--live-bg:rgba(111,182,255,.12);--shadow:0 2px 8px rgba(0,0,0,.22);
+--font:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:14px/1.45 var(--font)}
+a{color:var(--live);text-decoration:none}
+.app{display:flex;flex-direction:column;height:100vh}
+.top{display:flex;align-items:center;gap:16px;height:52px;padding:0 24px;border-bottom:1px solid var(--line);flex:none}
+.crumbs{display:flex;gap:8px;align-items:center;color:var(--t2);font-size:13px}.crumbs b{color:var(--text);font-weight:600}
+.spacer{flex:1}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:32px;padding:0 12px;border-radius:12px;border:0;background:var(--elev);color:var(--text);font:inherit;font-size:13px;white-space:nowrap}
+.btn.primary{background:var(--good);color:#06140b;font-weight:600}.btn.ghost{background:transparent;color:var(--t2)}
+.tabs{display:flex;gap:2px;padding:3px;background:var(--card);border-radius:12px}
+.tabs span{padding:5px 14px;border-radius:9px;color:var(--t2);font-size:13px}.tabs span.on{background:var(--elev);color:var(--text)}
+.card{background:var(--card);border-radius:12px;box-shadow:var(--shadow)}
+.label{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--t2);margin:0 0 10px}
+.meta{font-size:12px;color:var(--t2)}.q{color:var(--t2)}.mono{font-family:var(--mono);font-size:12.5px}
+.badge{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:999px;font-size:12px;background:var(--elev);color:var(--t2);white-space:nowrap}
+.badge.good{background:var(--good-bg);color:var(--good)}.badge.bad{background:var(--bad-bg);color:var(--bad)}.badge.att{background:var(--att-bg);color:var(--att)}.badge.live{background:var(--live-bg);color:var(--live)}
+.g{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:50%;flex:none;font-size:11px;font-weight:700;line-height:1}
+.g.done{background:var(--good);color:#06140b}.g.run{border:2px solid var(--live)}.g.back{background:var(--elev);color:var(--text)}
+.g.you{background:var(--att);color:#2a1d00}.g.failed{background:var(--bad);color:#2a0508}.g.stop{background:var(--t3);color:#000}
+.g.wait{border:1.5px dashed var(--t3)}.g.skip{background:transparent;color:var(--t3);border:1.5px solid var(--elev)}
+.chip{display:inline-grid;place-items:center;min-width:20px;height:20px;padding:0 4px;border-radius:6px;font-size:12px;font-weight:700}
+.chip.p{background:var(--good-bg);color:var(--good)}.chip.c{background:var(--elev);color:var(--text)}.chip.w{color:var(--t3);border:1px dashed var(--t3)}
+.rounds{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--t2);margin-right:8px}
+ul.plain{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:13px}
+ul.rows{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px;font-size:13px}ul.rows li{display:flex;gap:10px;align-items:flex-start}
+table{border-collapse:collapse;width:100%;font-size:13px}th{font-weight:500;color:var(--t2);text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line)}td.mono{white-space:nowrap}td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.note{background:var(--att-bg);border-radius:12px;padding:14px 16px}
+.note h4{margin:0 0 6px;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--att)}
+.kv{display:grid;grid-template-columns:120px 1fr;gap:6px 12px;font-size:13px}.kv div:nth-child(odd){color:var(--t2)}
+.stage{flex:1;display:flex;gap:56px;align-items:center;justify-content:center}
+.phone{width:360px;height:770px;border-radius:44px;border:10px solid #1c1c1c;background:var(--bg);display:flex;flex-direction:column;overflow:hidden;position:relative;box-shadow:0 0 0 1px #2a2a2a}
+.sb{height:44px;display:flex;align-items:flex-end;justify-content:space-between;padding:0 24px 4px;font-size:13px;font-weight:600}
+.ph{padding:10px 16px;font-size:20px;font-weight:700}.pc{flex:1;overflow:hidden;padding:0 12px;display:flex;flex-direction:column;gap:8px}
+.grp{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--t2);margin:8px 4px 0}
+.it{padding:12px 14px}.it .t{font-size:15px;font-weight:600}.it .s{display:flex;gap:8px;align-items:center;color:var(--t2);font-size:13px;margin-top:4px}
+.it.you{background:#1c180c}.pin{padding:10px 12px;display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);background:var(--card)}
+.pin .btn{height:44px;font-size:15px}.nav{height:60px;border-top:1px solid var(--line);display:flex;justify-content:space-around;align-items:center;font-size:12px;color:var(--t2)}
+.nav span.on{color:var(--good)}.cap{text-align:center;color:var(--t2);margin-top:12px;font-size:13px}
+.st{display:flex;gap:10px;align-items:center;padding:8px 4px;border-bottom:1px solid var(--line);font-size:14px}.st small{margin-left:auto;color:var(--t2);font-size:12px}</style></head><body><div class="app"><div class="top"><div class="crumbs"><b>Assembly phone</b><span>›</span><span>Workflows (TSK-1504 start a run · TSK-1557 reach the owner)</span></div></div><div class="stage"><div><div class="phone"><div class="sb"><span>12:22</span><span>5G 82%</span></div><div class="ph">Runs</div><div class="pc"><button class="btn primary" style="height:40px;flex:none">Start a run</button>
+<div class="grp">Needs you · 1</div><div class="card it you"><div class="t">TSK-1588 · Typed pause questions</div><div class="s"><span class="g you">?</span>Keep the phone out of this task?</div></div>
+<div class="grp">Running · 7</div>
+<div class="card it"><div class="t">TSK-1582 · Workflow redesign</div><div class="s"><span class="g run"></span>2 / 17 slices · 1.2 in code review</div></div>
+<div class="card it"><div class="t">Slice 1.2 · Review groups</div><div class="s"><span class="g run"></span>code-review R2 · 62m · $1.28 + $1.15 est.</div></div>
+<div class="card it"><div class="t">ONE-31 · Model name in header</div><div class="s"><span class="g run"></span>judge · proof passed on attempt 3</div></div>
+<div class="card it"><div class="t">TSK-1580 · Reviewers re-run together</div><div class="s"><span class="g run"></span>waiting for the review bot</div></div>
+<div class="grp">Done today · 3</div><div class="card it" style="opacity:.6"><div class="t">Slice 1.1 · One agent per worktree</div><div class="s"><span class="g done">✓</span>merged #430</div></div></div><div class="nav"><span class="on">Runs</span><span class="">Inbox</span><span class="">Chats</span><span class="">Machines</span></div></div><div class="cap">Runs: Needs you, Running, Done today</div></div><div><div class="phone"><div class="sb"><span>12:22</span><span>5G 82%</span></div><div class="ph">← Question</div><div class="pc"><div class="note"><h4>Needs you · scope</h4><div style="font-size:16px;font-weight:700;line-height:1.35">Should TSK-1588 also change the phone's question screen?</div>
+<div style="font-size:14px;margin-top:8px"><b>Recommended: keep the phone out.</b> It adds about 180 lines, and the phone's run screens are redesigned in TSK-1504.</div></div>
+<div class="card it"><div class="s" style="margin:0">Why it came to you</div><div style="font-size:14px;margin-top:4px">Spec review used all 3 rounds. The one blocking finding left is about scope, so the orchestrator asked you.</div></div>
+<div class="card it"><div class="s" style="margin:0">Files</div><div style="display:flex;flex-direction:column;gap:6px;margin-top:6px"><a class="mono">spec v3 · section 4</a><a class="mono">inbox_screen.dart</a></div></div></div><div class="pin"><button class="btn primary">Keep phone out</button><div style="display:flex;gap:8px"><button class="btn" style="flex:1">Include phone</button><button class="btn" style="width:64px">More</button></div></div><div class="nav"><span class="">Runs</span><span class="on">Inbox</span><span class="">Chats</span><span class="">Machines</span></div></div><div class="cap">A question: answers pinned above the tab bar</div></div><div><div class="phone"><div class="sb"><span>12:22</span><span>5G 82%</span></div><div class="ph">← Progress</div><div class="pc"><div class="card it"><div class="t">TSK-1582 · Workflow redesign</div><div class="s">2 / 17 slices merged · $6.75 + $1.15 est.</div><div style="height:6px;border-radius:3px;background:var(--elev);margin-top:10px;overflow:hidden"><i style="display:block;width:12%;height:100%;background:var(--good)"></i></div></div>
+<div class="grp">Milestone 1 · Engine guardrails</div>
+<div class="st"><span class="g done">✓</span>1.0 ci-checks.sh and .nvmrc<small>#429</small></div><div class="st"><span class="g done">✓</span>1.1 One agent per worktree<small>#430</small></div>
+<div class="st"><span class="g run"></span>1.2 Review groups<small>code-review R2</small></div>
+<div style="padding-left:28px"><div class="st" style="border:0;padding:4px 0;font-size:13px;color:var(--t2)"><span class="g done">✓</span>build · 212 / 240 lines</div><div class="st" style="border:0;padding:4px 0;font-size:13px;color:var(--t2)"><span class="g done">✓</span>checks · 9 / 9</div><div class="st" style="border:0;padding:4px 0;font-size:13px;color:var(--t2)"><span class="g done">✓</span>proof + judge · passed at a3's head</div><div class="st" style="border:0;padding:4px 0;font-size:13px;color:var(--t2)"><span class="g run"></span>code-review R2</div><div class="st" style="border:0;padding:4px 0;font-size:13px;color:var(--t2)"><span class="g wait"></span>whole-review · PR · bot · merge</div></div>
+<div class="st"><span class="g wait"></span>1.3 Cap rules<small>after 1.2</small></div><div class="st"><span class="g wait"></span>1.4 Merge gate script<small>waiting</small></div>
+<div class="grp">Milestones 2–4</div><div class="st"><span class="g wait"></span>New workflows<small>0 / 4</small></div><div class="st"><span class="g wait"></span>Full-page views<small>0 / 5</small></div></div><div class="nav"><span class="on">Runs</span><span class="">Inbox</span><span class="">Chats</span><span class="">Machines</span></div></div><div class="cap">A project’s progress</div></div></div></div></body></html>
