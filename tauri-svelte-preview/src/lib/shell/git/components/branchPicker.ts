@@ -36,6 +36,16 @@ export function describeBranchRow(branch: GitBranchSummary): string {
 }
 
 /**
+ * The worktree to move the session to when this branch is picked, or null to
+ * check it out here. Git refuses to check out a branch another worktree has, so
+ * the session goes to that worktree instead. For a remote repository the
+ * workspace bridge has already given the path its machine prefix.
+ */
+export function branchWorktreeRoot(branch: GitBranchSummary): string | null {
+  return branch.isCurrent || !branch.worktreePath ? null : branch.worktreePath;
+}
+
+/**
  * Why a typed branch name cannot be used, or '' when it can. The empty case is
  * deliberately quiet: an empty box is not a mistake, it is a box nobody has
  * typed in yet, so the button is simply off and says nothing red.

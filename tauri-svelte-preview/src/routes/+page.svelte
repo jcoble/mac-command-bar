@@ -647,7 +647,7 @@
 		visible={workbench.rightPanelOpen && !messagesOpen && !projectsOpen}
 		activeId={workbench.rightTab}
 		root={selection.newSession.draftOpen ? "" : selection.durableSessionRoot}
-		rootAvailable={selection.activeRootAvailable}
+		rootAvailable={selection.activeRootAvailable} sourceControlRoot={selection.newSession.draftOpen ? "" : selection.sessionCheckoutRoot}
 		ownedId={selection.activeOwnedId}
 		messagesUnread={messagesUnread.unread}
 		onMessagesSeen={() => messagesUnread.seen()}
