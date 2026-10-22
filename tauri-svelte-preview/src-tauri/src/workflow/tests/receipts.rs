@@ -171,6 +171,21 @@ fn a_build_citing_an_old_commit_is_rejected() {
 }
 
 #[test]
+fn a_build_that_leaves_out_a_commit_it_made_is_rejected() {
+    let repo = RunRepo::new();
+    let engine = run_engine(Arc::new(FakeRuntime::default()));
+    let endpoint = reporter(&engine);
+    let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
+    let first = commit(&repo, "the build");
+    let second = commit(&repo, "more of the build");
+    let error = report(&engine, &endpoint, &run.id, "build", json!({"commits":[],"tests_added":[],"summary":"Nothing to do"})).unwrap_err();
+    assert!(error.contains("commits") && error.contains(&second), "{error}");
+    let error = report(&engine, &endpoint, &run.id, "build", json!({"commits":[second],"tests_added":["a.rs"],"summary":"Built"})).unwrap_err();
+    assert!(error.contains(&first), "{error}");
+    report(&engine, &endpoint, &run.id, "build", json!({"commits":[&first[..8], second],"tests_added":["a.rs"],"summary":"Built"})).unwrap();
+}
+
+#[test]
 fn a_build_with_a_dirty_tree_or_no_tests_is_rejected() {
     let repo = RunRepo::new();
     let engine = run_engine(Arc::new(FakeRuntime::default()));

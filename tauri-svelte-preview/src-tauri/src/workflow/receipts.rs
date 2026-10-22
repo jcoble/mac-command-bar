@@ -255,6 +255,13 @@ fn check_evidence(run: &WorkflowRunRecord, node_id: &str, contract: WorkflowOutp
                     return Err(rejected(format!("commits: {commit} is not new since this step started")));
                 }
             }
+            // Every commit the step made on the branch must be listed, so an empty list means no commits were made.
+            let made = git(cwd, &["rev-list", "--first-parent", &format!("{start}..HEAD")])?;
+            for made in String::from_utf8_lossy(&made.stdout).lines() {
+                if !build.commits.iter().any(|commit| !commit.is_empty() && made.starts_with(commit.as_str())) {
+                    return Err(rejected(format!("commits: {made} was made in this step but is not listed")));
+                }
+            }
             if !build.commits.is_empty() && build.tests_added.is_empty() {
                 return Err(rejected("tests_added is empty; list the tests these commits add"));
             }
