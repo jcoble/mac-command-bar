@@ -15,7 +15,6 @@ use super::super::protocol::{
     AgentConversationProvider, AgentImplementation, AgentInteractionCapabilities,
     AgentPromptCapabilities, AgentProviderManifest, AgentSessionCapabilities,
 };
-use super::descriptors::LaunchFor;
 use super::process::{
     SidecarEnvironment, SidecarProcess, SidecarProcessHandle, SidecarReadHalf, SidecarWriteHalf,
 };
@@ -981,12 +980,11 @@ impl AcpClient {
         known_session_id: Option<&str>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         let mut request = serde_json::to_value(request).map_err(serialization_error)?;
-        // Assembly-tool pre-approval in the provider's meta (descriptors.rs); env goes through process.rs.
-        let pre_approval = LaunchFor { pre_approval: true, ..LaunchFor::default() };
-        if let Some(launch) = self.provider.and_then(|provider| provider.descriptor().launch(pre_approval))
-            .filter(|launch| !launch.meta.is_empty() && request["mcpServers"].as_array().is_some_and(|servers| !servers.is_empty()))
-        {
-            request["_meta"] = Value::Object(launch.meta);
+        // Assembly-tool pre-approval when it has Assembly's tools, and read-only in proof mode, in the provider's meta (descriptors.rs); env goes through process.rs.
+        if let Some(provider) = self.provider {
+            let pre_approval = request["mcpServers"].as_array().is_some_and(|servers| !servers.is_empty());
+            let launch = crate::proof_mode::session_launch(provider.descriptor(), pre_approval).map_err(|error| AgentRuntimeError::new("proof-mode", error))?;
+            if !launch.meta.is_empty() { request["_meta"] = Value::Object(launch.meta); }
         }
         let result = self.request(method, &request).await?;
         // session/new must return the id; session/load and session/resume
