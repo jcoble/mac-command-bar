@@ -1,4 +1,4 @@
-import { sessionWorkspaceRoot, parseRemoteWorkspacePath } from '../../workspacePaths.ts';
+import { sessionCheckoutRoot, sessionWorkspaceRoot, parseRemoteWorkspacePath } from '../../workspacePaths.ts';
 import { projectRegistry } from '../projects/projectRegistry.svelte.ts';
 /**
  * Controller for session selection, filesystem projections, and workspace expansion.
@@ -91,6 +91,12 @@ export class SessionSelectionController {
 		const session = this.controlledSession ?? rail.owned.find((s) => s.ownedId === rail.activeOwnedId);
 		if (!session) return "";
 		return canonicalPath(sessionWorkspaceRoot(session, projectRegistry.projects));
+	}
+
+	/** Where the session's agent works now: a checkout change moves it, while a project keeps `durableSessionRoot` put. */
+	get sessionCheckoutRoot(): string {
+		const session = this.controlledSession ?? rail.owned.find((s) => s.ownedId === rail.activeOwnedId);
+		return session ? canonicalPath(sessionCheckoutRoot(session)) : "";
 	}
 
 	/** The tree was filled for another root than the session's, as when its project's folder changed. */

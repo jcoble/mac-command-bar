@@ -7,6 +7,7 @@
 <script lang="ts">
   import CircleCheck from '@lucide/svelte/icons/circle-check';
   import CircleX from '@lucide/svelte/icons/circle-x';
+  import Bot from '@lucide/svelte/icons/bot';
   import Flag from '@lucide/svelte/icons/flag';
   import GitPullRequest from '@lucide/svelte/icons/git-pull-request';
   import Hand from '@lucide/svelte/icons/hand';
@@ -44,7 +45,7 @@
 
   const ICONS: Record<WorkflowTimelineKind, typeof Play> = {
     run: Flag, start: Play, finish: CircleCheck, checks: SquareTerminal, review: ListChecks, failed: CircleX,
-    timeout: TimerOff, waiting: Hand, owner: UserRound, redo: Repeat, message: MessageSquare, pr: GitPullRequest, proof: ImageIcon
+    timeout: TimerOff, waiting: Hand, owner: UserRound, orchestrator: Bot, redo: Repeat, message: MessageSquare, pr: GitPullRequest, proof: ImageIcon
   };
   const TONE_TEXT: Record<NonNullable<WorkflowTimelineItem['tone']>, string> = {
     good: 'text-[var(--color-good)]', bad: 'text-[var(--color-bad)]',

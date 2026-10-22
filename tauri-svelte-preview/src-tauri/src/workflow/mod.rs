@@ -2542,14 +2542,14 @@ impl WorkflowEngine {
         Ok(live_turns)
     }
 
-    /// The owner's answer to a step waiting for them: `accept` completes it as it is,
+    /// The owner's, or the main orchestrator's (with its `why`), answer to a waiting step: `accept` completes it as it is,
     /// `another-round` redoes it (or, after a loop stop, the step it sends back), `stop` cancels the run.
-    pub async fn answer_pause(&self, run_id: &str, node_id: &str, decision: &str, reply: Option<String>, origin: &str, idempotency_key: &str, expected_attempt: Option<u32>) -> Result<WorkflowRunRecord, WorkflowError> {
-        if origin != "owner" {
-            return Err(WorkflowError::PolicyDenied("Only the owner can answer a paused step".into()));
+    pub async fn answer_pause(&self, run_id: &str, node_id: &str, decision: &str, reply: Option<String>, origin: &str, why: Option<&str>, idempotency_key: &str, expected_attempt: Option<u32>) -> Result<WorkflowRunRecord, WorkflowError> {
+        if origin != "owner" && !(origin == "orchestrator" && why.is_some_and(|why| !why.trim().is_empty())) {
+            return Err(WorkflowError::PolicyDenied("Only the owner, or the main orchestrator saying why, can answer a paused step".into()));
         }
         if let Some(existing) = self.idempotent_run(run_id, idempotency_key)? {
-            return Ok(existing);
+            return if decision == "stop" && existing.state == WorkflowRunState::WaitingInput { self.cancel(run_id, &format!("{idempotency_key}:stop")).await } else { Ok(existing) };
         }
         let mut run = self.require_run(run_id)?;
         let node = run.nodes.iter().find(|node| node.node_id == node_id).ok_or_else(|| WorkflowError::NotFound(node_id.into()))?;
@@ -2559,13 +2559,12 @@ impl WorkflowEngine {
         let loop_stopped = node.failure.as_ref().is_some_and(|failure| failure.code == "loop-stopped");
         let snapshot = run.input_snapshot.as_object_mut().ok_or_else(|| invalid_yaml("Workflow input must be an object"))?;
         let mut answers = snapshot.get("answers").cloned().unwrap_or_else(|| json!([]));
-        answers.as_array_mut().unwrap().push(json!({"step":node_id,"decision":decision,"reply":reply}));
+        answers.as_array_mut().unwrap().push(json!({"step":node_id,"decision":decision,"reply":reply,"by":origin,"why":why.map(str::trim)}));
         snapshot.insert("answers".into(), answers);
         let live_turns = match decision {
             "accept" => {
                 let node = run.nodes.iter_mut().find(|node| node.node_id == node_id).unwrap();
-                node.state = WorkflowNodeState::Completed;
-                node.failure = None;
+                (node.state, node.failure) = (WorkflowNodeState::Completed, None);
                 resume_if_nothing_waits(&mut run);
                 refresh_ready_and_phase(&mut run);
                 Vec::new()
@@ -2576,10 +2575,11 @@ impl WorkflowEngine {
                     .unwrap_or(node_id).to_owned();
                 self.reset_for_redo(&mut run, node_id, &target)?
             }
-            "stop" => return self.cancel(run_id, idempotency_key).await,
+            "stop" => Vec::new(),
             other => return Err(WorkflowError::InvalidTransition(format!("Unknown answer `{other}`; use accept, another-round or stop"))),
         };
         self.append(&mut run, "workflow.node.owner-answered", idempotency_key, Some(node_id))?;
+        if decision == "stop" { return self.cancel(run_id, &format!("{idempotency_key}:stop")).await; }
         for owned_id in live_turns { self.runtime.cancel(&owned_id).await?; }
         self.dispatch_ready(run_id).await
     }
@@ -2599,8 +2599,8 @@ impl WorkflowEngine {
     /// A run's 20 newest changes, oldest first, as `(time ms, line)`, e.g. "review: owner answered".
     pub(crate) fn run_timeline(&self, run_id: &str) -> Result<Vec<(i64, String)>, WorkflowError> {
         let rows = self.store.workflow_run_timeline(run_id, 20).map_err(|error| WorkflowError::Ledger(error.to_string()))?;
-        Ok(rows.into_iter().map(|(at, kind, node)| {
-            let what = kind.rsplit('.').next().unwrap_or_default().replace('-', " ");
+        Ok(rows.into_iter().map(|(at, kind, node, by)| {
+            let what = if by.as_deref() == Some("orchestrator") { "orchestrator answered".into() } else { kind.rsplit('.').next().unwrap_or_default().replace('-', " ") };
             (at, node.map_or_else(|| format!("run {what}"), |node| format!("{node}: {what}")))
         }).collect())
     }
@@ -3553,7 +3553,7 @@ pub(crate) async fn execute_operation(engine: &WorkflowEngine, operation: &str, 
         "approveGate" => engine.approve_gate(&text("runId")?, &text("nodeId")?, args["approval"].clone(),
             "owner", &text("idempotencyKey")?, expected_attempt).await,
         "answer" => engine.answer_pause(&text("runId")?, &text("nodeId")?, &text("decision")?,
-            args["reply"].as_str().map(str::to_string), "owner", &text("idempotencyKey")?, expected_attempt).await,
+            args["reply"].as_str().map(str::to_string), "owner", None, &text("idempotencyKey")?, expected_attempt).await,
         other => return Err(format!("Unknown workflow operation {other}")),
     };
     serde_json::to_value(run.map_err(|error| error.to_string())?).map_err(|error| error.to_string())
@@ -3578,7 +3578,7 @@ fn pr_body(task_key: &str, outputs: &[(String, String)], artifacts: &[String]) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    mod permissions; mod agent_tools; mod review_rounds; mod agent_inputs;
+    mod permissions; mod agent_tools; mod review_rounds; mod agent_inputs; mod orchestrator_decisions;
     #[test]
     fn pr_body_stays_under_the_github_limit_and_names_every_step() {
         let outputs: Vec<(String, String)> = (0..14).map(|n| (format!("step-{n}"), "x".repeat(20_000))).collect();
@@ -3947,7 +3947,7 @@ mod tests {
         let mut run = stop_the_loop(&engine, &run_id);
         // Another write while the run still waits is not reported again.
         engine.append(&mut run, "workflow.test.again", "again", None).unwrap();
-        let done = tauri::async_runtime::block_on(engine.answer_pause(&run_id, "review", "accept", None, "owner", "accept", None)).unwrap();
+        let done = tauri::async_runtime::block_on(engine.answer_pause(&run_id, "review", "accept", None, "owner", None, "accept", None)).unwrap();
         assert_eq!(done.state, WorkflowRunState::Completed);
         let mut heard = Vec::new();
         while let Some(message) = engine.store.pending_for("starter").unwrap() {
@@ -4201,9 +4201,9 @@ mod tests {
         let repo = RunRepo::new();
         let engine = run_engine(Arc::new(FakeRuntime::default()));
         let run = loop_stopped_run(&engine, &repo.0);
-        let error = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", "accept", None, "agent", "answer", None)).unwrap_err();
+        let error = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", "accept", None, "agent", None, "answer", None)).unwrap_err();
         assert!(matches!(error, WorkflowError::PolicyDenied(_)));
-        let error = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "build", "accept", None, "owner", "answer", None)).unwrap_err();
+        let error = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "build", "accept", None, "owner", None, "answer", None)).unwrap_err();
         assert!(matches!(error, WorkflowError::InvalidTransition(_)));
         assert_eq!(engine.get_run(&run.id).unwrap().state, WorkflowRunState::WaitingInput);
     }
@@ -4218,7 +4218,7 @@ mod tests {
             run = end_turn(&engine, &run.id, "review", &[json!({"verdict":"fail","findings":texts})]);
         }
         assert_eq!(step_of(&run, "review").failure.as_ref().unwrap().code, "loop-stopped");
-        let answered = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", "another-round", None, "owner", "answer", None)).unwrap();
+        let answered = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", "another-round", None, "owner", None, "answer", None)).unwrap();
         assert_eq!(answered.input_snapshot["redo"]["findings"], json!(["a", "b"]));
         assert_eq!(step_of(&answered, "build").state, WorkflowNodeState::Running);
     }
@@ -4230,11 +4230,11 @@ mod tests {
             let repo = RunRepo::new();
             let engine = run_engine(Arc::new(FakeRuntime::default()));
             let run = loop_stopped_run(&engine, &repo.0);
-            let answered = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", decision, Some("Try once more".into()), "owner", "answer", None)).unwrap();
+            let answered = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", decision, Some("Try once more".into()), "owner", None, "answer", None)).unwrap();
             assert_eq!(answered.state, run_state, "{decision}");
             assert_eq!(step_of(&answered, "build").attempt, build_attempt, "{decision}");
             if decision != "stop" {
-                assert_eq!(answered.input_snapshot["answers"], json!([{"step":"review","decision":decision,"reply":"Try once more"}]));
+                assert_eq!(answered.input_snapshot["answers"], json!([{"step":"review","decision":decision,"reply":"Try once more","by":"owner","why":null}]));
             }
         }
     }

@@ -220,8 +220,8 @@ export interface WorkflowHistoryRow {
   findingCount: number | null;
   verdict: string | null;
   files: string[];
-  /** Only on `workflow.node.owner-answered`. */
-  answer: { step: string; decision: string; reply: string | null } | null;
+  /** Only on `workflow.node.owner-answered`; `by` and `why` say who answered and, for the main orchestrator, why. */
+  answer: { step: string; decision: string; reply: string | null; by?: 'owner' | 'orchestrator'; why?: string | null } | null;
   gateApproved: boolean | null;
 }
 
