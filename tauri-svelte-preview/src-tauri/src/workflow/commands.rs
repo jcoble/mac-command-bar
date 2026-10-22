@@ -101,6 +101,15 @@ pub(crate) async fn workflow_history(
     crate::workflow::execute_operation(&engine, "history", serde_json::json!({ "runId": run_id })).await
 }
 
+/// Every review report of one run on this Mac, for the review close-up.
+#[tauri::command]
+pub(crate) async fn workflow_review_reports(
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+) -> Result<serde_json::Value, String> {
+    crate::workflow::execute_operation(&engine, "reviews", serde_json::json!({ "runId": run_id })).await
+}
+
 /// Workflow steps waiting on the owner on this Mac and every connected machine, each tagged
 /// with its machine. A machine that cannot be reached is left out.
 #[tauri::command]

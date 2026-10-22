@@ -422,6 +422,17 @@ impl SessionStore {
         db("could not read review report", rows.collect())
     }
 
+    /// Every review report recorded in a run, oldest first, as `{attemptId, report, atMs}`.
+    pub fn run_review_reports(&self, run_id: &str) -> Result<Vec<serde_json::Value>> {
+        let connection = self.lock()?;
+        let mut statement = db("could not prepare review reports", connection.prepare(
+            "SELECT to_owned_id, body, created_at_ms FROM workflow_messages WHERE run_id = ? AND kind = 'review'
+             ORDER BY created_at_ms, rowid"))?;
+        let rows = db("could not read review reports", statement.query_map([run_id], |row| Ok(serde_json::json!({"attemptId": row.get::<_, String>(0)?,
+            "report": serde_json::from_str::<serde_json::Value>(&row.get::<_, String>(1)?).unwrap_or_default(), "atMs": row.get::<_, i64>(2)?}))))?;
+        db("could not read review report", rows.collect())
+    }
+
     /// The receipt of a message the caller sent. Another sender's message reads
     /// as unknown.
     pub fn message_status(&self, id: &str, from: &str) -> Result<String> {

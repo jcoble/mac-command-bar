@@ -39,6 +39,7 @@ import type {
   WorkflowRunRecord,
   WorkflowUsageRow
 } from './workflowTypes';
+import type { WorkflowReviewReport } from './workflowCloseup.ts';
 
 export const workflowSnapshotEvent = 'workflow-run-updated';
 
@@ -247,4 +248,12 @@ export async function readWorkflowUsage(machine: string | null, runId: string | 
   if (!isNativeTauriRuntime()) return null;
   const { invoke } = await import('$lib/workspaceInvoke.ts');
   return invoke<WorkflowUsageRow[]>('read_workflow_usage', { runId });
+}
+
+/** Every review report of a run, for the review close-up, from the machine that runs it. */
+export async function readWorkflowReviews(machine: string | null, runId: string): Promise<WorkflowReviewReport[] | null> {
+  if (machine) return remoteWorkflowFromTauri(machine, 'reviews', { runId });
+  if (!isNativeTauriRuntime()) return null;
+  const { invoke } = await import('$lib/workspaceInvoke.ts');
+  return invoke<WorkflowReviewReport[]>('workflow_review_reports', { runId });
 }

@@ -1053,7 +1053,7 @@ impl AgentRuntimeManager {
             // session/new may leave a provider-native empty session, but its
             // adapter process never remains resident and no Assembly row is saved.
             let stopped = adapter.detach_session().await;
-            let config = result.map_err(|error| error.to_string())?;
+            let config = result.map_err(|error| authentication::explain(provider, error.to_string()))?;
             stopped.map_err(|error| error.to_string())?;
             Ok(config)
         };
@@ -3082,7 +3082,7 @@ impl AgentRuntimeManager {
         let mut update = AgentConversationConfigUpdate {
             model: normalized_optional_id(request.model),
             reasoning_effort: normalized_optional_id(request.reasoning_effort),
-            approval_policy: normalized_optional_id(request.approval_policy),
+            approval_policy: crate::proof_mode::requested_mode(normalized_optional_id(request.approval_policy)),
         };
         let native_session_id = {
             let mut sessions = self

@@ -200,6 +200,43 @@ impl ProviderDescriptor {
     }
 }
 
+/// One provider as Settings → Plugins and Providers shows it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSummary {
+    pub id: String,
+    pub display_name: String,
+    pub adapter_id: String,
+    /// The installed adapter's version; `None` when it isn't installed.
+    pub adapter_version: Option<String>,
+    pub read_only: bool,
+    pub proof_home: bool,
+    pub permission_handler: bool,
+}
+
+impl ProviderDescriptor {
+    pub fn summary(&self, adapter_version: Option<String>) -> ProviderSummary {
+        ProviderSummary {
+            id: self.id.clone(),
+            display_name: self.display_name.clone(),
+            adapter_id: self.adapter_id.clone(),
+            adapter_version,
+            read_only: self.read_only.is_some(),
+            proof_home: self.proof_home.is_some(),
+            permission_handler: self.pre_approval.permission_handler,
+        }
+    }
+}
+
+#[tauri::command]
+pub fn list_provider_descriptors(
+    manager: tauri::State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
+) -> Vec<ProviderSummary> {
+    all().iter()
+        .map(|descriptor| descriptor.summary(manager.providers().manifest(descriptor.provider()).ok().map(|manifest| manifest.version)))
+        .collect()
+}
+
 #[allow(dead_code)] // Used by proof mode (plan 3.11), a later piece.
 impl LoginEntry {
     /// A copy of the login with every refresh token removed; an error when the descriptor's
@@ -345,6 +382,18 @@ mod tests {
         assert!(codex.stripped(&json!({"refresh_token": "r"})).is_err());
         let antigravity = AgentConversationProvider::Antigravity.descriptor();
         assert!(antigravity.login.is_none() && antigravity.proof_home.is_none());
+    }
+
+    #[test]
+    fn settings_get_each_descriptor_with_its_installed_adapter() {
+        let antigravity = AgentConversationProvider::Antigravity.descriptor().summary(Some("1.2.1".into()));
+        assert_eq!(serde_json::to_value(&antigravity).unwrap(), json!({"id": "antigravity", "displayName": "Antigravity",
+            "adapterId": "agy-acp", "adapterVersion": "1.2.1", "readOnly": false, "proofHome": false, "permissionHandler": true}));
+        let codex = AgentConversationProvider::Codex.descriptor().summary(None);
+        assert_eq!((codex.adapter_version, codex.read_only, codex.proof_home, codex.permission_handler), (None, true, true, false));
+        let grok = &parse_manifest(r#"{"providers":[{"id":"grok","adapter_id":"grok-acp","display_name":"Grok Build","read_only":{"mode":"plan"}}]}"#).unwrap()[0];
+        let grok = grok.summary(Some("0.1.0".into()));
+        assert_eq!((grok.id.as_str(), grok.read_only, grok.proof_home), ("grok", true, false));
     }
 
     #[test]
