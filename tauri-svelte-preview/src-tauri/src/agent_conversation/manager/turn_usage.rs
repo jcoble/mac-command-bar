@@ -33,7 +33,7 @@ pub(super) fn note_reported_cost(session: &mut ManagedAgentSession, params: &Val
     }
 }
 
-/// Hands the `session/prompt` result and the latest reported cost to the listener.
+/// Hands the `session/prompt` result (null when the turn failed) and the latest reported cost to the listener.
 pub(super) fn report_turn_usage(session: &mut ManagedAgentSession, turn_id: &str, result: &Value) {
     let TurnUsageState { started_at_micros, cost_total_usd } = std::mem::take(&mut session.turn_usage);
     let Some(listener) = LISTENER.get() else { return };

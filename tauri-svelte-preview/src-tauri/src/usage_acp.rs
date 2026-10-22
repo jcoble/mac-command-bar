@@ -75,12 +75,21 @@ impl UsageDb {
     /// dropped, since ACP counts it; rows of any other turn stay.
     pub fn insert_acp_turn(&self, turn: &AcpTurn) -> Result<usize, String> {
         let tokens = &turn.models;
-        if tokens.is_empty() {
-            return Ok(0);
-        }
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| self.database_error("could not start ACP usage write", error))?;
+        if tokens.is_empty() {
+            // A failed turn writes no rows (its transcript rows stay), but its cost is in the
+            // provider's total, so the session's latest total moves on and the next turn is
+            // measured from it.
+            if let Some(total) = turn.cost_total_usd.map(|total| (total * 1_000_000.0).round() as i64) {
+                transaction.execute("UPDATE usage_events SET reported_cost_total_micros = ?1 WHERE id = (SELECT id FROM usage_events WHERE owned_id = ?2 AND source_kind = ?3 AND reported_cost_total_micros IS NOT NULL ORDER BY id DESC LIMIT 1)",
+                    params![total, turn.owned_id, ACP_SOURCE_KIND])
+                    .map_err(|error| self.database_error("could not move the reported cost total", error))?;
+                transaction.commit().map_err(|error| self.database_error("could not finish ACP usage write", error))?;
+            }
+            return Ok(0);
+        }
         let source_key = turn.native_session_id.clone().unwrap_or_else(|| turn.owned_id.clone());
         let cost = turn.cost_total_usd.map(|total| (total * 1_000_000.0).round() as i64)
             .map(|total| -> rusqlite::Result<(Option<i64>, i64)> {
@@ -206,6 +215,18 @@ mod tests {
             db.insert_acp_turn(&turn(turn_id, vec![model("claude-opus-5-5", 2, 10, 10, 5)], Some(total))).unwrap();
         }
         assert_eq!(rows(&db).iter().map(|row| row.5).collect::<Vec<_>>(), [Some(200_000), Some(50_000), Some(30_000)]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    // A turn that fails still reports the provider's total; it writes no rows (its transcript rows
+    // stay), but the next turn is measured from it.
+    #[test]
+    fn a_failed_turn_moves_the_cost_baseline_without_writing_rows() {
+        let (path, db) = open();
+        db.insert_acp_turn(&turn("turn-1", vec![model("claude-opus-5-5", 2, 10, 10, 5)], Some(0.10))).unwrap();
+        assert_eq!(db.insert_acp_turn(&turn("turn-2", vec![], Some(0.15))).unwrap(), 0);
+        db.insert_acp_turn(&turn("turn-3", vec![model("claude-opus-5-5", 2, 10, 10, 5)], Some(0.18))).unwrap();
+        assert_eq!(rows(&db).iter().map(|row| row.5).collect::<Vec<_>>(), [Some(100_000), Some(30_000)]);
         let _ = std::fs::remove_file(path);
     }
 

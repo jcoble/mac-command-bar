@@ -7294,7 +7294,7 @@ async fn handle_ordered_session_event(
                         return false;
                     }
                 }
-                record_finished_reply(session, &emitter); if let Ok(result) = &result { turn_usage::report_turn_usage(session, &turn_id, result); }
+                record_finished_reply(session, &emitter); turn_usage::report_turn_usage(session, &turn_id, result.as_ref().unwrap_or(&Value::Null));
                 let payload = match result {
                     Ok(_) if cancelled => AgentConversationPayload::Turn {
                         turn_id: turn_id.clone(),
