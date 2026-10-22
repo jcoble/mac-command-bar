@@ -36,7 +36,7 @@
     "tauri-svelte-preview/src-tauri/src/resources.rs": 2202,
     "tauri-svelte-preview/src-tauri/src/resources_disk.rs": 617,
     "tauri-svelte-preview/src-tauri/src/terminal/mod.rs": 1070,
-    "tauri-svelte-preview/src-tauri/src/usage_db.rs": 1338,
+    "tauri-svelte-preview/src-tauri/src/usage_db.rs": 1318,
     "tauri-svelte-preview/src-tauri/src/usage_sources.rs": 782,
     "tauri-svelte-preview/src-tauri/src/workflow/mod.rs": 5826,
     "tauri-svelte-preview/src/lib/shell/files/components/CodeMirrorSourceEditor.svelte": 1263,

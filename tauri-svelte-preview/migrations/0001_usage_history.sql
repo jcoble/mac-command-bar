@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS usage_events (
     source_event_id TEXT NOT NULL,
     source_key TEXT NOT NULL,
     inserted_at_micros INTEGER NOT NULL,
+    node_run_id TEXT,
+    reported_cost_micros INTEGER,
     UNIQUE (provider, provider_instance_id, source_kind, source_event_id)
 );
 
@@ -28,6 +30,7 @@ CREATE INDEX IF NOT EXISTS usage_events_provider_model_time_idx ON usage_events 
 CREATE INDEX IF NOT EXISTS usage_events_owner_time_idx ON usage_events (owned_id, occurred_at_micros);
 CREATE INDEX IF NOT EXISTS usage_events_workflow_time_idx ON usage_events (workflow_id, occurred_at_micros);
 CREATE INDEX IF NOT EXISTS usage_events_project_time_idx ON usage_events (project_id, occurred_at_micros);
+CREATE INDEX IF NOT EXISTS usage_events_source_key_idx ON usage_events (source_key);
 
 CREATE TABLE IF NOT EXISTS usage_source_cursors (
     provider TEXT NOT NULL,
@@ -57,6 +60,16 @@ CREATE TABLE IF NOT EXISTS usage_rate_versions (
     PRIMARY KEY (provider, model, effective_from_micros, version)
 );
 CREATE INDEX IF NOT EXISTS usage_rate_lookup_idx ON usage_rate_versions (provider, model, effective_from_micros, effective_to_micros);
+
+-- US dollars per million tokens. Rebuilt at startup from the rates Assembly
+-- ships; never edited in place.
+CREATE TABLE IF NOT EXISTS usage_rates (
+    model TEXT PRIMARY KEY,
+    input_rate REAL NOT NULL,
+    output_rate REAL NOT NULL,
+    cache_read_rate REAL NOT NULL,
+    cache_write_rate REAL NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS usage_daily_rollups (
     day TEXT NOT NULL,

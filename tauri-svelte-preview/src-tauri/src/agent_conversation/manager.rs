@@ -1,4 +1,4 @@
-#[path = "session_project.rs"] pub mod session_project; mod helper_close;
+#[path = "session_project.rs"] pub mod session_project; mod helper_close; pub mod turn_usage;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -250,6 +250,7 @@ pub struct ManagedAgentSession {
     /// recorded carries none, and counts as the first prompt.
     title_source: Option<String>,
     suspending: bool,
+    reported_cost_usd: Option<f64>, // The running cost total from the latest `usage_update`; taken when the turn ends.
 }
 
 #[derive(Clone, Debug)]
@@ -1966,7 +1967,7 @@ impl AgentRuntimeManager {
                 title_source: prior
                     .as_ref()
                     .and_then(|session| session.title_source.clone()),
-                suspending: false,
+                suspending: false, reported_cost_usd: None,
             },
         );
         let session = sessions
@@ -5146,7 +5147,7 @@ fn recovered_session_from_row(
         claude_children: stored.claude_children,
         rail_meta: stored.rail_meta,
         title_source: row.title_source,
-        suspending: false,
+        suspending: false, reported_cost_usd: None,
     };
     Ok(session)
 }
@@ -5984,7 +5985,7 @@ async fn pump_inbound(
                         }
                         break 'update session_is_quiescent(session);
                     }
-                    let mut reached_quiescence = update_raw_liveness(session, &params);
+                    let mut reached_quiescence = update_raw_liveness(session, &params); turn_usage::note_reported_cost(session, &params);
                     if let Some(payload) = stopped_background_task_payload(&mut session.background_work, &params) {
                         expect_claude_wake(session);
                         reached_quiescence |= session_is_quiescent(session);
@@ -7293,7 +7294,7 @@ async fn handle_ordered_session_event(
                         return false;
                     }
                 }
-                record_finished_reply(session, &emitter);
+                record_finished_reply(session, &emitter); if let Ok(result) = &result { turn_usage::report_turn_usage(session, &turn_id, result); }
                 let payload = match result {
                     Ok(_) if cancelled => AgentConversationPayload::Turn {
                         turn_id: turn_id.clone(),
@@ -12610,7 +12611,6 @@ mod tests {
             .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
-
 
     // Claude keeps a transcript this side can read. When it holds no turn — the
     // process was stopped before it wrote one — there is nothing on Claude's
