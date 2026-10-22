@@ -288,6 +288,18 @@ function makeService() {
     [['amend', '/repo', 'fix the lexer']]
   );
 
+  // A history read that finishes after the repository changed must not fill the new repository's box.
+  state.commitMessage = '';
+  state.amend = false;
+  let finish;
+  backend.readHistory = () => new Promise((resolve) => (finish = resolve));
+  const slow = git.setAmend(true);
+  state.root = '/other';
+  finish({ commits: [{ subject: 'from the first repository' }] });
+  await slow;
+  assert.equal(state.commitMessage, '', 'a read for another repository is dropped');
+  state.root = '/repo';
+
   // A history that cannot be read leaves the box empty; an empty amend still works.
   backend.readHistory = async () => {
     throw new Error('no history');

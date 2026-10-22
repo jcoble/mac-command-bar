@@ -26,8 +26,8 @@ export function createGitAmend(state: GitPanelState, backend: GitBackend) {
       } catch {
         // No history to read: the box stays empty, and an empty amend still works.
       }
-      // The switch or the box may have changed while git was answering.
-      if (!state.amend || state.commitMessage.trim() !== '') return;
+      // The repository, the switch or the box may have changed while git was answering.
+      if (state.root !== root || !state.amend || state.commitMessage.trim() !== '') return;
       state.commitMessage = prefill = subject;
     },
     /** The message to hand git for this amend. */
