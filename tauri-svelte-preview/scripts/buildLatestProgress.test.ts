@@ -26,11 +26,11 @@ test('a finished run waits for the restart', () => {
   assert.equal(done.text, 'Restarting Assembly on abc1234');
 });
 
-test('a failed run keeps the step it failed on and shows the error', () => {
+test('a failed run keeps the step it failed on and shows the error, leaving the log path to Open log', () => {
   const running = nextBuildLatest(idleBuildLatest, { line: '[2/4] Building Assembly' });
   const failed = nextBuildLatest(running, { done: true, error: '[2/4] Failed: cargo exited with 101. Log: /logs/build-latest.log' });
   assert.deepEqual(failed, { phase: 'failed', step: 2, total: 4, text: 'Building Assembly',
-    error: 'Failed: cargo exited with 101. Log: /logs/build-latest.log' });
+    error: 'Failed: cargo exited with 101.' });
 });
 
 test('starting again clears an earlier failure', () => {

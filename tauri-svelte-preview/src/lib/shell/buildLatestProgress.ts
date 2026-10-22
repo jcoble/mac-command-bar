@@ -15,7 +15,8 @@ const stepLine = /^\[(\d+)\/(\d+)\] (.*)$/;
 export function nextBuildLatest(state: BuildLatestProgress, event: BuildLatestEvent): BuildLatestProgress {
   if ('done' in event) {
     if (!event.error) return { ...state, phase: 'restarting' };
-    return { ...state, phase: 'failed', error: event.error.replace(stepLine, '$3') };
+    // The log path stays in the log and behind Open log; on screen it only crowds the error.
+    return { ...state, phase: 'failed', error: event.error.replace(stepLine, '$3').replace(/ Log: \S+$/, '') };
   }
   const match = stepLine.exec(event.line);
   if (!match) return state.phase === 'running' ? state : { ...state, phase: 'running', error: '' };
