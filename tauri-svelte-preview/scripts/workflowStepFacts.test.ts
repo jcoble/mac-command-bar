@@ -16,6 +16,8 @@ import { workflowErrorText, workflowStepFacts } from '../src/lib/shell/workflows
 
   const review = workflowStepFacts({ structuredOutput: { verdict: 'fail', findings: ['add() ignores b'], summary: 'x' } });
   assert.deepEqual([review.verdict, review.findings, review.commands], ['fail', ['add() ignores b'], []]);
+  const typed = workflowStepFacts({ structuredOutput: { verdict: 'fail', findings: [{ severity: 'blocking', path_line: 'src/a.rs:3', text: 'add() ignores b', fix: 'Use b' }] } });
+  assert.deepEqual(typed.findings, ['src/a.rs:3: add() ignores b']);
 
   assert.equal(workflowStepFacts({ structuredOutput: { url: 'https://github.com/o/r/pull/7' } }).prUrl, 'https://github.com/o/r/pull/7');
   assert.deepEqual(workflowStepFacts({ structuredOutput: null }), { commands: [], verdict: null, findings: [], prUrl: null });

@@ -13,6 +13,6 @@ The run works without the owner. Settle how the code behaves by reading it, neve
 
 Only blocking problems are findings: a bug, something the task asks for that is missing or doesn't work, a broken repository rule (security, lost data, a merge or release risk), or a change that breaks what the user sees. Everything else is not a finding, even when it is true: naming, wording, style, comments, test tidiness, an unlikely edge case, a refactor or a nicer way to write something. Put those in your final reply as optional notes and pass on them. In a later round, check that last round's findings are fixed and that the fixes broke nothing; don't look for new small things. When in doubt whether something blocks, it doesn't.
 
-Call report_review exactly once: PASS with no findings, or a list of actionable findings. Only a recorded call counts: if the call is rejected or fails, read the reason and call it again.
+Call report_result: verdict pass with no findings, or fail with each finding (severity blocking or minor, path_line, text, fix), and head, the commit you reviewed. Only a recorded call counts: if it is rejected, fix the field it names and call it again.
 
 Run commands with full paths or `git -C <dir>`; never start a command with `cd`, because that stops for approval.

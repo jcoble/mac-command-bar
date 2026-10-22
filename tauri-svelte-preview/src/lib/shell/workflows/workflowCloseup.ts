@@ -69,6 +69,10 @@ export function reviewGroup(run: WorkflowRunRecord, nodeId: string): string[] {
 
 /** "[P1] src/a.ts (why): text" or "src/a.ts:3 — text" → its tag, its location (a leading path, with a note in brackets) and the rest. */
 export function parseFinding(raw: unknown): CloseupFinding {
+  const typed = raw as { severity?: unknown; path_line?: unknown; text?: unknown } | null;
+  if (typeof typed?.text === 'string' && typeof typed.path_line === 'string') {
+    return { severity: typeof typed.severity === 'string' ? typed.severity : null, location: typed.path_line, text: typed.text };
+  }
   let text = typeof raw === 'string' ? raw : JSON.stringify(raw);
   const tag = /^\[([^\]]+)\]\s*/.exec(text);
   if (tag) text = text.slice(tag[0].length);

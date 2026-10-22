@@ -44,7 +44,6 @@ async fn non_claude_worker_applies_the_effort_advertised_at_session_creation() {
                 cwd: root.to_string_lossy().into(),
                 title: "Effort fixture".into(),
                 prompt: "Review it".into(),
-                role_id: "review".into(),
                 model: model.map(str::to_string),
                 effort: Some(wanted.into()),
                 permission: None,
@@ -109,7 +108,7 @@ fn a_worker_with_no_step_permission_starts_in_auto_under_a_starter_in_default() 
 fn yaml_agent_permission_reaches_the_role() {
     let (root, _) = yaml_fixture("agent-permission");
     let path = Path::new(".assembly/workflows/demo.yml");
-    std::fs::write(root.join(path), "name: Permissions\nsteps:\n  explicit:\n    agent: { provider: claude, permission: bypassPermissions }\n    prompt: prompts/build.md\n  omitted:\n    needs: [explicit]\n    agent: { provider: claude }\n    prompt: prompts/build.md\n").unwrap();
+    std::fs::write(root.join(path), "name: Permissions\nsteps:\n  explicit:\n    result: build\n    agent: { provider: claude, permission: bypassPermissions }\n    prompt: prompts/build.md\n  omitted:\n    needs: [explicit]\n    result: build\n    agent: { provider: claude }\n    prompt: prompts/build.md\n").unwrap();
     let definition = WorkflowEngine::validate_file(&root, path).unwrap();
     let role = |id: &str| definition.roles.iter().find(|role| role.id == id).unwrap();
     assert_eq!(role("explicit").permission_policy.value.as_deref(), Some("bypassPermissions"));
@@ -121,12 +120,12 @@ fn yaml_agent_permission_reaches_the_role() {
 fn yaml_policy_block_reaches_the_definition() {
     let (root, _) = yaml_fixture("guard-policy");
     let path = Path::new(".assembly/workflows/demo.yml");
-    std::fs::write(root.join(path), "name: Policy\npolicy:\n  commands: { allow: [pnpm test], deny: [\"curl *\"] }\n  default: deny\nsteps:\n  build:\n    agent: { provider: claude }\n    prompt: prompts/build.md\n").unwrap();
+    std::fs::write(root.join(path), "name: Policy\npolicy:\n  commands: { allow: [pnpm test], deny: [\"curl *\"] }\n  default: deny\nsteps:\n  build:\n    result: build\n    agent: { provider: claude }\n    prompt: prompts/build.md\n").unwrap();
     let definition = WorkflowEngine::validate_file(&root, path).unwrap();
     assert_eq!(definition.policy.commands.allow, vec!["pnpm test".to_string()]);
     assert_eq!(definition.policy.commands.deny, vec!["curl *".to_string()]);
     assert_eq!(definition.policy.default, policy::Decision::Deny);
-    std::fs::write(root.join(path), "name: Policy\npolicy: { commands: { alow: [ls] } }\nsteps:\n  build:\n    agent: { provider: claude }\n    prompt: prompts/build.md\n").unwrap();
+    std::fs::write(root.join(path), "name: Policy\npolicy: { commands: { alow: [ls] } }\nsteps:\n  build:\n    result: build\n    agent: { provider: claude }\n    prompt: prompts/build.md\n").unwrap();
     assert!(WorkflowEngine::validate_file(&root, path).is_err(), "a misspelt rule list must not be ignored");
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -53,6 +53,9 @@ const GROUP = run([
   assert.deepEqual(parseFinding('The plan misses the phone screen.'), { severity: null, location: null, text: 'The plan misses the phone screen.' });
   // A report the engine stored that is not a string still shows, as its JSON.
   assert.deepEqual(parseFinding({ file: 'a.ts' }), { severity: null, location: null, text: '{"file":"a.ts"}' });
+  // A typed report_result finding keeps its own severity, place and text.
+  assert.deepEqual(parseFinding({ severity: 'blocking', late: false, path_line: 'src/a.rs:12', text: 'Wrong name', fix: 'Rename it' }),
+    { severity: 'blocking', location: 'src/a.rs:12', text: 'Wrong name' });
 }
 
 { // rounds_come_from_the_runs_review_reports_per_reviewer_and_attempt

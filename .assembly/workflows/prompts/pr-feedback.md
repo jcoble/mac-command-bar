@@ -12,6 +12,6 @@ The pull request for this branch is open. The repository's review bot reviews ev
 
 Follow the repository rules (CLAUDE.md, AGENTS.md): smallest diff, no new abstractions, plain English. The run works without the owner: never ask the owner anything.
 
-Report: each finding, what you decided and why, the commit hashes, and the script's last output.
+Report with report_result: commits lists every commit this step made (none if nothing needed fixing), tests_added each test they add, and summary each finding, what you decided and why, and the script's last output. If report_result rejects it, fix the field it names and call it again; the step does not finish without it.
 
 Run commands with full paths or `git -C <dir>`; never start a command with `cd`, because that stops for approval.
