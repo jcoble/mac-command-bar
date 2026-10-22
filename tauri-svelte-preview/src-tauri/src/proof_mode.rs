@@ -149,6 +149,14 @@ pub fn session_launch(descriptor: &ProviderDescriptor, pre_approval: bool) -> Re
     })
 }
 
+/// Proof mode on for this test's thread only, so other tests run normally.
+#[cfg(test)]
+pub fn turn_on_for_this_thread(stdin: &str) {
+    let folder = std::env::temp_dir().join(format!("assembly-proof-mode-{}", uuid::Uuid::new_v4()));
+    let args = ["assembly".into(), "--proof-mode".into(), folder.display().to_string()];
+    TEST_ACTIVE.set(Some(Box::leak(Box::new(parse(&args, stdin.as_bytes()).unwrap().unwrap()))));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,13 +169,6 @@ mod tests {
 
     fn args(folder: &Path) -> Vec<String> {
         vec!["assembly".into(), "--proof-mode".into(), folder.display().to_string()]
-    }
-
-    /// Proof mode on for this test's thread only, so other tests run normally.
-    fn turn_on(stdin: &str) -> &'static ProofMode {
-        let mode = Box::leak(Box::new(parse(&args(&run_folder()), stdin.as_bytes()).unwrap().unwrap()));
-        TEST_ACTIVE.set(Some(mode));
-        mode
     }
 
     #[test]
@@ -190,7 +191,7 @@ mod tests {
     #[test]
     fn no_transcripts_or_saved_connections_load() {
         assert_eq!(past_sessions(|| vec![1]), vec![1]);
-        turn_on("planted\n\n");
+        turn_on_for_this_thread("planted\n\n");
         assert!(past_sessions(|| -> Vec<u8> { panic!("scanned transcripts") }).is_empty());
         for command in ["begin_agent_conversation_import", "connect_remote_assembly", "install_remote_assembly",
             "remove_remote_assembly_profile", "update_provider_cli", "start_workflow_run"] {
@@ -207,7 +208,7 @@ mod tests {
     fn the_terminal_keyring_and_github_writes_are_refused() {
         let none = serde_json::Value::Null;
         assert!(refuse_command("start_terminal_session", &none).is_ok(), "only in proof mode");
-        turn_on("planted\n\n");
+        turn_on_for_this_thread("planted\n\n");
         for command in ["start_terminal_session", "open_terminal_path", "merge_github_pull_request",
             "comment_github_pull_request", "reply_github_pull_request_comment", "submit_github_pull_request_review"] {
             assert_eq!(refuse_command(command, &none).unwrap_err(), format!("{command} is off in proof mode"));
@@ -230,7 +231,7 @@ mod tests {
         let options = |launch: LaunchSetting| serde_json::Value::Object(launch.meta)["claudeCode"]["options"].clone();
         let claude = for_adapter("claude-agent-acp").unwrap();
         assert!(options(session_launch(claude, true).unwrap())["tools"].is_null());
-        turn_on("planted\n\n");
+        turn_on_for_this_thread("planted\n\n");
         let launch = options(session_launch(claude, true).unwrap());
         assert_eq!(launch["tools"], serde_json::json!([]));
         assert!(launch["allowedTools"].is_array());

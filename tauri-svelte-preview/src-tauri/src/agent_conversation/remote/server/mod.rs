@@ -156,6 +156,7 @@ pub(super) fn write_attachment_chunk(
 }
 
 pub(super) async fn execute_server_command(state: &ServerState, upload: &Arc<Mutex<Option<PendingAttachment>>>, command: RemoteCommand, progress: crate::agent_conversation::providers::updates::ProgressSink) -> Result<RemoteResponse, String> {
+    command.refuse_in_proof_mode()?;
     let vault = state.data_dir.join("conversation-attachments");
     let command = match command {
         RemoteCommand::AttachmentChunk { upload_id, owned_id, mime_type, first, last, bytes } => {
@@ -220,7 +221,6 @@ pub(super) async fn execute_server_command(state: &ServerState, upload: &Arc<Mut
             ).await.map_err(|error| error.to_string())?;
         }
         RemoteCommand::TerminalStart(request) => {
-            crate::proof_mode::refuse("The terminal")?;
             // Runs inline, like the Mac's own start, so a cancel that arrives first starts nothing.
             let terminals = &state.terminals;
             // An exited shell is never reused, so drop this session's before starting a new one.
@@ -270,9 +270,6 @@ pub(super) async fn execute_server_command(state: &ServerState, upload: &Arc<Mut
         // Phone pairing needs this server's pairing code and database, not the engine.
         if let Some(answer) = crate::agent_conversation::phone::operation(state, &operation, &args) {
             return answer.map(RemoteResponse::Workflow);
-        }
-        if matches!(operation.as_str(), "create" | "start") {
-            crate::proof_mode::refuse("Starting workflow runs")?;
         }
         // A dropped socket or a client cancel aborts this request's task; the engine
         // call runs on its own task so a run is never left half-started.
