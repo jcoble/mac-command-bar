@@ -146,7 +146,7 @@ impl RelayLink {
 /// interrupted by the last shutdown are recovered before any request is served.
 pub(super) fn server_state(manager: AgentRuntimeManager, data_dir: PathBuf, token: Arc<str>) -> Result<ServerState, String> {
     let (events, _) = broadcast::channel(256);
-    let workflow = crate::workflow::WorkflowEngine::managed(manager.clone(), manager.store_handle()); crate::usage_history::start_acp_usage(data_dir.join("usage-history.sqlite3"), manager.store_handle());
+    let workflow = crate::workflow::WorkflowEngine::managed(manager.clone(), manager.store_handle()); crate::usage_history::start_acp_usage(data_dir.join("usage-history.sqlite3"), manager.store_handle()); crate::usage_history::otel::start(&data_dir.join("usage-history.sqlite3"), manager.clone());
     let event_sender = events.clone();
     let workflow_events = workflow.clone();
     let runtime = tokio::runtime::Handle::current();
