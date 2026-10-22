@@ -639,11 +639,7 @@ pub(crate) trait AgentRuntimePort: Send + Sync {
 }
 
 pub(crate) fn worker_permission(provider: AgentConversationProvider, chosen: Option<String>) -> Option<String> {
-    chosen.or_else(|| match provider {
-        AgentConversationProvider::Claude => Some("auto".into()), // Unattended auto review; Claude 0.88/0.93 mode kind=auto_review.
-        AgentConversationProvider::Codex => Some("agent".into()), // Same auto_review kind in Codex 1.13.1/2.2.2.
-        _ => None, // Antigravity has no auto-review mode; its Assembly-tool approval gap is TSK-1522.
-    })
+    chosen.or_else(|| provider.descriptor().unattended.mode.clone()) // The provider's auto-review mode, if it has one.
 }
 
 fn capped_permission(
@@ -665,16 +661,9 @@ impl AgentRuntimePort for AgentRuntimeManager {
         request: AgentDispatchRequest,
     ) -> PortFuture<'a, AgentDispatchReceipt> {
         Box::pin(async move {
-            let provider = match request.provider.to_ascii_lowercase().as_str() {
-                "codex" => AgentConversationProvider::Codex,
-                "claude" => AgentConversationProvider::Claude,
-                "antigravity" => AgentConversationProvider::Antigravity,
-                other => {
-                    return Err(WorkflowError::PolicyDenied(format!(
-                        "Unsupported provider {other}"
-                    )))
-                }
-            };
+            let provider = AgentConversationProvider::parse(&request.provider).ok_or_else(|| {
+                WorkflowError::PolicyDenied(format!("Unsupported provider {}", request.provider))
+            })?;
             let connection = self
                 .ensure_async(EnsureAgentConversationRequest {
                     owned_id: request.owned_id.clone(),
@@ -4516,7 +4505,7 @@ mod tests {
 
     #[test]
     fn elevated_yaml_mode_needs_an_owner_or_elevated_starter() {
-        use AgentConversationProvider::{Claude, Codex};
+        #[allow(non_snake_case)] let (Claude, Codex) = (AgentConversationProvider::Claude, AgentConversationProvider::Codex);
         let cap = |mode: &str, starter, provider| capped_permission(Some(mode.into()), starter, provider);
         assert_eq!(cap("bypassPermissions", None, Claude).as_deref(), Some("bypassPermissions"));
         assert_eq!(cap("bypassPermissions", Some(Some("auto")), Claude).as_deref(), Some("auto"));
@@ -4528,7 +4517,7 @@ mod tests {
 
     #[test]
     fn workflow_worker_defaults_to_auto_and_keeps_an_explicit_mode() {
-        use AgentConversationProvider::{Antigravity, Claude, Codex};
+        #[allow(non_snake_case)] let (Antigravity, Claude, Codex) = (AgentConversationProvider::Antigravity, AgentConversationProvider::Claude, AgentConversationProvider::Codex);
         assert_eq!(worker_permission(Claude, None).as_deref(), Some("auto"));
         assert_eq!(worker_permission(Codex, None).as_deref(), Some("agent"));
         assert_eq!(worker_permission(Codex, Some("agent-full-access".into())).as_deref(), Some("agent-full-access"));
