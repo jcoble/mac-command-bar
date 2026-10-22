@@ -4,6 +4,7 @@
 // not green, the branch is behind main, the review bot has not reviewed <head>, or a bot thread is open.
 // Exit 7 prints one TAP line per change that needs the owner: a CODEOWNERS path (read from main) or a rule
 // CODEOWNERS can't express. Exit 0: ready to merge. It never merges and never marks the PR ready.
+import { execFileSync } from 'node:child_process';
 import { acceptedIds, botCommentBodies, gh, openThreads, reviewState, reviewThreads, type Thread } from './prBotReview.ts';
 
 type Check = { name?: string; context?: string; status?: string; conclusion?: string | null; state?: string };
@@ -76,7 +77,10 @@ function taps(gate: Gate, budget?: number): string[] {
     const added = lines.filter((line) => line.startsWith('+')).map((line) => line.slice(1));
     const name = basename(file.filename);
     const lockName = LOCKFILES[name];
-    if (lockName && file.patch === undefined) out.push(`lockfile too large to read: ${file.filename}`);
+    // GitHub leaves out the patch of a very large diff; a file the rules read then can't be cleared.
+    if (file.patch === undefined && file.additions > 0 && (lockName || SKIPS.some(([type]) => type.test(file.filename)))) {
+      out.push(`diff too large to read: ${file.filename}`);
+    }
     if (lockName) {
       const names = (sign: string) => lines.filter((line) => line.startsWith(sign)).map((line) => line.slice(1).match(lockName)?.[1]).filter(Boolean);
       const removed = new Set(names('-'));
@@ -122,11 +126,15 @@ export function collect(prArg: string, head: string): Gate {
   const repo = gh(['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner']).trim();
   const pr = JSON.parse(gh(['pr', 'view', prArg, '--json', 'number,headRefOid,baseRefName,statusCheckRollup']));
   const compare = JSON.parse(gh(['api', `repos/${repo}/compare/${pr.baseRefName}...${head}`, '--jq', '{behind_by: .behind_by, main: .base_commit.sha}']));
+  // A missing file reads as ''; any other failure stops the gate, so an unread CODEOWNERS never clears a change.
   const read = (path: string, ref: string) => {
     try {
-      return gh(['api', `repos/${repo}/contents/${path}?ref=${ref}`, '-H', 'Accept: application/vnd.github.raw']);
-    } catch {
-      return '';
+      return execFileSync('gh', ['api', `repos/${repo}/contents/${path}?ref=${ref}`, '-H', 'Accept: application/vnd.github.raw'],
+        { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (error) {
+      if (String((error as { stderr?: string }).stderr).includes('HTTP 404')) return '';
+      process.stderr.write(String((error as { stderr?: string }).stderr));
+      throw error;
     }
   };
   const files = (JSON.parse(gh(['api', '--paginate', '--slurp', `repos/${repo}/pulls/${pr.number}/files`])) as PrFile[][]).flat();

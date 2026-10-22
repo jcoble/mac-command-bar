@@ -21,6 +21,7 @@ const answers = require(${JSON.stringify(join(dir, 'answers.json'))});
 const args = process.argv.slice(2).join(' ');
 const key = Object.keys(answers).find((k) => args.includes(k));
 if (key === undefined) { console.error('gh: Not Found (HTTP 404)'); process.exit(1); }
+if (answers[key]?.error) { console.error(answers[key].error); process.exit(1); }
 process.stdout.write(typeof answers[key] === 'string' ? answers[key] : JSON.stringify(answers[key]));
 `);
   chmodSync(join(dir, 'gh'), 0o755);
@@ -172,4 +173,16 @@ test('several taps print one line each, then the count', () => {
     'TAP: 5 changed lines, over 1.5x the budget of 1',
     'REASON: 2 taps before merge',
   ]);
+});
+
+test('a CODEOWNERS read that fails for any reason but a missing file stops the gate', () => {
+  const result = run(['473', HEAD], { 'contents/CODEOWNERS': { error: 'gh: Server Error (HTTP 502)' } });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /HTTP 502/);
+});
+
+test('a changed source file without a readable diff is a tap', () => {
+  assertTap(withFile({ filename: 'core/src/huge.rs', status: 'modified', additions: 4000, deletions: 0 } as ReturnType<typeof file>),
+    /^TAP: diff too large to read: core\/src\/huge\.rs$/m);
+  assert.equal(evaluate(withFile({ filename: 'docs/a.ts', status: 'renamed', previous_filename: 'docs/b.ts', additions: 0, deletions: 0 } as ReturnType<typeof file>), HEAD, []).exitCode, 0);
 });
