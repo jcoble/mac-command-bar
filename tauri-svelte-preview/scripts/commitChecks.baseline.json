@@ -78,7 +78,7 @@
     "tauri-svelte-preview/src/lib/shell/sessionWorkspaces.ts": 612,
     "tauri-svelte-preview/src/lib/shell/stacks/stackStore.svelte.ts": 1014,
     "tauri-svelte-preview/src/lib/shell/terminal/terminalService.ts": 1059,
-    "tauri-svelte-preview/src/lib/shell/settings/themes/themeRegistry.ts": 717,
+    "tauri-svelte-preview/src/lib/shell/settings/themes/themeRegistry.ts": 697,
     "tauri-svelte-preview/src/lib/shell/worktrees/worktreeManagerRows.ts": 691,
     "tauri-svelte-preview/src/lib/sourceData.ts": 2922,
     "tauri-svelte-preview/src/lib/sourceDockviewWorkspace.ts": 1188,
