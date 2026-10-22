@@ -1900,7 +1900,7 @@ impl AgentRuntimeManager {
             state: ConversationConnectionState::Connecting,
             config: AgentConversationConfigState { reasoning_effort: reasoning_effort.clone(), ..Default::default() },
         };
-        let provider_instance_id = format!("{}-{generation}", provider_id(request.provider));
+        let provider_instance_id = format!("{}-{generation}", request.provider.id());
         let created_at_ms = timestamp_millis();
         sessions.insert(
             owned_id.clone(),
@@ -2111,7 +2111,7 @@ impl AgentRuntimeManager {
                 let environment = session_spawn_environment(provider);
                 let mut adapter = AcpRuntimeAdapter::with_environment(
                     manifest,
-                    format!("provider:{}", provider_id(provider)),
+                    format!("provider:{}", provider.id()),
                     cwd.clone(),
                     environment,
                 );
@@ -5101,7 +5101,7 @@ fn recovered_session_from_row(
     let session = ManagedAgentSession {
         owned_id: row.owned_id.clone(),
         provider,
-        provider_instance_id: format!("{}-{}", provider_id(provider), stored.generation),
+        provider_instance_id: format!("{}-{}", provider.id(), stored.generation),
         native_session_id: row.native_session_id,
         native_session_mode: stored.native_session_mode,
         generation: stored.generation,
@@ -6248,6 +6248,13 @@ async fn pump_inbound(
                 let options = permission_options(&params);
                 let command = params.pointer("/toolCall/rawInput/command").and_then(|command| command.as_str().map(str::to_owned)
                     .or_else(|| command.as_array().map(|parts| parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))));
+                // The descriptor's permission-handler pre-approval answers the agent's Assembly tools here (TSK-1522).
+                let answer = sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&owned_id).filter(|session| session.generation == generation
+                    && session.writer_lease.owner == AgentWriterLeaseOwner::Structured).and_then(|session| super::providers::descriptors::handler_answer(session.provider, &params));
+                if let Some(answer) = answer {
+                    if let Err(error) = transport_runtime.respond(wire_id, answer).await { crate::debug_log::stderr_log!("Could not pre-approve an Assembly tool: {error}"); }
+                    continue;
+                }
                 let mut sessions = sessions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -7728,13 +7735,6 @@ fn provider_is_multi_session_safe(capabilities: &AgentCapabilities) -> bool {
     capabilities.session.multi_session
 }
 
-fn provider_id(provider: AgentConversationProvider) -> &'static str {
-    match provider {
-        AgentConversationProvider::Codex => "codex",
-        AgentConversationProvider::Claude => "claude",
-        AgentConversationProvider::Antigravity => "antigravity",
-    }
-}
 fn timestamp_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -7933,7 +7933,7 @@ fn normalize_codex_composite_config_update(
     current: &AgentConversationConfigState,
     update: &mut AgentConversationConfigUpdate,
 ) {
-    if provider != AgentConversationProvider::Codex || current.available_efforts.is_empty() {
+    if !provider.descriptor().effort_in_model_id || current.available_efforts.is_empty() {
         return;
     }
     let Some(model) = update.model.as_deref() else {
@@ -11945,7 +11945,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_helper_starts_in_auto_even_when_its_parent_is_in_default() {
-        use AgentConversationProvider::{Claude, Codex};
+        #[allow(non_snake_case)] let (Claude, Codex) = (AgentConversationProvider::Claude, AgentConversationProvider::Codex);
         for (parent_provider, parent_mode, helper_provider, log, asked) in [
             (Claude, Some("default"), "claude", "config_options", r#""modeId":"auto""#),
             (Claude, None, "codex", "multiplex", r#""approvalPolicy":"agent""#),

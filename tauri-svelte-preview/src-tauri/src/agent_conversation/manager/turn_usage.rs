@@ -40,7 +40,7 @@ pub(super) fn report_turn_usage(session: &mut ManagedAgentSession, turn_id: &str
     listener(AcpTurn {
         owned_id: session.owned_id.clone(),
         native_session_id: session.native_session_id.clone(),
-        provider: provider_id(session.provider).to_string(),
+        provider: session.provider.id().to_string(),
         turn_id: turn_id.to_string(),
         models: super::super::normalization::turn_usage::turn_model_tokens(result, session.config.model.as_deref()),
         cost_total_usd,
