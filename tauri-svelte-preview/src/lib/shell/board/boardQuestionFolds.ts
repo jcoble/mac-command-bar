@@ -15,8 +15,10 @@ export function readFolds(storage: Storage): Folds {
   }
 }
 
-/** Saves the folds of the questions still on the board and drops the rest. */
-export function writeFolds(storage: Storage, folds: Folds, boardIds: string[]): void {
-  const kept = Object.fromEntries(boardIds.filter((id) => id in folds).map((id) => [id, folds[id]]));
+/** Saves the folds of the questions still on the board and drops the rest. A machine missing from
+ *  this read (unreachable for now) keeps its folds, since its questions weren't listed. Ids are `<machine>:<n>`. */
+export function writeFolds(storage: Storage, folds: Folds, boardIds: string[], machines: string[]): void {
+  const listed = (id: string): boolean => machines.includes(id.slice(0, id.lastIndexOf(':')));
+  const kept = Object.fromEntries(Object.entries(folds).filter(([id]) => boardIds.includes(id) || !listed(id)));
   storage.setItem(FOLDS_KEY, JSON.stringify(kept));
 }

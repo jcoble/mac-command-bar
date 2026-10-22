@@ -21,15 +21,20 @@ const memory = (): Storage => {
 }
 { // a_stored_fold_wins_over_the_default
   const storage = memory();
-  writeFolds(storage, { 'mac:1': false, 'mac:2': true }, ['mac:1', 'mac:2']);
+  writeFolds(storage, { 'mac:1': false, 'mac:2': true }, ['mac:1', 'mac:2'], ['mac']);
   const folds = readFolds(storage);
   assert.equal(isFoldOpen(folds, 'mac:1', false), false);
   assert.equal(isFoldOpen(folds, 'mac:2', true), true);
 }
 { // ids_no_longer_on_the_board_are_dropped_on_write
   const storage = memory();
-  writeFolds(storage, { 'mac:1': false, 'mac:9': false }, ['mac:1']);
+  writeFolds(storage, { 'mac:1': false, 'mac:9': false }, ['mac:1'], ['mac']);
   assert.deepEqual(JSON.parse(storage.getItem(FOLDS_KEY) ?? ''), { 'mac:1': false });
+}
+{ // an_unreachable_machine_keeps_its_folds
+  const storage = memory();
+  writeFolds(storage, { 'mac:1': false, 'box:4': false }, ['mac:1'], ['mac']);
+  assert.deepEqual(JSON.parse(storage.getItem(FOLDS_KEY) ?? ''), { 'mac:1': false, 'box:4': false });
 }
 { // a_damaged_value_reads_as_no_folds
   const storage = memory();
