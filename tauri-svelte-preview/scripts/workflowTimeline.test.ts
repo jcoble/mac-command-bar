@@ -159,6 +159,7 @@ function node(nodeId: string, structuredOutput: unknown, finishedAtMs: number) {
   const run = { id: RUN, definition: { nodes: [{ id: 'review', title: 'review' }] }, inputSnapshot: {}, nodes: [] } as unknown as WorkflowRunRecord;
   const [item] = buildWorkflowTimeline(history, [], run);
   assert.deepEqual([item.title, item.detail], ['Orchestrator answered review: accept', 'Both findings are wording nits the spec allows.']);
+  assert.equal(item.kind, 'orchestrator', 'it does not read as the owner');
 }
 
 console.log('workflowTimeline tests passed');

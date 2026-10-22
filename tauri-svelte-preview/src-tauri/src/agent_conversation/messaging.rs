@@ -504,12 +504,13 @@ impl MessagingEndpoint {
                 let step_id = args["step"].as_str().ok_or("step must be a step id")?;
                 let run = engine.get_run(run_id).map_err(workflow_error)?;
                 let step = run.nodes.iter().find(|node| node.node_id == step_id).ok_or("Unknown step")?;
-                if step.state == crate::workflow::WorkflowNodeState::WaitingApproval {
-                    return Err("a gate is the owner's to decide: post it on the Build Board for the owner".into());
+                // Only a review's own decision points are the orchestrator's; gates, restart recovery and timeouts stay the owner's.
+                if !step.failure.as_ref().is_some_and(|failure| matches!(failure.code.as_str(), "loop-stopped" | "review-report")) {
+                    return Err("only a review waiting at its round limit or without a report can be decided here; post anything else (a gate, a timeout, a restart check) on the Build Board for the owner".into());
                 }
-                let run = engine.answer_pause(run_id, step_id, args["decision"].as_str().unwrap_or_default(),
-                    args["reply"].as_str().map(str::to_string), "orchestrator", args["why"].as_str(),
-                    &format!("orchestrator:{step_id}:{}", step.attempt), Some(step.attempt)).await.map_err(workflow_error)?;
+                let decision = args["decision"].as_str().unwrap_or_default();
+                let run = engine.answer_pause(run_id, step_id, decision, None, "orchestrator", args["why"].as_str(),
+                    &format!("orchestrator:{step_id}:{}:{decision}", step.attempt), None).await.map_err(workflow_error)?;
                 Ok(text_json(json!({"run_id":run.id,"state":run.state})))
             }
             _ => Err("Tool not allowed".into()),
@@ -548,9 +549,9 @@ impl MessagingEndpoint {
                  "inputSchema":{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"]}},
                 {"name":"stop_workflow_run","description":"Stop a workflow run you started.",
                  "inputSchema":{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"]}},
-                {"name":"decide_step","description":"Main orchestrator only: decide a workflow step that is waiting (a review at its round limit, a stopped or failed step) when its findings and the task spec give enough to decide. accept completes it as it is, another-round redoes it with reply as the narrowed brief, stop ends the run. why, one or two sentences, is recorded in the run for the owner. Gates, and anything that needs the owner's judgment (scope, a product choice, risk), stay the owner's: post those on the Build Board and send the owner a phone notification.",
+                {"name":"decide_step","description":"Main orchestrator only: decide a review step that is waiting (at its round limit, or because its turn gave no report) when its findings and the task spec give enough to decide. accept completes it as it is, another-round redoes it, stop ends the run. why, one or two sentences, is recorded in the run for the owner. Gates, and anything that needs the owner's judgment (scope, a product choice, risk), stay the owner's: post those on the Build Board and send the owner a phone notification.",
                  "inputSchema":{"type":"object","properties":{"run_id":{"type":"string"},"step":{"type":"string"},
-                     "decision":{"type":"string","enum":["accept","another-round","stop"]},"why":{"type":"string"},"reply":{"type":"string"}},
+                     "decision":{"type":"string","enum":["accept","another-round","stop"]},"why":{"type":"string"}},
                      "required":["run_id","step","decision","why"]}},
                 {"name":"report_review","description":"Workflow review steps only: a verdict must be recorded once; retry a rejected or failed call. Use pass with no findings, or fail with each finding.",
                  "inputSchema":{"type":"object","properties":{"verdict":{"type":"string","enum":["pass","fail"]},

@@ -2552,7 +2552,7 @@ impl WorkflowEngine {
             return Err(WorkflowError::PolicyDenied("Only the owner, or the main orchestrator saying why, can answer a paused step".into()));
         }
         if let Some(existing) = self.idempotent_run(run_id, idempotency_key)? {
-            return Ok(existing);
+            return if decision == "stop" && existing.state == WorkflowRunState::WaitingInput { self.cancel(run_id, &format!("{idempotency_key}:stop")).await } else { Ok(existing) };
         }
         let mut run = self.require_run(run_id)?;
         let node = run.nodes.iter().find(|node| node.node_id == node_id).ok_or_else(|| WorkflowError::NotFound(node_id.into()))?;
@@ -2602,8 +2602,8 @@ impl WorkflowEngine {
     /// A run's 20 newest changes, oldest first, as `(time ms, line)`, e.g. "review: owner answered".
     pub(crate) fn run_timeline(&self, run_id: &str) -> Result<Vec<(i64, String)>, WorkflowError> {
         let rows = self.store.workflow_run_timeline(run_id, 20).map_err(|error| WorkflowError::Ledger(error.to_string()))?;
-        Ok(rows.into_iter().map(|(at, kind, node)| {
-            let what = kind.rsplit('.').next().unwrap_or_default().replace('-', " ");
+        Ok(rows.into_iter().map(|(at, kind, node, by)| {
+            let what = if by.as_deref() == Some("orchestrator") { "orchestrator answered".into() } else { kind.rsplit('.').next().unwrap_or_default().replace('-', " ") };
             (at, node.map_or_else(|| format!("run {what}"), |node| format!("{node}: {what}")))
         }).collect())
     }

@@ -24,6 +24,10 @@ fn the_main_orchestrator_decides_a_paused_step_and_the_run_records_it() {
     let history = engine.store.list_workflow_run_history(&run.id).unwrap();
     let recorded = history.iter().find(|row| row.kind == "workflow.node.owner-answered").unwrap();
     assert_eq!(serde_json::to_value(recorded).unwrap()["answer"], answer);
+    // The phone's timeline names who answered, not just that someone did.
+    let lines: Vec<String> = engine.run_timeline(&run.id).unwrap().into_iter().map(|(_, line)| line).collect();
+    assert!(lines.contains(&"review: orchestrator answered".to_string()), "{lines:?}");
+    assert!(!lines.iter().any(|line| line.contains("owner answered")), "{lines:?}");
 }
 
 #[test]
@@ -75,4 +79,36 @@ fn a_stop_by_the_main_orchestrator_is_recorded_with_its_why() {
     let stopped = tool(&endpoint, &token, "decide_step", json!({"run_id":run.id,"step":"review","decision":"stop","why":"The task needs splitting."})).unwrap();
     assert_eq!(stopped["state"], "cancelled");
     assert_eq!(engine.get_run(&run.id).unwrap().input_snapshot["answers"][0]["why"], "The task needs splitting.");
+}
+
+#[test]
+fn the_main_orchestrator_cannot_decide_a_pause_that_is_not_a_review_decision() {
+    let repo = RunRepo::new();
+    let engine = run_engine(Arc::new(FakeRuntime::default()));
+    let endpoint = agent_endpoint(&engine, &repo.0);
+    let token = agent(&engine, &endpoint, "orch", &repo.0);
+    engine.store.set_main_orchestrator(Some("orch")).unwrap();
+    let mut run = loop_stopped_run(&engine, &repo.0);
+    // The same wait, as a restart check leaves it.
+    run.nodes.iter_mut().find(|node| node.node_id == "review").unwrap().failure =
+        Some(WorkflowFailure { code: "runtime".into(), message: "outcome unknown, check the PR".into(), budget: None });
+    engine.append(&mut run, "workflow.test.recovery", "recovery", None).unwrap();
+    let error = decide(&endpoint, &token, &run.id, "review", json!("Looks done.")).unwrap_err();
+    assert!(error.contains("Build Board"), "{error}");
+    let run = engine.get_run(&run.id).unwrap();
+    assert_eq!(run.state, WorkflowRunState::WaitingInput);
+    assert!(run.input_snapshot["answers"].is_null(), "nothing was recorded");
+}
+
+#[test]
+fn a_stop_whose_cancel_did_not_finish_is_finished_by_the_retry() {
+    let repo = RunRepo::new();
+    let engine = run_engine(Arc::new(FakeRuntime::default()));
+    let mut run = loop_stopped_run(&engine, &repo.0);
+    // The answer is saved, the cancel never happened.
+    run.input_snapshot["answers"] = json!([{"step":"review","decision":"stop","reply":null,"by":"owner","why":null}]);
+    engine.append(&mut run, "workflow.node.owner-answered", "stop", Some("review")).unwrap();
+    assert_eq!(engine.get_run(&run.id).unwrap().state, WorkflowRunState::WaitingInput);
+    let done = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", "stop", None, "owner", None, "stop", None)).unwrap();
+    assert_eq!(done.state, WorkflowRunState::Cancelled);
 }
