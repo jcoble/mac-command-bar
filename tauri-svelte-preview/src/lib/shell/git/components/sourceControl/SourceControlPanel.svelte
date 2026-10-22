@@ -244,7 +244,7 @@
     const worktree = worktreeManager.worktrees.find(
       (entry) => canonicalPath(entry.path) === target && entry.isPrunable !== true
     );
-    if (worktreeManager.loading || canonicalPath(worktreeManager.root ?? '') !== sessionRootPath) return;
+    if (worktreeManager.loading || !worktreeManager.worktrees.some((entry) => canonicalPath(entry.path) === sessionRootPath)) return;
     if (!worktree || !scopeOptions.some((option) => canonicalPath(option.path) === target)) {
       setInspectionRoot('');
       return;

@@ -40,6 +40,8 @@
     root: string;
     /** False when the active session's checkout has disappeared. */
     rootAvailable?: boolean;
+    /** The folder the session works in, which Source Control reads; `root` when unset. */
+    sourceControlRoot?: string;
     /** The active session's ownedId, or null. */
     ownedId: string | null;
     /** Optional tree-only projection while rail selection is rebuilt in layers. */
@@ -71,6 +73,7 @@
     activeId,
     root,
     rootAvailable = true,
+    sourceControlRoot,
     ownedId,
     filesRoot,
     filesOwnedId,
@@ -143,7 +146,7 @@
       <div class="panel-body showing">
         <SourceControlPanel
           visible={true}
-          root={viewing ? viewedRoot ?? '' : root}
+          root={viewing ? viewedRoot ?? '' : sourceControlRoot || root}
           {ownedId}
           rootAvailable={viewing || rootAvailable}
           inspectionRoot={viewing ? undefined : sourceControlInspectionRoot}
