@@ -200,7 +200,8 @@ export function buildMyWorkGroups(
   const prepared = prepareMyWorkSessions(sessions, options, manualOrder);
   // A helper sits under its parent's row, and a workflow run's workers in a
   // section of their own; a pinned one sits in Pinned instead. Each appears
-  // once. A helper whose parent is not listed stays an ordinary row.
+  // once. A helper whose parent is not listed stays an ordinary row, and so does
+  // a finished helper when the rail is grouped by status, so Done and Settled hold it.
   const listed = new Set(prepared.map((session) => session.ownedId));
   const helpers = new Map<string, OwnedSession[]>();
   const runs = new Map<string, MyWorkGroup>();
@@ -208,7 +209,7 @@ export function buildMyWorkGroups(
   for (const session of prepared) {
     if (session.pinnedAt) {
       all.push(session);
-    } else if (session.helperOf && listed.has(session.helperOf)) {
+    } else if (session.helperOf && listed.has(session.helperOf) && !(options.groupByStatus && myWorkStatus(session) !== 'working')) {
       helpers.set(session.helperOf, [...(helpers.get(session.helperOf) ?? []), session]);
     } else if (session.runId) {
       const key = `run:${session.runId}`;
