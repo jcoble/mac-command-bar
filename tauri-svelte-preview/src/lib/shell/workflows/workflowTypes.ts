@@ -524,7 +524,9 @@ export function workflowStepFacts(node: Pick<WorkflowNodeRunRecord, 'structuredO
         index < lines.length - 1 || line !== '').slice(-5).join('\n')
     })),
     verdict: typeof output.verdict === 'string' ? output.verdict : null,
-    findings: Array.isArray(output.findings) ? output.findings.map(String) : [],
+    // A failed command is its text; a review finding is { path_line, text, ... }.
+    findings: Array.isArray(output.findings) ? output.findings.map((finding) => finding && typeof finding === 'object'
+      ? `${finding.path_line ?? ''}: ${finding.text ?? ''}` : String(finding)) : [],
     prUrl: typeof output.url === 'string' && output.url ? output.url : null
   };
 }

@@ -17,7 +17,7 @@ async fn an_mcp_sdk_client_initializes_lists_the_tools_and_sends_a_message() {
     assert_eq!(server.protocol_version, ProtocolVersion::LATEST);
     assert_eq!(server.server_info.as_ref().unwrap().name, "assembly");
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 13);
+    assert_eq!(tools.len(), 12);
     let send = tools.iter().find(|tool| tool.name == "send_message").unwrap();
     assert_eq!(send.input_schema["required"], json!(["to", "text"]));
     // An optional argument is left out; a null is read as a value and refused or misread.

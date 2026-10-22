@@ -29,9 +29,10 @@ pub(super) fn refuse_parallel_agents(steps: &serde_json::Map<String, Value>) -> 
     Ok(())
 }
 
-/// Review and `run` steps must leave the code as they found them. Agent steps join with `result:` (slice 2).
+/// Only a `result: build` step may change the code; review, `run` and every other agent step leave it as they found it.
 fn guards_code(run: &WorkflowRunRecord, node_id: &str) -> bool {
-    run.definition.nodes.iter().any(|node| node.id == node_id && (node.step.get("review").is_some() || node.step.get("run").is_some()))
+    run.definition.nodes.iter().any(|node| node.id == node_id && (node.step.get("review").is_some() || node.step.get("run").is_some()
+        || node.step.get("agent").is_some() && node.step["result"] != "build"))
 }
 
 /// A fingerprint of HEAD, the status, the tracked changes and every untracked file's contents in the run's checkout,
@@ -45,9 +46,16 @@ fn tree_state(run: &WorkflowRunRecord) -> String {
         .map_or_else(|error| error.to_string(), |output| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Records the checkout as a guarded step starts, so its end can be compared with it.
+/// Records the checkout as a guarded step starts, so its end can be compared with it, and a build's starting
+/// commit, so its report can cite only commits made since.
 pub(super) fn record_tree(run: &mut WorkflowRunRecord, node_id: &str) {
-    if guards_code(run, node_id) { run.input_snapshot["trees"][node_id] = json!(tree_state(run)); }
+    if guards_code(run, node_id) { run.input_snapshot["trees"][node_id] = json!(tree_state(run)); return; }
+    let mut command = std::process::Command::new("git");
+    command.args(["rev-parse", "HEAD"]).current_dir(run.input_snapshot["cwd"].as_str().unwrap_or_default());
+    let head = crate::bounded_process::output(&mut command, "Starting commit", crate::bounded_process::LOCAL_COMMAND_TIMEOUT);
+    if let Some(head) = head.ok().filter(|head| head.status.success()) {
+        run.input_snapshot["heads"][node_id] = json!(String::from_utf8_lossy(&head.stdout).trim());
+    }
 }
 
 /// A guarded step that moved HEAD or changed the working tree since it started.

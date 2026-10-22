@@ -17,6 +17,6 @@ Commit only your changes on this branch. The commit body ends with `Task: ${{ ta
 
 The run works without the owner. Answer questions about how the code works by reading it. For small decisions the spec leaves open, make the best choice, state it in one line, and keep going. If one part of the spec truly cannot be done without the owner, build the rest, create a follow-up Notion task for that part (what, the exact reason, what would unblock it), and list it under `Follow-ups` in your report.
 
-Report: the commit hash, each changed file with line ranges, each test shown failing then passing, and each command you ran with its result. Never claim a result you did not see.
+Report with report_result: commits lists every commit this step made, tests_added each test they add, and summary each changed file with line ranges, each test shown failing then passing, and each command you ran with its result. Commit everything first; the tree must be clean. Never claim a result you did not see. If report_result rejects it, fix the field it names and call it again; the step does not finish without it.
 
 Run commands with full paths or `git -C <dir>`; never start a command with `cd`, because that stops for approval.

@@ -120,10 +120,10 @@ fn failed_checks_stopped_at_their_round_limit_stay_the_owners() {
     let endpoint = agent_endpoint(&engine, &repo.0);
     let token = agent(&engine, &endpoint, "orch", &repo.0);
     engine.store.set_main_orchestrator(Some("orch")).unwrap();
-    let run = loop_run(&engine, &repo.0, "  build: { agent: { provider: codex }, prompt: prompts/p.md }\n  checks: { needs: [build], run: [\"exit 1\", \"true\"], on_fail: build }\n");
-    end_turn(&engine, &run.id, "build", &[]);
+    let run = loop_run(&engine, &repo.0, "  build: { result: build, agent: { provider: codex }, prompt: prompts/p.md }\n  checks: { needs: [build], run: [\"exit 1\", \"true\"], on_fail: build }\n");
+    end_turn(&engine, &run.id, "build", &[built()]);
     settle(&engine, &run.id);
-    end_turn(&engine, &run.id, "build", &[]);
+    end_turn(&engine, &run.id, "build", &[built()]);
     let run = settle(&engine, &run.id);
     assert_eq!(step_of(&run, "checks").failure.as_ref().unwrap().code, "loop-stopped");
     let error = decide(&endpoint, &token, &run.id, "checks", json!("The failure is unrelated.")).unwrap_err();

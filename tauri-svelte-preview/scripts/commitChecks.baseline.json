@@ -1,7 +1,7 @@
 {
   "fileSize": {
     "core/src/scanners/sessions.rs": 3269,
-    "core/src/session_store.rs": 8308,
+    "core/src/session_store.rs": 8305,
     "core/src/source.rs": 923,
     "core/tests/protocol_tests.rs": 747,
     "tauri-svelte-preview/scripts/agentConversationStore.test.ts": 1860,
@@ -39,7 +39,7 @@
     "tauri-svelte-preview/src-tauri/src/terminal/mod.rs": 1070,
     "tauri-svelte-preview/src-tauri/src/usage_db.rs": 1318,
     "tauri-svelte-preview/src-tauri/src/usage_sources.rs": 782,
-    "tauri-svelte-preview/src-tauri/src/workflow/mod.rs": 5807,
+    "tauri-svelte-preview/src-tauri/src/workflow/mod.rs": 4819,
     "tauri-svelte-preview/src/lib/shell/files/components/CodeMirrorSourceEditor.svelte": 1263,
     "tauri-svelte-preview/src/lib/SourceDockviewShell.svelte": 753,
     "tauri-svelte-preview/src/lib/components/panels/ActivityFilesPanel.svelte": 1324,

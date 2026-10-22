@@ -5515,7 +5515,7 @@ mod provider_restart_tests {
         let repo = root.join("repo");
         std::fs::create_dir_all(repo.join(".assembly/workflows/prompts")).unwrap();
         std::fs::write(repo.join(".assembly/workflows/prompts/build.md"), "Build it").unwrap();
-        std::fs::write(repo.join(".assembly/workflows/demo.yml"), "name: Demo\nsteps:\n  build: { agent: { provider: codex }, prompt: prompts/build.md }\n  checks: { needs: [build], run: [\"true\"] }\n").unwrap();
+        std::fs::write(repo.join(".assembly/workflows/demo.yml"), "name: Demo\nsteps:\n  build: { result: build, agent: { provider: codex }, prompt: prompts/build.md }\n  checks: { needs: [build], run: [\"true\"] }\n").unwrap();
         git(&repo, &["add", "."]);
         git(&repo, &["-c", "user.name=Test", "-c", "user.email=test@test", "commit", "-m", "demo"]);
         git(&repo, &["push", "origin", "main"]);
@@ -5537,21 +5537,21 @@ mod provider_restart_tests {
         }
         let state = open();
         assert_eq!((call(&state, "listFiles", json!({"repoRoot": repo})).await, call(&state, "usage", json!({"runId": null})).await), (json!([".assembly/workflows/demo.yml"]), json!([])));
-        let run = call(&state, "create", json!({"repoRoot": repo, "workflowPath": ".assembly/workflows/demo.yml",
-            "task": {"key": "TSK-9003", "title": "Remote demo", "body": "Prove remote runs"}, "idempotencyKey": "create"})).await;
+        let run = call(&state, "create", json!({"repoRoot": repo, "workflowPath": ".assembly/workflows/demo.yml", "task": {"key": "TSK-9003", "title": "Remote demo", "body": "Prove remote runs"}, "idempotencyKey": "create"})).await;
         let run_id = run["id"].as_str().unwrap().to_string();
+        // The fixture worker cannot call report_result, so its report is filed for it before its one turn ends.
+        let build = run["nodes"].as_array().unwrap().iter().find(|node| node["nodeId"] == "build").unwrap();
+        state.manager.store().add_review_report(build["ownedId"].as_str().unwrap(), &run_id, build["id"].as_str().unwrap(), r#"{"commits":[],"tests_added":[],"summary":"Nothing to change."}"#).unwrap();
         call(&state, "start", json!({"runId": run_id, "idempotencyKey": "start"})).await;
         // The worker's finished turn reaches the engine through the server's emitter.
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
-        let run = loop {
+        loop {
             let run = call(&state, "get", json!({"runId": run_id})).await;
-            if run["state"] == "completed" { break run; }
+            if run["state"] == "completed" { break; }
             assert!(std::time::Instant::now() < deadline, "run did not finish: {run}");
             tokio::time::sleep(Duration::from_millis(50)).await;
-        };
-        let worker = run["nodes"].as_array().unwrap().iter().find(|node| node["nodeId"] == "build").unwrap();
-        let worker_id = worker["ownedId"].as_str().unwrap();
-        assert!(state.manager.store().get_session(worker_id).unwrap().is_some(), "the worker lives in the remote store");
+        }
+        assert!(state.manager.store().get_session(build["ownedId"].as_str().unwrap()).unwrap().is_some(), "the worker lives in the remote store");
         state.manager.shutdown().await;
         drop(state);
 

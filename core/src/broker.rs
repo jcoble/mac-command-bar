@@ -397,7 +397,7 @@ impl SessionStore {
         }))
     }
 
-    /// Records a workflow reviewer's `report_review` call against its attempt.
+    /// Records a workflow step's checked `report_result` call against its attempt.
     /// Kept as a delivered row addressed to the attempt, so it is never sent.
     pub fn add_review_report(&self, reviewer: &str, run_id: &str, attempt_id: &str, report: &str) -> Result<()> {
         let connection = self.lock_write()?;

@@ -11914,7 +11914,7 @@ mod tests {
         crate::workflow::AgentRuntimePort::dispatch(&fixture.manager, crate::workflow::AgentDispatchRequest {
             owned_id: "owned-step".into(), provider: "codex".into(),
             cwd: worktree.to_string_lossy().into_owned(), title: "Build · build".into(),
-            prompt: "Build it".into(), role_id: "build".into(), model: None, effort: None,
+            prompt: "Build it".into(), model: None, effort: None,
             permission: None, starter: None, policy: Default::default(),
         }).await.expect("dispatch");
         let row = store.get_session("owned-step").unwrap().unwrap();
