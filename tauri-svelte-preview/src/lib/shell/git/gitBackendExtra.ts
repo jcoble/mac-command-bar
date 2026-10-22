@@ -35,6 +35,7 @@
  */
 
 import type { GitBackend } from './gitService.ts';
+import { bridgeTokenHeader } from '../../devBridgeToken.ts';
 import { validateProjectRootFromTauri } from '../../tauriSource.ts';
 import type {
   GitActionResult,
@@ -187,7 +188,7 @@ export async function postGitBridge<T>(
   try {
     response = await fetch(`/__mcb/git/${route}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...bridgeTokenHeader() },
       body: JSON.stringify(payload)
     });
   } catch {

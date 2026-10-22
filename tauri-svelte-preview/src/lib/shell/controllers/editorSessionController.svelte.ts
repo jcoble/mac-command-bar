@@ -97,9 +97,9 @@ export class EditorSessionController {
 			stored = await readAgentConversationWorkspaceFromTauri(ownedId);
 		} catch (error) {
 			if (stopSignal.aborted) return null;
-			const message = error instanceof Error ? error.message
-				: typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error);
-			if (rootAvailable || !remote || message !== `Remote machine ${remote.profileId} is not connected`) throw error;
+			// A remote machine that stopped answering has no folder to show; its
+			// saved chat still opens without the workspace record.
+			if (rootAvailable || session?.executionEnvironment !== 'remote') throw error;
 			return null;
 		}
 		const snapshot = mapWorkspaceSnapshotPaths(stored, remote?.profileId ?? null) as SessionWorkspaceSnapshot | null;

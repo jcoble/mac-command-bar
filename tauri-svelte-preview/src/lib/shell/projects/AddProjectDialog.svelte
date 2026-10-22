@@ -19,6 +19,7 @@
   import Plus from '@lucide/svelte/icons/plus';
   import Settings2 from '@lucide/svelte/icons/settings-2';
   import { onMount } from 'svelte';
+  import { remoteWorkspacePath } from '$lib/workspacePaths.ts';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import * as Command from '$lib/components/ui/command/index.js';
@@ -26,7 +27,7 @@
   import { pickProjectFolder } from '$lib/shell/conversation/newSession/newSessionBackend.ts';
   import { addProject } from '$lib/shell/projects/projectRegistry.svelte.ts';
   import { isNewFolderPath, projectMachineLabel } from '$lib/shell/projects/projects.ts';
-  import { listFoldersFromTauri, type FolderListing, type ProjectRecord, type RemoteAssemblyProfile } from '$lib/tauriSource.ts';
+  import { listFoldersFromTauri, validateProjectRootFromTauri, type FolderListing, type ProjectRecord, type RemoteAssemblyProfile } from '$lib/tauriSource.ts';
 
   interface Props {
     profiles: RemoteAssemblyProfile[];
@@ -57,11 +58,36 @@
   let adding = $state(false);
   let pathField = $state<HTMLInputElement | null>(null);
   let listSequence = 0;
+  let homePath = $state('');
+  let checkedFolder = $state<{ path: string; machine: string; exists: boolean } | null>(null);
 
   const machineLabel = $derived(projectMachineLabel(machine, profiles));
-  const canAdd = $derived(Boolean(path.trim()) && !adding);
+  const pathChecked = $derived(checkedFolder?.path === path.trim() && checkedFolder?.machine === machine);
+  const canAdd = $derived(Boolean(path.trim()) && !adding && (Boolean(chooseFolder) || pathChecked));
   /** The path names a folder that is not there yet: Enter and the button create it. Choosing a folder creates none. */
-  const newFolder = $derived(!chooseFolder && isNewFolderPath(path, listing));
+  const newFolder = $derived(!chooseFolder && pathChecked && isNewFolderPath(path, listing, checkedFolder!.exists));
+
+  $effect(() => {
+    const requested = path.trim();
+    const owner = machine;
+    const home = homePath;
+    const stop = new AbortController();
+    checkedFolder = null;
+    if (requested && !chooseFolder && (!requested.startsWith('~') || home)) {
+      const resolved = requested === '~' ? home : requested.startsWith('~/') ? `${home}/${requested.slice(2)}` : requested;
+      void checkFolder(owner, requested, resolved, stop.signal);
+    }
+    return () => stop.abort();
+  });
+
+  async function checkFolder(owner: string, requested: string, resolved: string, signal: AbortSignal): Promise<void> {
+    try {
+      const result = await validateProjectRootFromTauri(owner === 'local' ? resolved : remoteWorkspacePath(owner, resolved), signal);
+      if (result && !signal.aborted) checkedFolder = { path: requested, machine: owner, exists: result.exists };
+    } catch (error) {
+      if (!signal.aborted) message = describe(error);
+    }
+  }
 
   onMount(() => {
     if (step === 'folder') void startOnFolder();
@@ -105,6 +131,7 @@
       const next = await listFoldersFromTauri(machine, folder);
       if (sequence !== listSequence) return;
       listing = next;
+      if (folder === '~') homePath = next.path;
       if (folder === '~' && !path) path = withSlash(next.path);
       message = '';
     } catch (error) {
@@ -120,6 +147,7 @@
     search = '';
     path = '';
     listing = null;
+    homePath = '';
     message = '';
     void list('~');
   }

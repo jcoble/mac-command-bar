@@ -155,7 +155,9 @@
   .file-link :global(svg){align-self:center;flex:none}
   .inline-code{padding:2px 6px;border-radius:5px;background:color-mix(in srgb,var(--color-surface) 78%,var(--color-bg));font:13px/1.4 var(--font-mono)}
 
-  .turn-body.folded{max-height:calc(10 * 1.5em);overflow:hidden;-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent);mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent)}
+  /* The fade is a gradient in the bubble's colour laid over the last lines, not a mask: a mask makes the engine paint the text offscreen first. */
+  .turn-body.folded{position:relative;max-height:calc(10 * 1.5em);overflow:hidden}
+  .turn-body.folded::after{content:'';position:absolute;left:0;right:0;bottom:0;height:26px;background:linear-gradient(to bottom,transparent,var(--color-elevated));pointer-events:none}
   .fold-row{display:flex;margin-top:6px}
   .fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
   .fold-chevron.open{transform:rotate(90deg)}

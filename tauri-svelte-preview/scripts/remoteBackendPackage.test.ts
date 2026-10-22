@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -131,4 +131,118 @@ test('remote download verifier rejects changed, truncated, and unexpected archiv
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('the install script writes the token file readable only by its owner from the moment it exists', async () => {
+  const home = await mkdtemp(path.join(tmpdir(), 'assembly-remote-token-test-'));
+  try {
+    const start = REMOTE_BACKEND_INSTALL_SCRIPT.indexOf('token=$(');
+    const endMarker = 'mv "$HOME/.config/assembly/.server.env.new" "$HOME/.config/assembly/server.env"\n';
+    const end = REMOTE_BACKEND_INSTALL_SCRIPT.indexOf(endMarker);
+    assert.ok(start > 0 && end > start, 'token block exists');
+    const tokenBlock = REMOTE_BACKEND_INSTALL_SCRIPT.slice(start, end + endMarker.length);
+    const token = 'a'.repeat(64);
+    await mkdir(path.join(home, '.config', 'assembly'), { recursive: true });
+    await writeFile(path.join(home, '.config', 'assembly', 'server.env'), `ASSEMBLY_SERVER_TOKEN=${token}\n`);
+    // A stand-in `cat` reports the file's permissions while the token is being written into it.
+    const bin = path.join(home, 'bin');
+    await mkdir(bin);
+    await writeFile(path.join(bin, 'cat'), '#!/bin/sh\nexec 3>&1\nls -lL /dev/fd/3 | cut -c1-10 >"$HOME/mode-while-writing"\nexec /bin/cat "$@"\n', { mode: 0o755 });
+    await execFileAsync('sh', ['-c', `set -eu\numask 022\n${tokenBlock}`], {
+      env: { HOME: home, PATH: `${bin}:/usr/bin:/bin` }
+    });
+    assert.equal((await readFile(path.join(home, 'mode-while-writing'), 'utf8')).trim(), '-rw-------');
+    const saved = path.join(home, '.config', 'assembly', 'server.env');
+    assert.equal((await stat(saved)).mode & 0o777, 0o600);
+    assert.match(await readFile(saved, 'utf8'), new RegExp(`ASSEMBLY_SERVER_TOKEN=${token}\n`));
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+// Runs the install script's restart-and-wait tail against stand-in systemctl, ss and sleep.
+// Each `sleep` call is one second, so `seconds` is how long the script waited.
+async function runStartupWait(scenario: { readyAt?: number; address?: string; exitAt?: number; restartAt?: number }) {
+  const home = await mkdtemp(path.join(tmpdir(), 'assembly-remote-wait-test-'));
+  try {
+    const bin = path.join(home, 'bin');
+    await mkdir(bin);
+    await mkdir(path.join(home, '.local', 'share', 'assembly'), { recursive: true });
+    await writeFile(path.join(home, 'manifest.json'), '{}\n');
+    await writeFile(path.join(home, 'seconds'), '0');
+    await writeFile(path.join(bin, 'sleep'), '#!/bin/sh\necho $(( $(cat "$HOME/seconds") + 1 )) >"$HOME/seconds"\n', { mode: 0o755 });
+    await writeFile(path.join(bin, 'systemctl'), `#!/bin/sh
+t=$(cat "$HOME/seconds")
+case "$*" in
+  *is-active*)
+    if [ -n "\${EXIT_AT:-}" ] && [ "$t" -ge "$EXIT_AT" ]; then echo failed; exit 3; fi
+    if [ -n "\${RESTART_AT:-}" ] && [ "$t" -eq "$RESTART_AT" ]; then echo activating; exit 3; fi
+    case "$*" in *--quiet*) ;; *) echo active ;; esac
+    exit 0 ;;
+esac
+exit 0
+`, { mode: 0o755 });
+    await writeFile(path.join(bin, 'ss'), `#!/bin/sh
+t=$(cat "$HOME/seconds")
+if [ -n "\${READY_AT:-}" ] && [ "$t" -ge "$READY_AT" ] && { [ -z "\${RESTART_AT:-}" ] || [ "$t" -ne "$RESTART_AT" ]; }; then
+  printf 'LISTEN 0 128 %s 0.0.0.0:*\\n' "$LISTEN_ADDRESS"
+fi
+`, { mode: 0o755 });
+    const start = REMOTE_BACKEND_INSTALL_SCRIPT.indexOf('systemctl --user restart assembly-remote.service');
+    assert.ok(start > 0, 'restart step exists');
+    const env: Record<string, string> = { HOME: home, PATH: `${bin}:/usr/bin:/bin`, LISTEN_ADDRESS: scenario.address ?? '127.0.0.1:7777' };
+    if (scenario.readyAt !== undefined) env.READY_AT = String(scenario.readyAt);
+    if (scenario.exitAt !== undefined) env.EXIT_AT = String(scenario.exitAt);
+    if (scenario.restartAt !== undefined) env.RESTART_AT = String(scenario.restartAt);
+    let code = 0;
+    let stderr = '';
+    try {
+      await execFileAsync('sh', ['-c', `set -eu\n${REMOTE_BACKEND_INSTALL_SCRIPT.slice(start)}`], { cwd: home, env });
+    } catch (error) {
+      const failure = error as { code: number; stderr: string };
+      code = failure.code;
+      stderr = failure.stderr;
+    }
+    const manifest = await stat(path.join(home, '.local', 'share', 'assembly', 'backend-manifest.json')).then(() => true, () => false);
+    return { code, stderr, seconds: Number(await readFile(path.join(home, 'seconds'), 'utf8')), manifest };
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+}
+
+test('install waits past the old 15 seconds for a backend that is still starting', async () => {
+  const result = await runStartupWait({ readyAt: 22 });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.manifest, true);
+  assert.equal(result.seconds, 22);
+});
+
+test('install fails at once when the backend exits while starting', async () => {
+  const result = await runStartupWait({ exitAt: 3 });
+  assert.equal(result.code, 1);
+  assert.equal(result.manifest, false);
+  assert.equal(result.seconds, 3);
+  assert.match(result.stderr, /stopped after 3 seconds/);
+});
+
+test('install gives up after the long wait when the backend never listens, saying how long it waited', async () => {
+  const result = await runStartupWait({});
+  assert.equal(result.code, 1);
+  assert.equal(result.manifest, false);
+  assert.equal(result.seconds, 120);
+  assert.match(result.stderr, /within 120 seconds/);
+});
+
+test('install still refuses a backend listening on a non-loopback address', async () => {
+  const result = await runStartupWait({ readyAt: 1, address: '0.0.0.0:7777' });
+  assert.equal(result.code, 1);
+  assert.equal(result.manifest, false);
+  assert.match(result.stderr, /within 120 seconds/);
+});
+
+test('install keeps waiting through one restart while the backend starts', async () => {
+  const result = await runStartupWait({ readyAt: 20, restartAt: 18 });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.manifest, true);
+  assert.equal(result.seconds, 20);
 });

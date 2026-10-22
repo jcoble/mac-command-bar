@@ -2182,8 +2182,8 @@ mod tests {
         assert_eq!(label("com.apple.WebKit.GPU"), "Graphics and Media");
     }
 
-    /// The number beside a process is the one Activity Monitor shows: the
-    /// physical footprint, not the resident size.
+    /// Activity Monitor measures a macOS process by its physical footprint.
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_process_is_measured_by_its_physical_footprint() {
         let processes = observe_processes(&mut System::new(), std::process::id());

@@ -7,15 +7,16 @@
     type ConversationMessagesContext, type ConversationToolContext
   } from '$lib/shell/conversation/conversationChatUI.ts';
 
-  let { itemId, onFileLink, children }: {
+  let { itemId, item, onFileLink, children }: {
     itemId: string;
+    item: Extract<ConversationDisplayItem, { kind: 'tool' }>;
     onFileLink?(path: string): void;
     children?: Snippet<[Extract<ConversationDisplayItem, { kind: 'tool' }>]>;
   } = $props();
   const host = getContext<ConversationMessagesContext>(conversationMessagesContext);
   const message = $derived(host.messages.get(itemId));
   setContext<ConversationToolContext>(conversationToolContext, {
-    get message() { return message; },
+    get item() { return item; },
     get renderTool() { return children; },
     openFile(path) { onFileLink?.(path); }
   });

@@ -176,6 +176,15 @@ export function markdownImageTarget(markdownPath: string, projectRoot: string | 
   return file.startsWith(rootDir) ? { kind: 'file', path: file } : null;
 }
 
+/** Raw HTML attributes that make the webview fetch an address on their own:
+ *  srcset picks more image files, style can load url(...), and background
+ *  paints an image on a table or cell. The Preview drops them from every tag. */
+const FETCHING_ATTRIBUTES = new Set(['srcset', 'style', 'background']);
+
+export function withoutFetchingAttributes(attributes: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(attributes).filter(([name]) => !FETCHING_ATTRIBUTES.has(name.toLowerCase())));
+}
+
 /** The image type of a file the app shows as a picture, from its name. */
 export function rasterImageMimeType(fileName: string | null | undefined): string | null {
   const extension = fileName?.split('.').at(-1)?.toLowerCase();

@@ -417,6 +417,9 @@ export class SessionSelectionController {
 			owner.signal,
 		);
 		if (!this.isCurrent(owner)) return;
+		// The folder check failed, so this session's tabs were never shown; leaving
+		// it must not save the empty editor over them.
+		if (this.sessionSelectionLayers.treeCheckFailed) this.editorSessions.releaseOwnership();
 		this.activeWorkspaceSnapshot = snapshot;
 		if (snapshot?.conversation?.attachmentIds && getConversationSession(session.ownedId)) {
 			restoreConversationAttachmentIds(session.ownedId, snapshot.conversation.attachmentIds);
