@@ -124,6 +124,9 @@ impl AguiProjector {
             let mut fresh = View::default();
             let chunks: Vec<Value> = events.iter().flat_map(|event| fresh.project(event)).collect();
             (fresh.next_run, fresh.next_parent) = (view.next_run.take(), view.next_parent.take());
+            // History leaves runs out, and its events carry no turn ends, so a
+            // run the replay left open was never shown: live content starts its own.
+            fresh.open_run = None;
             // The journal can show a request the session no longer waits on.
             fresh.requests.retain(|request| pending.contains(&request.id));
             if fresh.requests.is_empty() {

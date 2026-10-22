@@ -306,6 +306,21 @@ fn a_client_run_survives_a_reopen_and_does_not_outlive_its_turn() {
     assert_eq!(script.send(user("user-2", "From the phone"))[0]["runId"], "run-5");
 }
 
+/// A snapshot's events carry no turn boundaries, so its last turn looks open.
+#[test]
+fn the_turn_after_a_reopen_starts_its_own_run() {
+    let mut script = Script::open();
+    script.views.begin_open(THREAD);
+    let history = [event(1, user("user-0", "Earlier")), event(2, reply("msg-0", "Done earlier."))];
+    script.views.finish_open(THREAD, Some((&history, &HashSet::new(), 2)));
+    script.sequence = 2;
+    script.run("run-client-1", None, Vec::new()).unwrap();
+    let mut chunks = script.send(user("user-1", "Now"));
+    assert_eq!((&chunks[0]["type"], &chunks[0]["runId"]), (&json!("RUN_STARTED"), &json!("run-client-1")));
+    chunks.extend(script.send(turn(TurnState::Completed)));
+    assert_well_formed(&chunks);
+}
+
 #[test]
 fn content_during_a_pause_comes_inside_a_run() {
     let mut script = Script::open();
