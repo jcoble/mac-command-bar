@@ -114,8 +114,8 @@
   <section class="panel">
     <div class="ph"><h3>Messages for you</h3><span class="muted">Same as the Inbox</span><strong>{steps.length + sessions.length}</strong></div>
     {#if steps.length === 0 && sessions.length === 0}
-      <p class="muted px-1">Nothing is waiting for you.</p>
-    {/if}
+      <p class="muted px-0.5">Nothing is waiting for you.</p>
+    {:else}
     <ul class="list">
       {#each steps as { machine, step } (`${machine}:${step.run_id}:${step.node_id}`)}
         <li class="msg group">
@@ -150,6 +150,7 @@
         <li class="msg">{@render sessionRow(session, 0)}</li>
       {/each}
     </ul>
+    {/if}
   </section>
 
   {#if runs.length}
@@ -204,22 +205,23 @@
 
 <style>
   /* Surfaces from the Usage screen (UsageWorkspace.svelte): .panel, .provider-card, .quota-bar, .eyebrow. */
-  .col { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; overflow-y: auto; }
-  .panel { flex: none; padding: 8px; border: 1px solid color-mix(in srgb, var(--color-border) 36%, transparent); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--color-elevated) 38%, var(--color-surface)); }
-  .ph { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 1px 4px 7px; }
+  /* The same panel and card recipe as BoardCards.svelte. */
+  .col { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; overflow-y: auto; }
+  .panel { display: flex; flex: none; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--color-elevated) 38%, var(--color-surface)); }
+  .ph { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 0 2px; }
   h3 { margin: 0; font-size: 0.88rem; line-height: 1.35; font-weight: 600; white-space: nowrap; }
   .ph strong { margin-left: auto; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
   .muted { margin: 0; min-width: 0; overflow: hidden; color: var(--color-text-2); font-size: 0.76rem; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
   .dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 2px; }
   .list, .sessions, .helpers { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
-  .list { gap: 6px; }
-  .msg { display: flex; flex-direction: column; min-width: 0; padding: 8px 10px; border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-elevated) 52%, var(--color-surface)); font-size: 13px; }
+  .list { gap: 8px; }
+  .msg { display: flex; flex-direction: column; min-width: 0; padding: 9px 11px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-elevated) 72%, var(--color-surface)); font-size: 13px; }
   .msg p { margin: 4px 0 0; line-height: 1.45; }
   .from { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--color-text-3); font-size: 0.75rem; }
   .val { display: inline-flex; flex: none; align-items: center; gap: 6px; color: var(--color-text); font-size: 0.75rem; font-weight: 600; white-space: nowrap; }
   .quota-bar { display: flex; height: 7px; margin-top: 7px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--color-border) 32%, transparent); }
   .quota-bar i { display: block; height: 100%; min-width: 0; border-radius: 999px; }
-  .mgrp { margin: 0; padding: 4px 4px 2px; color: var(--color-text-3); font-size: 0.75rem; font-weight: 680; letter-spacing: 0.085em; text-transform: uppercase; }
+  .mgrp { margin: 0; padding: 0 2px; color: var(--color-text-3); font-size: 0.75rem; font-weight: 680; letter-spacing: 0.085em; text-transform: uppercase; }
   .sessions > li + li { border-top: 1px solid color-mix(in srgb, var(--color-border) 28%, transparent); }
   .srow { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; padding: 5px 4px; border-radius: var(--radius-sm); font-size: 13px; text-align: left; }
   .srow:hover { background: var(--color-hover); }

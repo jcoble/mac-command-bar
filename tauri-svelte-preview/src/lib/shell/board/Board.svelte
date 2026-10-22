@@ -128,7 +128,7 @@
     </div>
   </header>
   {#if actionError || loadError}<p role="alert" class="flex-none px-3.5 pb-2 text-[13px] text-destructive">{actionError || loadError}</p>{/if}
-  <div class="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(0,318px)] gap-2 px-2.5 pb-2.5">
+  <div class="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(0,318px)] gap-2.5 px-3.5 pb-3.5">
     <BoardCards {boards} {notion} {filter} signal={shown.signal} onError={(text) => (actionError = text)} {onClose} onOpenSession={openSession} />
     <BoardLive {boards} {sessions} {notion} signal={shown.signal} onError={(text) => (actionError = text)} onOpenSession={openSession} />
   </div>
