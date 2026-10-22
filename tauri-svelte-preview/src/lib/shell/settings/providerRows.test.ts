@@ -53,6 +53,12 @@ test('a provider whose adapter is not installed is not checked', () => {
   assert.deepEqual([row.adapter, row.state, row.tone], ['claude-agent-acp', 'Not installed', 'neutral']);
 });
 
+test('a remote adapter whose version could not be read is still checked', () => {
+  const unread = { ...claude, adapterVersion: undefined };
+  assert.deepEqual([providerRow(unread, undefined).adapter, providerRow(unread, undefined).state], ['claude-agent-acp', 'Checking…']);
+  assert.equal(providerRow(unread, { config: config(['opus']) }).state, 'Ready');
+});
+
 test('an unknown provider id still gets a row from its descriptor alone', () => {
   const grok: ProviderSummary = {
     id: 'grok', displayName: 'Grok Build', adapterId: 'grok-acp', adapterVersion: '0.1.0',

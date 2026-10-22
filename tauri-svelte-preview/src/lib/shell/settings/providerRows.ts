@@ -7,8 +7,8 @@ export type ProviderSummary = {
   id: string;
   displayName: string;
   adapterId: string;
-  /** The installed adapter's version; null when it isn't installed. */
-  adapterVersion: string | null;
+  /** The installed adapter's version; null when it isn't installed, undefined when it couldn't be read. */
+  adapterVersion?: string | null;
   readOnly: boolean;
   proofHome: boolean;
   permissionHandler: boolean;
@@ -42,7 +42,7 @@ export function providerRow(summary: ProviderSummary, check: ProviderCheck): Pro
     models: [],
     flags: flags(summary)
   };
-  if (!summary.adapterVersion) return { ...row, state: 'Not installed' };
+  if (summary.adapterVersion === null) return { ...row, state: 'Not installed' };
   if (!check) return row;
   if ('error' in check) {
     return check.error.includes(SIGN_IN_NEEDED)
