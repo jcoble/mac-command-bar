@@ -804,7 +804,7 @@
           planFileChanges={planFileChanges}
           pendingApproval={pendingApprovals[0] ?? null}
           pendingApprovalCount={pendingApprovals.length}
-          pendingInputs={pendingInputs}
+          {pendingInputs} pendingInterrupts={transcriptChat?.interrupts.length ?? 0}
           {controlsDisabled}
           sendDisabled={remoteDisconnected}
           {attachmentError}
