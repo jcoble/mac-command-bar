@@ -59,7 +59,8 @@ export async function buildLatestDev(options: BuildLatestOptions): Promise<boole
 
     step = 2;
     say('Building Assembly');
-    await run('pnpm', ['install', '--frozen-lockfile'], preview, say);
+    // No terminal to answer pnpm's "remove node_modules?" question, which it would otherwise abort on.
+    await run('pnpm', ['install', '--frozen-lockfile', '--config.confirmModulesPurge=false'], preview, say);
     await run('cargo', ['build', '--manifest-path', 'src-tauri/Cargo.toml'], preview, say);
 
     step = 3;

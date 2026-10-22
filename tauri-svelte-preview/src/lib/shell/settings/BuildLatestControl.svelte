@@ -27,7 +27,7 @@
       {buildLatestState.text}. The new build opens once Assembly quits.
     </p>
   {:else if buildLatestState.phase === 'failed'}
-    <p class="max-w-[360px] text-right text-[12px] leading-[1.4] text-destructive" role="alert">
+    <p class="max-w-[360px] text-right text-[12px] leading-[1.4] text-destructive [overflow-wrap:anywhere]" role="alert">
       {buildLatestState.error}
     </p>
   {/if}

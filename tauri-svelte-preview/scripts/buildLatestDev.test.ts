@@ -60,7 +60,7 @@ test('pulls, builds, deploys to every saved machine, then hands off the restart'
     ['git', ['-C', '/checkout', 'status', '--porcelain'], '/checkout'],
     ['git', ['-C', '/checkout', 'pull', '--ff-only', 'origin', 'main'], '/checkout'],
     ['git', ['-C', '/checkout', 'rev-parse', '--short', 'HEAD'], '/checkout'],
-    ['pnpm', ['install', '--frozen-lockfile'], '/checkout/tauri-svelte-preview'],
+    ['pnpm', ['install', '--frozen-lockfile', '--config.confirmModulesPurge=false'], '/checkout/tauri-svelte-preview'],
     ['cargo', ['build', '--manifest-path', 'src-tauri/Cargo.toml'], '/checkout/tauri-svelte-preview']
   ]);
   assert.deepEqual(deployed, ['box-a', 'box-b']);
