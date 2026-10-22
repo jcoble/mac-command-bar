@@ -93,11 +93,14 @@ export function serve(stream: acp.Stream, config: { endpoints: Array<Endpoint>, 
     const s = session(params.sessionId)
     const { endpoint, model } = s.choice
     if (endpoint.secret && !endpoint.key) throw acp.RequestError.invalidParams(undefined, `no key for ${endpoint.secret}`)
+    const userText = params.prompt.map((b) => (b.type === 'text' ? b.text : b.type === 'resource_link' ? `[${b.name}](${b.uri})` : '')).join('\n')
+    const images = params.prompt.flatMap((b) => (b.type === 'image' ? [{ type: 'image' as const, source: { type: 'data' as const, value: b.data, mimeType: b.mimeType } }] : []))
+    if (images.length && !model.images) throw acp.RequestError.invalidParams(undefined, `${s.choice.value} does not accept images`)
     s.abort?.abort()
     const abort = (s.abort = new AbortController())
     const update = (u: acp.SessionUpdate) => conn.sessionUpdate({ sessionId: s.id, update: u })
-    const userText = params.prompt.map((b) => (b.type === 'text' ? b.text : b.type === 'resource_link' ? `[${b.name}](${b.uri})` : '')).join('\n')
-    const messages: Array<ModelMessage> = [...s.messages, { role: 'user', content: userText }]
+    const content = images.length ? [{ type: 'text' as const, content: userText }, ...images] : userText
+    const messages: Array<ModelMessage> = [...s.messages, { role: 'user', content }]
     let finished: Array<ModelMessage> | undefined
     let partial = ''
     const usage = { totalTokens: 0, inputTokens: 0, outputTokens: 0 }
@@ -174,7 +177,7 @@ export function serve(stream: acp.Stream, config: { endpoints: Array<Endpoint>, 
         loadSession: false,
         sessionCapabilities: { resume: {} },
         mcpCapabilities: { http: true, sse: false },
-        promptCapabilities: {},
+        promptCapabilities: { image: true },
       },
       agentInfo: { name: 'assembly-models-acp', version: '0.1.0' },
       authMethods: [],

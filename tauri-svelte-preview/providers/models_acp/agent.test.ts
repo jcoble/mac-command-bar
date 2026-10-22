@@ -20,6 +20,7 @@ const ENDPOINTS: Array<Endpoint> = [{
   models: [
     { id: 'small', tools: true, images: false, judge: false, context_window: 4096 },
     { id: 'plain', tools: false, images: false, judge: false, context_window: 8192 },
+    { id: 'vision', tools: false, images: true, judge: false, context_window: 8192 },
   ],
 }]
 
@@ -187,6 +188,26 @@ test('an unknown model id in set_config_option is refused', async () => {
   await assert.rejects(t.client.setSessionConfigOption({ sessionId, configId: 'model', value: 'ollama/nope' }))
 })
 
+const PIXEL = { type: 'image' as const, data: 'iVBORw0KGgo=', mimeType: 'image/png' }
+
+test('an image prompt reaches a model with images true', async () => {
+  let content = ''
+  const t = await start([({ request }) => { content = JSON.stringify(request.messages.at(-1)); return { text: 'a pixel' } }])
+  assert.equal(t.init.agentCapabilities?.promptCapabilities?.image, true)
+  const { sessionId } = await t.client.newSession({ cwd: '/tmp', mcpServers: [] })
+  await t.client.setSessionConfigOption({ sessionId, configId: 'model', value: 'ollama/vision' })
+  await t.client.prompt({ sessionId, prompt: [{ type: 'text', text: 'what is this?' }, PIXEL] })
+  assert.match(content, /what is this\?/)
+  assert.match(content, /"type":"image","source":\{"type":"data","value":"iVBORw0KGgo=","mimeType":"image\/png"\}/)
+})
+
+test('an image prompt to a model with images false is refused', async () => {
+  const t = await start([{ text: 'never sent' }])
+  const { sessionId } = await t.client.newSession({ cwd: '/tmp', mcpServers: [] })
+  await assert.rejects(t.client.prompt({ sessionId, prompt: [{ type: 'text', text: 'what is this?' }, PIXEL] }), /ollama\/small does not accept images/)
+  assert.equal(t.fake.state.callCount, 0)
+})
+
 // The real sidecar process, with the model side served by a fake Ollama that breaks mid-stream.
 async function runSidecar(endpoints: Array<Endpoint>, model: string) {
   const agent = fileURLToPath(new URL('./agent.ts', import.meta.url))
@@ -244,4 +265,3 @@ test('an endpoint with a missing key fails the turn with "no key for <endpoint>"
 
 // Waits for the owner's API key (Build Board Q17): a real key-based model and an image prompt.
 test('a key-based model answers one turn', { skip: 'needs an API key from the owner (Build Board Q17)' }, () => {})
-test('an image prompt reaches a model with images true', { skip: 'needs an API key from the owner (Build Board Q17)' }, () => {})
