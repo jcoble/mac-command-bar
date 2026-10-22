@@ -256,12 +256,6 @@ assert.equal(store.getConversationSession('owned-a').generation, 2);
 assert.equal(store.getConversationSession('owned-a').desynchronized, false, 'journal sequence continues across runtime generations');
 assert.equal(store.getConversationSession('owned-a').connectionState, 'connecting');
 store.applySelectedConversationEventState('owned-a', {
-  ownedId: 'owned-a', provider: 'codex', generation: 2, sequence: 12, timestampMs: 3,
-  payload: { kind: 'approval', requestId: 'parent-approval', turnId: 'parent-turn', itemId: 'tool',
-    title: 'Allow?', options: [{ id: 'yes', label: 'Yes', action: 'allow_once' }] }
-});
-assert.ok(store.getConversationSession('owned-a').pendingApprovals['parent-approval']);
-store.applySelectedConversationEventState('owned-a', {
   ownedId: 'owned-a', provider: 'codex', generation: 2, sequence: 11, timestampMs: 4,
   payload: {
     kind: 'childUpdate', childId: 'restored-child', parentToolCallId: 'tool-parent',
@@ -1359,124 +1353,6 @@ test('file notifications and runtime state do not depend on the selected transcr
   }
 });
 
-test('native question controls survive live delivery and authoritative snapshot replay', () => {
-  const ownedId = 'native-question-controls';
-  const requestId = 'input-1';
-  const fields = [{ id: 'channel', label: 'Channel', kind: 'select', required: false,
-    choices: [{ value: 'stable', label: 'Stable' }] }];
-  const requested = {
-    ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 10,
-    payload: { kind: 'userInputRequested', requestId, title: 'Choose', fields, canDecline: true }
-  };
-  const resolved = { ...requested, sequence: 2,
-    payload: { kind: 'userInputResolved', requestId, cancelled: false } };
-  store.ensureConversationSession(ownedId, 'claude');
-  store.applySelectedConversationEventState(ownedId, requested);
-  const live = store.getConversationSession(ownedId).pendingInputs[requestId];
-  assert.equal(live.ownedId, ownedId);
-  assert.equal(live.canDecline, true);
-  assert.deepEqual(live.fields, fields);
-  store.applySelectedConversationEventState(ownedId, resolved);
-  assert.deepEqual(store.getConversationSession(ownedId).pendingInputs, {});
-  const snapshot = {
-    connection: { ownedId, provider: 'claude', generation: 1, state: 'connected' },
-    suspended: false,
-    page: { items: [], events: [], turns: [], hasBefore: false, hasEarlierTranscript: false,
-      hasAfter: false, watermark: 2, transferBytes: 0, oversized: false },
-    pendingEvents: [requested], pendingSequence: 2
-  };
-  store.applySelectedConversationSnapshotState(ownedId, ownedId, snapshot);
-  assert.deepEqual(store.getConversationSession(ownedId).pendingInputs[requestId], live);
-  store.applySelectedConversationSnapshotState(ownedId, ownedId, {
-    ...snapshot, pendingEvents: [requested, resolved]
-  });
-  assert.deepEqual(store.getConversationSession(ownedId).pendingInputs, {});
-  const { canDecline: _omitted, ...oldPayload } = requested.payload;
-  store.applySelectedConversationSnapshotState(ownedId, ownedId, {
-    ...snapshot, pendingEvents: [{ ...requested, payload: oldPayload }]
-  });
-  assert.equal(store.getConversationSession(ownedId).pendingInputs[requestId].canDecline, false);
-  store.removeConversationSession(ownedId);
-});
-
-// A permission request without provider options must answer through the
-// decision command, not send the fabricated option id back to the provider.
-{
-  const ownedId = 'owned-empty-permission';
-  const requestId = 'request-empty-permission';
-  const permissionEvent = (type: 'approval.requested' | 'approval.resolved', sequence: number) => ({
-    type,
-    ownedId,
-    provider: 'codex' as const,
-    providerInstanceId: 'fixture',
-    generation: 1,
-    sequence,
-    timestampMs: 900 + sequence,
-    payload: { requestId }
-  });
-  store.ensureConversationSession(ownedId, 'codex');
-  store.setConversationConnection({ ownedId, provider: 'codex', generation: 1, state: 'connected' });
-  store.applySelectedConversationEventState(ownedId, {
-    ...permissionEvent('approval.requested', 1),
-    payload: { kind: 'approval', requestId, title: 'Approval needed', toolTitle: 'Read File' }
-  });
-  const pending = store.getConversationSession(ownedId).pendingApprovals[requestId];
-  assert.ok(pending);
-  assert.equal(pending.options[0].optionId, 'accept');
-  assert.equal(pending.options[0].kind, 'allow_once');
-
-  const responseSource = readFileSync(
-    new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url),
-    'utf8'
-  ).match(
-    /export async function sendPermissionResponse\([\s\S]*?\n\}\n\n\/\*\* Answers one structured input/
-  );
-  assert.ok(responseSource);
-  const responseJavaScript = stripTypeScriptTypes(
-    responseSource[0]
-      .replace(/\n\n\/\*\* Answers one structured input$/, '')
-      .replace('export async function', 'async function'),
-    { mode: 'strip' }
-  );
-  const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
-  let rejectOption = false;
-  const invoke = async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
-    calls.push({ command, args });
-    if (rejectOption && command === 'respond_agent_conversation_permission') throw new Error('ACP permission option is not part of the pending request');
-    return undefined;
-  };
-  const respondToStructuredApproval = async (responseOwnedId: string, responseRequestId: string, decision: 'accept' | 'decline' | 'cancel'): Promise<void> => {
-    calls.push({ command: 'respond_agent_conversation_approval', args: { request: { ownedId: responseOwnedId, requestId: responseRequestId, decision } } });
-    store.applySelectedConversationEventState(ownedId, permissionEvent('approval.resolved', 2));
-  };
-  const sendPermissionResponse = Function(
-    'getConversationSession',
-    'invoke',
-    'respondToStructuredApproval',
-    `${responseJavaScript}\nreturn sendPermissionResponse;`
-  )(
-    store.getConversationSession,
-    invoke,
-    respondToStructuredApproval
-  ) as (responseOwnedId: string, responseRequestId: string, optionId: string) => Promise<void>;
-
-  await assert.doesNotReject(() => sendPermissionResponse(ownedId, requestId, pending.options[0].optionId));
-  assert.deepEqual(calls.map((call) => call.command), ['respond_agent_conversation_approval']);
-  assert.equal(store.getConversationSession(ownedId).pendingApprovals[requestId], undefined);
-  assert.equal((pending.options[0] as { synthetic?: boolean }).synthetic, true);
-  store.applySelectedConversationEventState(ownedId, {
-    ...permissionEvent('approval.requested', 3),
-    payload: { kind: 'permissionRequest', requestId, options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }] }
-  });
-  calls.length = 0;
-  await sendPermissionResponse(ownedId, requestId, 'allow-once');
-  assert.deepEqual(calls.map((call) => call.command), ['respond_agent_conversation_permission']);
-  calls.length = 0;
-  rejectOption = true;
-  await assert.rejects(() => sendPermissionResponse(ownedId, requestId, 'allow-once'), /not part of the pending request/);
-  assert.deepEqual(calls.map((call) => call.command), ['respond_agent_conversation_permission']);
-}
-
 store.removeConversationSession('owned-a');
 assert.equal(store.getConversationSession('owned-a'), null);
 assert.ok(store.getConversationSession('owned-b'));
@@ -1975,7 +1851,6 @@ await test('displayed child state is isolated and eviction preserves parent cont
   const child = store.getConversationSession('drill-child-history');
   parent.selectedChildHistoryOwnedId = child.ownedId;
   parent.selectedBeforeCursor = 900;
-  parent.pendingApprovals = { approval: { requestId: 'approval' } };
   parent.sentAttachments = { parentMessage: [{ previewUrl: 'blob:parent-preview' }] };
   child.sentAttachments = { childMessage: [{ previewUrl: 'blob:child-preview' }] };
   const revoked: string[] = [];
@@ -2007,7 +1882,6 @@ await test('displayed child state is isolated and eviction preserves parent cont
     assert.equal(child.activeTurnId, undefined);
     assert.equal(child.selectedBeforeCursor, 10);
     assert.equal(parent.selectedBeforeCursor, 900);
-    assert.deepEqual(Object.keys(parent.pendingApprovals), ['approval']);
     store.evictInactiveConversationSessions(parent.ownedId);
     assert.equal(store.getConversationSession(child.ownedId), child);
     assert.equal(revoked.includes('blob:parent-preview'), false);

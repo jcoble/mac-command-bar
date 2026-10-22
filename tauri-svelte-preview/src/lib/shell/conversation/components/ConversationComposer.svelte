@@ -13,7 +13,7 @@
   import { settings } from '$lib/shell/settings/settingsStore.svelte';
   import type { AgentConversationConfigField, AgentConversationConfigState } from '$lib/shell/conversation/conversationConfig.ts';
   import type { ConversationCommand } from '$lib/shell/conversation/conversationCommandCatalog.ts';
-  import { composerLocked as requestOpen, contextMeterPopover, draftAfterSlashCommand, moveSlashMenuIndex, ringDash, slashCommandQuery, slashMenuState, snapshotConversationCommands, type ContextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
+  import { contextMeterPopover, draftAfterSlashCommand, moveSlashMenuIndex, ringDash, slashCommandQuery, slashMenuState, snapshotConversationCommands, type ContextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
   import { agentDisplayName } from '$lib/shell/agentIcons.ts';
   import { presentAgentError } from '$lib/shell/errorPresentation.ts';
   import type { AgentKind } from '$lib/shell/ownedSessions.ts';
@@ -199,7 +199,7 @@
   const meterPopover = $derived(
     contextMeter ? contextMeterPopover(contextMeter, agentDisplayName(provider as AgentKind)) : null
   );
-  const composerLocked = $derived(requestOpen({ approval: pendingApproval, inputs: pendingInputs.length, interrupts: pendingInterrupts }));
+  const composerLocked = $derived(pendingInterrupts > 0); // steers too: the stock client guards only sendMessage
   const hasSendableContent = $derived(Boolean(inputDraft.trim() || attachments.length));
   /* Typed text joins a running turn; with only background work it starts a new one. */
   const steerable = $derived(turnRunning ?? sending);

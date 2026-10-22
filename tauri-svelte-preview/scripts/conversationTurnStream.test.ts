@@ -192,33 +192,6 @@ test('reasoning stops streaming when the reply starts or its own turn ends', () 
   assert.deepEqual(reasoning([thought, canonical(2, { kind: 'turn', turnId: 'turn-2', state: 'completed', messageId: 'end' })]), [false]);
 });
 
-test('a permission request waits with Allow and Deny until it is answered, declined or withdrawn', () => {
-  for (const provider of PROVIDERS) {
-    for (const answer of ['accepted', 'declined', 'expired']) {
-      const ownedId = `owned-approval-${provider}-${answer}`;
-      store.ensureConversationSession(ownedId, provider);
-      const event = stream(ownedId, provider);
-      store.applySelectedConversationEventState(ownedId, event({ kind: 'connection', state: 'connected' }));
-      store.applySelectedConversationEventState(ownedId, event({ kind: 'approval', requestId: 'request-1', state: 'requested', summary: 'Edit main.rs' }));
-      const pending = store.getConversationSession(ownedId).pendingApprovals['request-1'];
-      assert.equal(pending.toolTitle, 'Edit main.rs');
-      assert.deepEqual(pending.options.map((option) => [option.optionId, option.kind]), [['accept', 'allow_once'], ['decline', 'reject_once']]);
-      store.applySelectedConversationEventState(ownedId, event({ kind: 'approval', requestId: 'request-1', state: answer, summary: 'Edit main.rs' }));
-      assert.deepEqual(store.getConversationSession(ownedId).pendingApprovals, {}, `${provider} ${answer}`);
-    }
-  }
-});
-
-test('a question from the agent waits until it is resolved', () => {
-  store.ensureConversationSession('owned-question', 'claude');
-  const event = stream('owned-question', 'claude');
-  store.applySelectedConversationEventState('owned-question', event({ kind: 'connection', state: 'connected' }));
-  store.applySelectedConversationEventState('owned-question', event({ kind: 'userInputRequested', requestId: 'question-1', title: 'Pick one', fields: [] }));
-  assert.equal(store.getConversationSession('owned-question').pendingInputs['question-1'].title, 'Pick one');
-  store.applySelectedConversationEventState('owned-question', event({ kind: 'userInputResolved', requestId: 'question-1', cancelled: true }));
-  assert.deepEqual(store.getConversationSession('owned-question').pendingInputs, {});
-});
-
 // Protects 882f6c3b7 (ACP steering): a correction sent into a running turn
 // joins that turn; only Stop ends it, and the turn records that it was stopped.
 test('a steered message keeps the turn running and Stop records an interrupted turn', () => {

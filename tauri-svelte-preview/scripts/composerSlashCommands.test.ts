@@ -10,7 +10,6 @@
  */
 import assert from 'node:assert/strict';
 import {
-  composerLocked,
   contextMeterPopover,
   contextMeterState,
   draftAfterSlashCommand,
@@ -218,12 +217,5 @@ assert.equal(formatContextTokens(940), '940');
 assert.equal(formatContextTokens(9_400), '9.4k');
 assert.equal(formatContextTokens(398_832), '399k');
 assert.equal(formatContextTokens(1_250_000), '1.2m');
-
-// ── Lock while a request is open ─────────────────────────────────────────
-const open = { approval: null, inputs: 0, interrupts: 0 };
-assert.equal(composerLocked(open), false, 'nothing open: the composer sends and steers');
-assert.equal(composerLocked({ ...open, interrupts: 1 }), true, 'an open chat interrupt locks the composer');
-assert.equal(composerLocked({ ...open, approval: { requestId: 'a' } }), true, 'a native approval locks it');
-assert.equal(composerLocked({ ...open, inputs: 2 }), true, 'a requested input locks it');
 
 console.log('composerSlashCommands.test.ts passed');

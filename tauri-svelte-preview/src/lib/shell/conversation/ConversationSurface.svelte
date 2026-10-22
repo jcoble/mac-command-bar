@@ -40,8 +40,6 @@
     loadConversationCapabilities,
     persistConversationSessionDraft,
     removeConversationAttachment,
-    sendPermissionResponse,
-    respondToStructuredInput,
     restoreConversationAttachments,
     saveConversationClipboardImage,
     sendStructuredMessage,
@@ -65,7 +63,7 @@
     type ConversationDisplayItem,
     type ConversationFileLinkProvenance
   } from '$lib/shell/conversation/conversationTimeline.ts';
-  import { conversationDisplayItems } from '$lib/shell/conversation/conversationMessages.ts';
+  import { conversationDisplayItems, pendingRequestsOf } from '$lib/shell/conversation/conversationMessages.ts';
   import { contextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
   import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
   import { requestOpenConversationFile } from '$lib/shell/openFileBus.ts';
@@ -138,6 +136,7 @@
     return selectedConversationChat(conversation.ownedId);
   });
   const transcriptMessages = $derived(transcriptChat?.messages ?? []);
+  const openRequestIds = $derived(new Set((transcriptChat?.interrupts ?? []).map((interrupt) => interrupt.id)));
   const transcriptMessagesById = $derived(new Map(transcriptMessages.map((message) => [message.id, message])));
   const toolComponents = $state<Record<string, typeof ConversationToolPart>>({});
   const ui = createChatUI({}, {
@@ -171,8 +170,7 @@
       transcriptMessages,
       previousVisibleTimeline,
       conversation.sentAttachments
-    ).filter((item, index, items) => (item.kind !== 'approval' || !conversation.pendingApprovals[item.requestId])
-        && (item.kind !== 'input' || !conversation.pendingInputs[item.requestId])
+    ).filter((item, index, items) => !((item.kind === 'approval' || item.kind === 'input') && openRequestIds.has(item.requestId))
         // The composer owns the latest failed send; keep its stored error for history.
         && !(item.kind === 'error' && index === items.length - 1
           && !conversation.selectedHasAfter && !activeTurnId && conversation.sendError
@@ -197,8 +195,9 @@
   const remoteDisconnected = $derived(active?.executionEnvironment === 'remote'
     && rail.remoteConnections[active.remoteProfileId ?? ''] !== 'connected');
   const controlsDisabled = $derived(conversation?.connectionState !== 'connected' || remoteDisconnected);
-  const pendingApprovals = $derived(conversation ? Object.values(conversation.pendingApprovals) : []);
-  const pendingInputs = $derived(conversation ? Object.values(conversation.pendingInputs) : []);
+  const openRequests = $derived(pendingRequestsOf(transcriptChat?.interrupts ?? [], conversation?.ownedId ?? ''));
+  const pendingApprovals = $derived(openRequests.approvals);
+  const pendingInputs = $derived(openRequests.inputs);
   /* The live status line under the reply. Only the root transcript at its live
      end can speak for the running turn; a window trimmed
      while reading upward shows none. */
@@ -425,42 +424,6 @@
     }
   }
 
-  async function chooseApprovalOption(ownedId: string, requestId: string, optionId: string, generation: number): Promise<void> {
-    try {
-      await sendPermissionResponse(ownedId, requestId, optionId);
-      if (conversationSessions[ownedId]?.generation === generation) {
-        setConversationProviderNotice(ownedId, '');
-      }
-    } catch (error) {
-      if (conversationSessions[ownedId]?.generation === generation) {
-        const message = error instanceof Error ? error.message : String(error);
-        setConversationProviderNotice(ownedId, message.startsWith('Stale approval request:')
-          ? 'That approval expired when its session stopped. Reconnect and send the request again.'
-          : `Approval failed: ${message}`);
-      }
-    }
-  }
-
-  async function submitStructuredInput(
-    ownedId: string,
-    requestId: string,
-    action: AgentUserInputAction,
-    content: Record<string, AgentConfigValue>,
-    generation: number
-  ): Promise<void> {
-    try {
-      await respondToStructuredInput(ownedId, {
-        requestId,
-        action,
-        content
-      });
-    } catch (error) {
-      if (conversationSessions[ownedId]?.generation === generation) {
-        setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
-      }
-    }
-  }
-
   async function stopActiveStructuredTurn(ownedId: string, generation: number): Promise<void> {
     // A send wakes a sleeping adapter, so Stop must work before it reads connected.
     if (remoteDisconnected || conversationSessions[ownedId]?.generation !== generation) return;
@@ -669,18 +632,22 @@
     else setConversationDraft(active.ownedId, `/${command.name} `);
   }
 
+  /* An answer resolves the chat's interrupt; the chat sends it back as `resume`. */
+  function openInterrupt(requestId: string) {
+    const interrupt = transcriptChat?.interrupts.find((candidate) => candidate.id === requestId);
+    return interrupt?.kind === 'generic' ? interrupt : null;
+  }
+
   function onApprovalDecision(requestId: string, optionId: string): void {
-    if (!active || !optionId || controlsDisabled) return;
-    const ownedId = active.ownedId;
-    const generation = conversationSessions[ownedId]?.generation ?? 0;
-    void chooseApprovalOption(ownedId, requestId, optionId, generation);
+    if (!optionId || controlsDisabled) return;
+    openInterrupt(requestId)?.resolveInterrupt({ optionId });
   }
 
   function onInputSubmit(requestId: string, action: AgentUserInputAction, content: Record<string, AgentConfigValue>): void {
-    if (!active || controlsDisabled) return;
-    const ownedId = active.ownedId;
-    const generation = conversationSessions[ownedId]?.generation ?? 0;
-    void submitStructuredInput(ownedId, requestId, action, content, generation);
+    if (controlsDisabled) return;
+    const interrupt = openInterrupt(requestId);
+    if (action === 'accept') interrupt?.resolveInterrupt(content);
+    else interrupt?.cancel();
   }
 
   function openConversationFile(reference: string, provenance?: ConversationFileLinkProvenance): void {

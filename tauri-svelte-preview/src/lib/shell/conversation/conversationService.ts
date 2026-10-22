@@ -84,7 +84,6 @@ import type {
   AgentConversationProvider,
   AgentConversationSelectionSnapshot,
   AgentConversationSendReceipt,
-  AgentUserInputResponse,
   AgentWriterLeaseOwner,
   AgentWriterLeaseTransition,
   ConversationAttachment
@@ -1675,63 +1674,5 @@ export async function stopStructuredTurn(ownedId: string): Promise<void> {
   if (!state || state.generation < 1) return;
   await invoke('stop_agent_conversation_turn', {
     request: { ownedId, generation: state.generation }
-  });
-}
-
-/** Answers one summary-only approval request through the typed native boundary. */
-export async function respondToStructuredApproval(
-  ownedId: string,
-  requestId: string,
-  decision: 'accept' | 'decline' | 'cancel'
-): Promise<void> {
-  const state = getConversationSession(ownedId);
-  if (!state) return;
-  await invoke('respond_agent_conversation_approval', {
-    request: { ownedId, generation: state.generation, requestId, decision }
-  });
-}
-
-/** Answers the explicit decision or provider-option contract for a permission request. */
-export async function sendPermissionResponse(
-  ownedId: string,
-  requestId: string,
-  optionId: string
-): Promise<void> {
-  const state = getConversationSession(ownedId);
-  if (!state) return;
-  const pendingOption = state.pendingApprovals[requestId]?.options.find(
-    (option) => option.optionId === optionId
-  );
-  if (pendingOption?.synthetic) {
-    const decision = /reject|deny|decline|cancel/i.test(optionId) ? 'decline' : 'accept';
-    await respondToStructuredApproval(ownedId, requestId, decision);
-    return;
-  }
-  try {
-    await invoke('respond_agent_conversation_permission', {
-      request: { ownedId, generation: state.generation, requestId, optionId }
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.startsWith('Stale approval request:')) {
-      if (getConversationSession(ownedId)?.generation === state.generation) {
-        delete state.pendingApprovals[requestId];
-      }
-      try { await refreshSelectedConversation(ownedId); } catch { /* A later selected snapshot can replay the recorded expiry. */ }
-      throw error;
-    }
-    throw error;
-  }
-}
-
-/** Answers one structured input request for the current conversation generation. */
-export async function respondToStructuredInput(
-  ownedId: string,
-  response: Omit<AgentUserInputResponse, 'ownedId' | 'generation'>
-): Promise<void> {
-  const state = getConversationSession(ownedId);
-  if (!state) return;
-  await invoke('respond_agent_conversation_input', {
-    request: { ...response, ownedId, generation: state.generation }
   });
 }

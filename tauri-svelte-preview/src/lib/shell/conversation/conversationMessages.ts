@@ -1,5 +1,6 @@
 import { EventType, StreamProcessor, type StreamChunk, type UIMessage } from '@tanstack/ai/client';
-import type { AgentConfigValue, AgentEvent, AgentConversationEvent, AgentItem, ConversationAttachment } from './conversationTypes.ts';
+import type { CreateChatReturn } from '@tanstack/ai-svelte';
+import type { AgentConfigValue, AgentEvent, AgentConversationEvent, AgentItem, AgentPermissionOption, AgentPermissionRequest, AgentUserInputField, AgentUserInputRequest, ConversationAttachment } from './conversationTypes.ts';
 import { agentItemFromEvent, conversationEventAppendsItemContent, displayItemFromAgentItem, displayItemFromApproval, permissionRequestFromEvent, reuseConversationDisplayItems, withoutRepeatedPlans, type ConversationDisplayItem } from './conversationTimeline.ts';
 import { usageDropIsCompaction } from './conversationReducer.ts';
 
@@ -14,6 +15,25 @@ export function displayEventFrom(event: AgentConversationEvent): AgentConversati
     payload: event.payload.payload, providerMetadata: event.payload.providerMetadata,
     rawFrameReference: event.payload.rawFrameReference
   };
+}
+
+/** The chat's open interrupts, in the shapes the composer's approval and input panels draw. */
+export function pendingRequestsOf(interrupts: CreateChatReturn['interrupts'], ownedId: string): {
+  approvals: AgentPermissionRequest[]; inputs: AgentUserInputRequest[];
+} {
+  const approvals: AgentPermissionRequest[] = [];
+  const inputs: AgentUserInputRequest[] = [];
+  for (const interrupt of interrupts) {
+    if (interrupt.status !== 'pending') continue;
+    const identity = { ownedId, generation: interrupt.generation, requestId: interrupt.id };
+    const input = interrupt.metadata?.['assembly:input'] as { description?: string | null; canDecline?: boolean; fields?: AgentUserInputField[] } | undefined;
+    if (interrupt.reason === 'input') inputs.push({ ...identity, title: interrupt.message || 'Input requested',
+      description: input?.description ?? undefined, fields: input?.fields ?? [], canDecline: input?.canDecline === true });
+    else approvals.push({ ...identity, title: 'Approval needed', toolTitle: interrupt.message || 'Permission requested',
+      description: interrupt.message || undefined, state: 'requested',
+      options: interrupt.metadata?.['assembly:options'] as AgentPermissionOption[] | undefined ?? [] });
+  }
+  return { approvals, inputs };
 }
 
 function metadataOf(message: UIMessage | undefined): Record<string, AgentConfigValue> {

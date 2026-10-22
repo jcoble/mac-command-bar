@@ -23,7 +23,7 @@ import test from 'node:test';
 import { EventSchemas } from '@ag-ui/core/schemas';
 import { canonicalInterruptJson, digestInterruptJson, type StreamChunk } from '@tanstack/ai/client';
 import { ChatClient, type RunAgentInputContext } from '@tanstack/ai-client';
-import { composerLocked } from '../src/lib/shell/conversation/composerSlashCommands.ts';
+import { pendingRequestsOf } from '../src/lib/shell/conversation/conversationMessages.ts';
 
 type Chunk = StreamChunk & { runId?: string; parentRunId?: string; threadId?: string; messageId?: string; delta?: string };
 interface Run { runId: string; chunks: Chunk[]; paused: boolean }
@@ -190,8 +190,9 @@ function interruptsOf(chat: ChatClient) {
   return chat.getSnapshot().interruptState.interrupts;
 }
 
+/** The composer waits while the chat holds any interrupt, for steers and new turns alike. */
 function locked(chat: ChatClient): boolean {
-  return composerLocked({ approval: null, inputs: 0, interrupts: interruptsOf(chat).length });
+  return interruptsOf(chat).length > 0;
 }
 
 /** Every interrupt shown is bound to this backend and can be answered. */
@@ -273,6 +274,14 @@ for (const path of fixtures) {
       await server.idle();
       assertResolvable(chat);
       assert.equal(locked(chat), true, 'an open interrupt locks the composer');
+      const { approvals, inputs } = pendingRequestsOf(interruptsOf(chat), pause.chunks[0].threadId!);
+      assert.deepEqual(inputs, []);
+      for (const [index, interrupt] of interruptsOf(chat).entries()) {
+        const schema = interrupt.responseSchema as { properties: { optionId: { enum: string[] } } };
+        assert.deepEqual(approvals[index].options.map((option) => option.optionId), schema.properties.optionId.enum,
+          'the approval panel offers the options the interrupt accepts');
+        assert.equal(approvals[index].toolTitle, interrupt.message);
+      }
       assert.deepEqual(errors, []);
       chat.dispose();
     }
