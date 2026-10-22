@@ -227,7 +227,8 @@ async function start(argv: string[]) {
   const dataDir = option('--data') ? path.resolve(option('--data')!) : path.join(runDir, 'data');
   refuseOwnerData(dataDir, home);
 
-  const display = pickFreeDisplay((n) => fs.existsSync(`/tmp/.X${n}-lock`) || fs.existsSync(`/tmp/.X11-unix/X${n}`));
+  const displayTaken = (n: number) => fs.existsSync(`/tmp/.X${n}-lock`) || fs.existsSync(`/tmp/.X11-unix/X${n}`);
+  let display = pickFreeDisplay(displayTaken);
   let port = pickFreePort(parseListeningPorts(run('ss', ['-H', '-ltn'])));
 
   fs.mkdirSync(runDir, { recursive: true });
@@ -272,10 +273,21 @@ exec cargo "$@"
     throw new Error(`${message}\nStopped everything this run started.`);
   };
 
+  // Like the port, another lane can take the display after the check. Xvfb then exits ("Server is already
+  // active"); the display is ours only once its lock file holds this run's Xvfb pid.
+  const lockPid = (n: number) => { try { return Number(fs.readFileSync(`/tmp/.X${n}-lock`, 'utf8')); } catch { return 0; } };
+  for (let attempt = 1; ; attempt += 1) {
+    const xvfb = launch('xvfb', 'Xvfb', [`:${display}`, '-screen', '0', '1710x990x24', '-nolisten', 'tcp'], runDir, log(`xvfb-${display}`), process.env);
+    processes.push(xvfb);
+    writeState();
+    const ready = () => lockPid(display) === xvfb.pid && probe(['-display', `:${display}`, '-root']).includes('1710x990');
+    for (let i = 0; i < 20 && groupAlive(xvfb.pid) && !ready(); i += 1) await sleep(500);
+    if (ready()) break;
+    if (groupAlive(xvfb.pid) || attempt === 10) await fail(`Xvfb did not start on display :${display}. See ${xvfb.log}`);
+    console.log(`Display :${display} was taken before Xvfb could start on it; trying the next display.`);
+    display = pickFreeDisplay(displayTaken, display + 1);
+  }
   const x = `:${display}`;
-  processes.push(launch('xvfb', 'Xvfb', [x, '-screen', '0', '1710x990x24', '-nolisten', 'tcp'], runDir, log('xvfb'), process.env));
-  writeState();
-  for (let i = 0; i < 20 && !probe(['-display', x, '-root']).includes('1710x990'); i += 1) await sleep(500);
 
   // Another lane can take the port between the free-port check and Vite listening on it; Vite then
   // exits (strictPort) and the next port is tried. Only a port served by this run's own Vite is used.

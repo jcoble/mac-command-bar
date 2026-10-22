@@ -171,6 +171,16 @@ function startFixture() {
 const fs = require('node:fs'), path = require('node:path'), cp = require('node:child_process'), http = require('node:http');
 const args = process.argv.slice(2), name = path.basename(process.argv[1]), receipt = process.env.RECEIPT;
 if (name === 'free') console.log('Mem: 31 0 0 0 0 20');
+if (name === 'Xvfb') {
+  // Like Xvfb: refuse a display whose lock exists, else hold the lock (with this pid) until stopped.
+  const lock = '/tmp/.X' + args[0].slice(1) + '-lock';
+  if (process.env.TAKEN_DISPLAY === args[0] || fs.existsSync(lock)) { console.error('Server is already active for display ' + args[0].slice(1)); process.exit(1); }
+  fs.writeFileSync(lock, String(process.pid).padStart(10) + '\\n');
+  fs.writeFileSync(receipt + '.xvfb-' + args[0].slice(1), String(process.pid));
+  const drop = () => { try { if (Number(fs.readFileSync(lock, 'utf8')) === process.pid) fs.unlinkSync(lock); } catch {} process.exit(0); };
+  process.on('SIGTERM', drop);
+  setInterval(() => {}, 1000);
+}
 if (name === 'xwininfo') console.log(fs.existsSync(receipt) ? '1710x990 "Assembly"' : '1710x990');
 if (name === 'assembly-native-ui') fs.writeFileSync(args[1], Buffer.alloc(21000));
 if (name === 'ss') {
@@ -202,7 +212,7 @@ if (name === 'pnpm' && (args[0] === 'tauri' || args[0] === 'exec')) {
   for (const name of ['pnpm', 'Xvfb', 'free', 'ss', 'xwininfo', 'assembly-native-ui']) fs.writeFileSync(path.join(bin, name), shim, { mode: 0o755 });
   const receipt = path.join(fixture, 'receipt.json');
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: fixture, PATH: `${bin}:${process.env.PATH}`, RECEIPT: receipt, CARGO_TARGET_DIR: path.join(fixture, 'target'), CLAUDECODE: 'parent-session', CODEX_CONFIG: JSON.stringify({ 'mcp_servers.assembly.default_tools_approval_mode': 'never' }) };
-  for (const key of Object.keys(env)) if (/^MCB_.*_ACP_(PATH|SHA256)$/.test(key) || key === 'HIDE_PORT' || key === 'FAKE_VITE' || key === 'TAKE_OVER') delete env[key];
+  for (const key of Object.keys(env)) if (/^MCB_.*_ACP_(PATH|SHA256)$/.test(key) || key === 'HIDE_PORT' || key === 'TAKEN_DISPLAY' || key === 'FAKE_VITE' || key === 'TAKE_OVER') delete env[key];
   const script = new URL('./fourScenarios.ts', import.meta.url).pathname;
   const checkout = path.join(fixture, 'checkout');
   const start = (extra: NodeJS.ProcessEnv = {}) => {
@@ -218,7 +228,10 @@ if (name === 'pnpm' && (args[0] === 'tauri' || args[0] === 'exec')) {
   const cleanup = () => {
     try { execFileSync(process.execPath, ['--experimental-strip-types', script, 'stop', '--worktree', checkout], { env, stdio: 'pipe' }); } catch { /* nothing started */ }
     for (const file of fs.readdirSync(fixture).filter((f) => f.startsWith('receipt.json.'))) {
-      try { process.kill(Number(fs.readFileSync(path.join(fixture, file), 'utf8')), 'SIGKILL'); } catch { /* already gone */ }
+      const pid = Number(fs.readFileSync(path.join(fixture, file), 'utf8'));
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+      const lock = `/tmp/.X${file.split('.xvfb-')[1]}-lock`;
+      if (file.includes('.xvfb-') && fs.existsSync(lock) && Number(fs.readFileSync(lock, 'utf8')) === pid) fs.rmSync(lock);
     }
     fs.rmSync(fixture, { recursive: true, force: true });
   };
@@ -263,6 +276,20 @@ test('a port taken after the free-port check is not used; start moves to the nex
     assert.ok(fs.existsSync(`${f.receipt}.vite-${actual.port}`), 'the app was pointed at the port its own Vite listens on');
   } finally {
     other.close();
+    f.cleanup();
+  }
+});
+
+test('a display taken after the free-display check is not used; start moves to the next one', () => {
+  const f = startFixture();
+  const taken = pickFreeDisplay((n) => fs.existsSync(`/tmp/.X${n}-lock`) || fs.existsSync(`/tmp/.X11-unix/X${n}`));
+  try {
+    const result = f.start({ TAKEN_DISPLAY: `:${taken}` });
+    assert.equal(result.code, 0, result.err);
+    assert.match(result.out, new RegExp(`Display :${taken} was taken before Xvfb could start on it; trying the next display`));
+    assert.match(result.out, /Display: :(\d+)/);
+    assert.notEqual(Number(/Display: :(\d+)/.exec(result.out)![1]), taken);
+  } finally {
     f.cleanup();
   }
 });
