@@ -192,7 +192,6 @@ fn reap_candidate_processes(
     term_grace: Duration,
 ) -> Vec<u32> {
     let process_table = all_process_snapshots();
-    let own_group = unsafe { libc::getpgrp() } as u32;
     let mut seen_groups = HashSet::new();
     let mut reaped = Vec::new();
 
@@ -202,7 +201,7 @@ fn reap_candidate_processes(
         };
         // Any member stands for its group, so one whose leader exited (an orphaned `cmd &`) is still found.
         let group = snapshot.process_group_id;
-        if group == own_group || seen_groups.contains(&group) {
+        if group == unsafe { libc::getpgrp() } as u32 || seen_groups.contains(&group) {
             continue;
         }
         let Some(marker) = read_adapter_marker(pid) else {
@@ -413,14 +412,10 @@ fn read_adapter_marker(pid: u32) -> Option<AdapterMarker> {
 #[cfg(target_os = "linux")]
 fn read_adapter_marker(pid: u32) -> Option<AdapterMarker> {
     let environment = fs::read(format!("/proc/{pid}/environ")).ok()?;
-    let value = |name: &str| environment.split(|byte| *byte == 0)
-        .filter_map(|entry| std::str::from_utf8(entry).ok())
-        .find_map(|entry| entry.strip_prefix(name).and_then(|value| value.strip_prefix('=')).map(str::to_string));
+    let value = |name: &str| environment.split(|byte| *byte == 0).filter_map(|entry| std::str::from_utf8(entry).ok())
+        .find_map(|entry| entry.strip_prefix(name)?.strip_prefix('=').map(str::to_string));
     let session_id = value(SESSION_MARKER_ENV).filter(|id| !id.is_empty())?;
-    let owner = match value(OWNER_INSTANCE_ENV) {
-        Some(value) => Some(InstanceIdentity::from_marker(&value)?),
-        None => None,
-    };
+    let owner = value(OWNER_INSTANCE_ENV).map(|value| InstanceIdentity::from_marker(&value).ok_or(())).transpose().ok()?;
     Some(AdapterMarker { session_id, legacy: owner.is_none(), owner })
 }
 
@@ -486,6 +481,8 @@ mod tests {
 
     const TEST_GRACE: Duration = Duration::from_millis(100);
 
+    mod marked_groups;
+
     struct TestGroup {
         child: Child,
     }
@@ -548,51 +545,6 @@ mod tests {
             thread::sleep(Duration::from_millis(25));
         }
         false
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn reaper_kills_marked_group_with_dead_owner() {
-        let current = current_identity();
-        let dead_owner = InstanceIdentity {
-            pid: current.pid,
-            start_time_micros: current.start_time_micros.saturating_sub(1),
-        };
-        let mut group = TestGroup::spawn(Some(("reaper-dead-owner", &dead_owner)));
-        let reaped =
-            reap_candidate_processes(&[group.pid()], &current, &HashSet::new(), TEST_GRACE);
-
-        assert_eq!(reaped, vec![group.pid()]);
-        assert!(wait_for_exit(&mut group));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn an_orphaned_background_child_is_reaped_on_linux() {
-        let current = current_identity();
-        let dead_owner = InstanceIdentity {
-            pid: current.pid,
-            start_time_micros: current.start_time_micros.saturating_sub(1),
-        };
-        // The shell exits at once, leaving `sleep` in a group whose leader is gone.
-        let output = Command::new("sh")
-            .args(["-c", "sleep 600 >/dev/null 2>&1 & echo $!"])
-            .env(SESSION_MARKER_ENV, "reaper-orphan")
-            .env(OWNER_INSTANCE_ENV, dead_owner.marker())
-            .process_group(0)
-            .output()
-            .expect("test shell should run");
-        let sleep: u32 = String::from_utf8_lossy(&output.stdout).trim().parse().unwrap();
-        let alive = |pid: u32| fs::read_to_string(format!("/proc/{pid}/stat"))
-            .is_ok_and(|stat| !stat.contains(") Z "));
-        assert!(alive(sleep));
-
-        let reaped = reap_candidate_processes(&[sleep], &current, &HashSet::new(), TEST_GRACE);
-
-        let gone = (0..40).any(|_| { thread::sleep(Duration::from_millis(25)); !alive(sleep) });
-        if !gone { unsafe { libc::kill(sleep as i32, libc::SIGKILL); } }
-        assert_eq!(reaped.len(), 1);
-        assert!(gone, "the orphaned sleep {sleep} is still running");
     }
 
     #[test]

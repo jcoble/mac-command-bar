@@ -90,6 +90,9 @@ fn step_and_dependents(definition: &WorkflowDefinitionV1, id: &str) -> BTreeSet<
     }
 }
 
+mod step_end;
+use step_end::{changed_code, record_tree, refuse_parallel_agents, CHANGED_CODE};
+
 const STEP_FIELDS: [&str; 10] = ["needs", "agent", "prompt", "run", "review", "gate", "on_fail", "expect_files", "if", "repeat"];
 
 /// Every step `id` depends on, directly or through other steps.
@@ -1509,12 +1512,7 @@ impl WorkflowEngine {
             nodes.push(json!({"id":id,"title":id,"roleId":id,"dependsOn":step.get("needs").cloned().unwrap_or(json!([])),
                 "condition":step["if"],"timeoutSeconds":timeout,"step":step}));
         }
-        let agents: Vec<_> = steps.iter().filter(|(_, step)| step.get("agent").is_some()).map(|(id, _)| id.as_str()).collect();
-        for (index, a) in agents.iter().enumerate() {
-            if let Some(b) = agents[index + 1..].iter().find(|b| !needs_ancestry(steps, a).contains(**b) && !needs_ancestry(steps, b).contains(*a)) {
-                return Err(invalid_yaml(format!("steps {a} and {b} can run at the same time; agent steps must be ordered")));
-            }
-        }
+        refuse_parallel_agents(steps)?;
         let inputs = yaml.get("inputs").and_then(Value::as_object).map(|values| values.iter()
             .map(|(name, value)| json!({"name":name,"definition":value})).collect::<Vec<_>>()).unwrap_or_default();
         let max_sessions = yaml["limits"]["max_sessions"].as_u64().unwrap_or(3);
@@ -2648,19 +2646,6 @@ impl WorkflowEngine {
         Ok(run)
     }
 
-    /// Stops an agent step's session and refuses its token once the step's end is recorded. A failure here is only
-    /// logged: the result is already stored. An idle session is suspended, so a redo resumes it with a new token.
-    async fn end_agent_turn(&self, run: &WorkflowRunRecord, node_id: &str, owned_id: &str) {
-        if run.definition.nodes.iter().any(|node| node.id == node_id && (node.step.get("run").is_some() || node.step.get("gate").is_some())) { return; }
-        match crate::agent_conversation::messaging::endpoint() {
-            Ok(endpoint) => endpoint.revoke(owned_id),
-            Err(error) => eprintln!("workflow session {owned_id} keeps its token: {error}"),
-        }
-        if let Err(error) = self.runtime.cancel(owned_id).await {
-            eprintln!("workflow session {owned_id} could not be stopped: {error}");
-        }
-    }
-
     async fn timeout_step(&self, run_id: &str, node_id: &str) -> Result<WorkflowRunRecord, WorkflowError> {
         let mut run = self.require_run(run_id)?;
         let node = run.nodes.iter_mut().find(|node| node.node_id == node_id).unwrap();
@@ -3020,31 +3005,6 @@ impl WorkflowEngine {
 
 /// A shell command with its template values held back as environment variables.
 type RenderedCommand = (String, Vec<(String, String)>);
-
-const CHANGED_CODE: &str = "The step changed HEAD or the working tree; only the build step may change code";
-
-/// Review and `run` steps must leave the code as they found them. Agent steps join with `result:` (slice 2).
-fn guards_code(run: &WorkflowRunRecord, node_id: &str) -> bool {
-    run.definition.nodes.iter().any(|node| node.id == node_id && (node.step.get("review").is_some() || node.step.get("run").is_some()))
-}
-
-/// HEAD and `git status --porcelain` in the run's checkout, or the error that stopped reading them.
-fn tree_state(run: &WorkflowRunRecord) -> String {
-    let mut command = std::process::Command::new("sh");
-    command.args(["-c", "git rev-parse HEAD && git status --porcelain"]).current_dir(run.input_snapshot["cwd"].as_str().unwrap_or_default());
-    crate::bounded_process::output(&mut command, "Changed code", crate::bounded_process::LOCAL_COMMAND_TIMEOUT).map_or_else(|error| error.to_string(),
-        |output| format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)))
-}
-
-/// Records the checkout as a guarded step starts, so its end can be compared with it.
-fn record_tree(run: &mut WorkflowRunRecord, node_id: &str) {
-    if guards_code(run, node_id) { run.input_snapshot["trees"][node_id] = json!(tree_state(run)); }
-}
-
-/// A guarded step that moved HEAD or changed the working tree since it started.
-fn changed_code(run: &WorkflowRunRecord, node_id: &str) -> bool {
-    guards_code(run, node_id) && run.input_snapshot["trees"][node_id].as_str().is_some_and(|start| start != tree_state(run))
-}
 
 fn render_step_template(template: &str, run: &WorkflowRunRecord) -> Result<String, WorkflowError> {
     render_template(template, run, |value| value)
@@ -4188,25 +4148,6 @@ mod tests {
     }
 
     #[test]
-    fn redo_stops_a_parallel_reviewer_and_its_timer() {
-        let repo = RunRepo::new();
-        let runtime = Arc::new(FakeRuntime::default());
-        let engine = run_engine(runtime.clone());
-        let steps = format!("{LOOP_REVIEW}  second:\n    needs: [build]\n    review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/p.md }}\n");
-        let run = loop_run(&engine, &repo.0, &steps);
-        let both = end_turn(&engine, &run.id, "build", &[]);
-        let old_second = step_of(&both, "second").clone();
-        assert_eq!(old_second.state, WorkflowNodeState::Running);
-        assert!(engine.deadlines.lock().unwrap().contains_key(&old_second.id));
-        let run = end_turn(&engine, &run.id, "review", &[findings(1)]);
-        assert!(runtime.cancelled_ids.lock().unwrap().contains(&old_second.owned_id));
-        assert!(!engine.deadlines.lock().unwrap().contains_key(&old_second.id));
-        assert_eq!((step_of(&run, "second").attempt, step_of(&run, "second").state), (2, WorkflowNodeState::Blocked));
-        assert_eq!(step_of(&run, "build").state, WorkflowNodeState::Running);
-        assert_eq!(run.state, WorkflowRunState::Running);
-    }
-
-    #[test]
     fn redo_resumes_a_run_paused_by_the_other_reviewer() {
         let repo = RunRepo::new();
         let engine = run_engine(Arc::new(FakeRuntime::default()));
@@ -5196,20 +5137,6 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         panic!("run step did not finish");
-    }
-
-    #[test]
-    fn run_step_commands_do_not_hold_up_the_dispatch_call() {
-        let repo = RunRepo::new();
-        let engine = run_engine(Arc::new(FakeRuntime::default()));
-        let run = step_run(&engine, &repo.0, json!({"run":["sleep 1; touch ../done.txt"]}));
-        let started = std::time::Instant::now();
-        let running = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
-        assert!(started.elapsed() < std::time::Duration::from_millis(800), "start waited for the command");
-        assert_eq!(running.nodes[0].state, WorkflowNodeState::Running);
-        let finished = settle(&engine, &run.id);
-        assert!(repo.0.join("../done.txt").exists());
-        assert_eq!(finished.nodes[0].state, WorkflowNodeState::Completed);
     }
 
     #[test]

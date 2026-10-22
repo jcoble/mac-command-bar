@@ -106,6 +106,18 @@ fn a_review_step_leaving_an_untracked_file_fails_changed_code() {
 }
 
 #[test]
+fn a_review_step_rewriting_a_file_the_build_left_fails_changed_code() {
+    let repo = RunRepo::new();
+    let engine = engine(Arc::new(FakeRuntime::default()));
+    let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
+    std::fs::write(repo.0.join("draft.txt"), "the build's version").unwrap();
+    end_turn(&engine, &run.id, "build", &[]);
+    std::fs::write(repo.0.join("draft.txt"), "the reviewer's version").unwrap();
+    let ended = end_turn(&engine, &run.id, "review", &[pass()]);
+    assert_eq!(failure_code(&ended, "review").as_deref(), Some("changed-code"));
+}
+
+#[test]
 fn a_build_step_may_commit() {
     let repo = RunRepo::new();
     let engine = engine(Arc::new(FakeRuntime::default()));
@@ -147,4 +159,37 @@ fn two_unordered_agent_steps_are_refused_at_load() {
 fn parallel_reviews_of_one_step_still_load() {
     let second = "  second:\n    needs: [build]\n    review: { of: build, agent: { provider: codex }, prompt: prompts/p.md }\n";
     assert!(load(&format!("{LOOP_REVIEW}{second}")).is_ok());
+}
+
+#[test]
+fn redo_stops_a_parallel_reviewer_and_its_timer() {
+    let repo = RunRepo::new();
+    let runtime = Arc::new(FakeRuntime::default());
+    let engine = run_engine(runtime.clone());
+    let steps = format!("{LOOP_REVIEW}  second:\n    needs: [build]\n    review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/p.md }}\n");
+    let run = loop_run(&engine, &repo.0, &steps);
+    let both = end_turn(&engine, &run.id, "build", &[]);
+    let old_second = step_of(&both, "second").clone();
+    assert_eq!(old_second.state, WorkflowNodeState::Running);
+    assert!(engine.deadlines.lock().unwrap().contains_key(&old_second.id));
+    let run = end_turn(&engine, &run.id, "review", &[findings(1)]);
+    assert!(runtime.cancelled_ids.lock().unwrap().contains(&old_second.owned_id));
+    assert!(!engine.deadlines.lock().unwrap().contains_key(&old_second.id));
+    assert_eq!((step_of(&run, "second").attempt, step_of(&run, "second").state), (2, WorkflowNodeState::Blocked));
+    assert_eq!(step_of(&run, "build").state, WorkflowNodeState::Running);
+    assert_eq!(run.state, WorkflowRunState::Running);
+}
+
+#[test]
+fn run_step_commands_do_not_hold_up_the_dispatch_call() {
+    let repo = RunRepo::new();
+    let engine = run_engine(Arc::new(FakeRuntime::default()));
+    let run = step_run(&engine, &repo.0, json!({"run":["sleep 1; touch ../done.txt"]}));
+    let started = std::time::Instant::now();
+    let running = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_millis(800), "start waited for the command");
+    assert_eq!(running.nodes[0].state, WorkflowNodeState::Running);
+    let finished = settle(&engine, &run.id);
+    assert!(repo.0.join("../done.txt").exists());
+    assert_eq!(finished.nodes[0].state, WorkflowNodeState::Completed);
 }
