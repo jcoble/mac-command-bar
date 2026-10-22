@@ -17,6 +17,7 @@
 import type { ConversationAttachment } from './conversation/conversationTypes.ts';
 import { requestOpenFile, type OpenFileRequest } from './openFileBus.ts';
 import type { NotionTaskRow } from './notionTasks.ts';
+import { receiveNotionOAuthCode } from './notionOAuth.ts';
 import { remoteWorkspacePath } from '../workspacePaths.ts';
 
 /** The chat and the five kinds of tab the top tab row can bring forward. */
@@ -235,11 +236,13 @@ export type AssemblyLink =
   | { kind: 'session'; ownedId: string }
   | { kind: 'task'; pageId: string }
   | { kind: 'open'; url: string }
-  | { kind: 'file'; path: string };
+  | { kind: 'file'; path: string }
+  | { kind: 'notion-oauth'; state: string; code: string };
 
 /** Read an `assembly://` link: `session/<ownedId>`, `task/<notionPageId>`,
- * `open?url=<http(s) url>` or `file?path=<absolute path>[&profile=<machine>]`.
- * Anything else is null. */
+ * `open?url=<http(s) url>`, `file?path=<absolute path>[&profile=<machine>]`
+ * or `notion-oauth?state=<state>&code=<claim code>` from the Notion sign-in
+ * page. Anything else is null. */
 export function parseAssemblyLink(url: string): AssemblyLink | null {
   let parsed: URL;
   try {
@@ -266,6 +269,11 @@ export function parseAssemblyLink(url: string): AssemblyLink | null {
     if (!path.startsWith('/')) return null;
     return { kind: 'file', path: profile ? remoteWorkspacePath(profile, path) : path };
   }
+  if (parsed.hostname === 'notion-oauth') {
+    const state = parsed.searchParams.get('state');
+    const code = parsed.searchParams.get('code');
+    return state && code ? { kind: 'notion-oauth', state, code } : null;
+  }
   return null;
 }
 
@@ -276,6 +284,7 @@ export async function openAssemblyLink(url: string): Promise<void> {
   else if (link?.kind === 'task') await openUrlInBrowser({ url: `https://app.notion.com/p/${link.pageId.replaceAll('-', '')}` });
   else if (link?.kind === 'open') await openUrlInBrowser({ url: link.url });
   else if (link?.kind === 'file') openFileInEditor({ path: link.path });
+  else if (link?.kind === 'notion-oauth') receiveNotionOAuthCode(link.state, link.code);
 }
 
 /** A link handed over by another app: an `assembly://` link, or a file opened from Finder. */

@@ -13,7 +13,7 @@ use tokio::sync::{broadcast, mpsc};
 use super::execute_server_command;
 use super::super::{PendingAttachment, ServerState, HISTORY_DOWNLOAD_CHUNK_BYTES,
     MAX_SERVER_FRAME_BYTES, MAX_WIRE_FRAME_BYTES, MESSAGE_CHANGES, OUTBOUND_FRAME_CAPACITY,
-    PROTOCOL_VERSION, REPLAY_PAGE_BYTES};
+    REPLAY_PAGE_BYTES};
 use super::super::wire::{encode_history_chunk, encode_server_frame, ClientFrame, RemoteCommand, RemoteResponse, ServerFrame};
 
 pub(in crate::agent_conversation::remote) async fn upgrade_remote_socket(
@@ -21,17 +21,13 @@ pub(in crate::agent_conversation::remote) async fn upgrade_remote_socket(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    let expected = format!("Bearer {}", state.token);
-    if headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        != Some(expected.as_str())
-    {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
+    let Some(challenge) = headers.get(super::super::handshake::CHALLENGE_HEADER).and_then(|value| value.to_str().ok())
+        .filter(|value| super::super::handshake::valid_challenge(value)).map(str::to_owned) else {
+        return StatusCode::UPGRADE_REQUIRED.into_response();
+    };
     upgrade
         .max_message_size(MAX_WIRE_FRAME_BYTES)
-        .on_upgrade(move |socket| serve_remote_socket(socket, state))
+        .on_upgrade(move |socket| serve_remote_socket(socket, state, challenge))
         .into_response()
 }
 
@@ -106,7 +102,8 @@ async fn send_history_frame(outbound: &mpsc::Sender<ServerFrame>, frame: ServerF
     Ok(())
 }
 
-async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
+async fn serve_remote_socket(mut socket: WebSocket, state: ServerState, challenge: String) {
+    if !super::super::handshake::admit_desktop(&mut socket, &state.token, &challenge).await { return; }
     let (mut writer, mut reader) = socket.split();
     let (outbound, mut outgoing) = mpsc::channel::<ServerFrame>(OUTBOUND_FRAME_CAPACITY);
     let (history_outbound, mut history_outgoing) = mpsc::channel::<ServerFrame>(1);
@@ -129,11 +126,6 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
             if sent.is_err() { break; }
         }
     });
-    let _ = outbound
-        .send(ServerFrame::Ready {
-            protocol_version: PROTOCOL_VERSION,
-        })
-        .await;
     let socket_id = state.relay.next_id.fetch_add(1, Ordering::Relaxed);
     state.relay.desktops.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((socket_id, outbound.clone()));
     let mut live_events = state.events.subscribe();
@@ -173,7 +165,7 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         // Replay only sessions known to this socket. A missing session's
-                        // next live event exposes a gap for the client's snapshot repair.
+                        // next live event skips past the client's copy, and the client asks for it.
                         let mut failed = false;
                         for owned_id in queued.keys().cloned().collect::<Vec<_>>() {
                             if let Err(error) = replay_session(&state, &outbound, &mut queued, &owned_id).await {
@@ -221,6 +213,7 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
             continue;
         };
         match frame {
+            ClientFrame::Authenticate { .. } => break,
             ClientFrame::Request { id, command } => {
                 match &command {
                     RemoteCommand::SelectChildHistory {
@@ -294,9 +287,10 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
                 }
             }
             ClientFrame::Resume { cursors } => {
+                let named = cursors.keys().cloned().collect::<Vec<_>>();
                 queued.extend(cursors);
                 let mut failed = false;
-                for owned_id in queued.keys().cloned().collect::<Vec<_>>() {
+                for owned_id in named {
                     if let Err(error) = replay_session(&state, &outbound, &mut queued, &owned_id).await {
                         eprintln!("Remote resume replay failed: {error}");
                         failed = true;
@@ -450,6 +444,8 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("remote-import-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
         let path = transcript(&directory, 3, 100);
+        std::fs::create_dir(directory.join(".git")).unwrap(); std::fs::write(directory.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+        std::fs::write(&path, std::fs::read_to_string(&path).unwrap().replace("\"/work\"", &serde_json::to_string(directory.to_str().unwrap()).unwrap())).unwrap();
         let manager = manager(&directory);
         let cwd = directory.to_string_lossy().into_owned();
         // A project of the machine's own for the same folder: the desktop's project still files the session there.
@@ -463,10 +459,10 @@ mod tests {
         assert_eq!(row.project_id.as_deref(), Some("p1"));
         assert_eq!(row.title.as_deref(), Some("Past"));
         assert!(manager.store_handle().has_display_events(&owned_id).unwrap(), "the newest page is read on the server");
-
-        let RemoteResponse::Transcripts(found) = super::super::execute_remote_command(&manager, &directory,
-            RemoteCommand::ScanTranscripts { log_path: Some(path.to_string_lossy().into()) }, Arc::new(|_| {})).await.unwrap()
+        let RemoteResponse::Transcripts { sessions: found, common_dirs } = super::super::execute_remote_command(&manager, &directory,
+            RemoteCommand::ScanTranscripts { log_path: Some(path.to_string_lossy().into()), project_roots: vec![cwd.clone()] }, Arc::new(|_| {})).await.unwrap()
             else { panic!("wrong scan response") };
+        assert_eq!(common_dirs.get(&cwd), Some(&directory.join(".git").to_string_lossy().into_owned()));
         assert!(!found.is_empty());
         assert!(found.iter().all(|record| record.log_path.as_deref() == Some(path.to_string_lossy().as_ref())));
         std::fs::remove_dir_all(directory).unwrap();

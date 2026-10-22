@@ -21,12 +21,18 @@ use crate::agent_conversation::protocol::ExecutionEnvironment;
 use crate::agent_conversation::providers::ProviderRegistry;
 use crate::terminal::{self, TerminalKind};
 
+/// Takes the backend token out of the environment before any child process starts.
+fn take_server_token() -> Result<String, String> {
+    let token = std::env::var("ASSEMBLY_SERVER_TOKEN");
+    std::env::remove_var("ASSEMBLY_SERVER_TOKEN");
+    token.map_err(|_| "ASSEMBLY_SERVER_TOKEN is required".to_string())
+}
+
 /// Runs the resident remote server instead of starting a Tauri window.
 pub fn run_server_from_environment() -> Result<(), String> {
     let bind =
         std::env::var("ASSEMBLY_SERVER_BIND").unwrap_or_else(|_| "127.0.0.1:7777".to_string());
-    let token = std::env::var("ASSEMBLY_SERVER_TOKEN")
-        .map_err(|_| "ASSEMBLY_SERVER_TOKEN is required".to_string())?;
+    let token = take_server_token()?;
     if token.len() < 32 {
         return Err("ASSEMBLY_SERVER_TOKEN must contain at least 32 characters".to_string());
     }
@@ -52,6 +58,7 @@ pub fn run_server_from_environment() -> Result<(), String> {
             ProviderRegistry::bundled_from_environment_at(Some(&data_dir))?,
             &data_dir.join("sessions.db"),
         )?;
+        manager.start_closing_finished_helpers();
         let state = server_state(manager, data_dir.clone(), Arc::from(token))?;
         // This machine's sessions reach other machines through a connected desktop.
         crate::agent_conversation::messaging::endpoint()?.set_relay(state.relay.relay());
@@ -332,12 +339,20 @@ pub(super) async fn execute_remote_command(
             let progress = manager.extend_imported_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES, crate::agent_conversation::IMPORT_MAX_RECORDS)?;
             Ok(RemoteResponse::ImportProgress { added: progress.added, reached_start: progress.reached_start })
         }
-        RemoteCommand::ScanTranscripts { log_path } => tokio::task::spawn_blocking(move || match log_path {
-            Some(path) => mcb_core::scanners::sessions::scan_session_details(&path),
-            // The desktop keeps no turn text from the full list, so it is not sent.
-            None => mcb_core::scanners::sessions::scan_sessions().into_iter()
-                .map(|session| AgentSessionRecord { latest_turns: Vec::new(), ..session }).collect(),
-        }).await.map(RemoteResponse::Transcripts).map_err(|error| error.to_string()),
+        RemoteCommand::ScanTranscripts { log_path, project_roots } => tokio::task::spawn_blocking(move || {
+            let sessions = match log_path {
+                Some(path) => mcb_core::scanners::sessions::scan_session_details(&path),
+                // The desktop keeps no turn text from the full list, so it is not sent.
+                None => mcb_core::scanners::sessions::scan_sessions().into_iter()
+                    .map(|session| AgentSessionRecord { latest_turns: Vec::new(), ..session }).collect(),
+            };
+            let folders: std::collections::BTreeSet<_> = sessions.iter().filter_map(|session| session.project_path.as_deref())
+                .chain(project_roots.iter().map(String::as_str)).collect();
+            let common_dirs = folders.into_iter().filter_map(|folder| {
+                Some((folder.to_string(), crate::project_folders::git_common_dir(folder)?))
+            }).collect();
+            RemoteResponse::Transcripts { sessions, common_dirs }
+        }).await.map_err(|error| error.to_string()),
         RemoteCommand::BeginImport { provider, native_session_id, transcript_path, cwd, title, project_id } => {
             // Filed under this Mac's project for the folder, which is how its rail groups it, even if the machine has its own.
             let (owned_id, rebuilt) = manager.begin_import_transcript_session(provider, &native_session_id,
@@ -558,5 +573,15 @@ pub(super) async fn execute_remote_command(
         | RemoteCommand::TerminalScrollback { .. } | RemoteCommand::TerminalClose { .. } => {
             Err("Terminal command needs the server's terminals".into())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn server_token_is_removed_from_the_environment_after_reading() {
+        std::env::set_var("ASSEMBLY_SERVER_TOKEN", "test-token");
+        assert_eq!(super::take_server_token().unwrap(), "test-token");
+        assert!(std::env::var_os("ASSEMBLY_SERVER_TOKEN").is_none());
     }
 }
