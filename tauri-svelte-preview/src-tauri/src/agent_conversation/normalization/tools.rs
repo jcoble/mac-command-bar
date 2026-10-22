@@ -240,3 +240,41 @@ pub(in crate::agent_conversation) fn unified_diff(old_text: &str, new_text: &str
         .context_radius(3)
         .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::tool_details;
+    use crate::agent_conversation::history::transcript::tool_record;
+    use serde_json::json;
+
+    #[test]
+    fn a_relative_read_carries_the_full_path_of_the_folder_the_call_ran_in() {
+        let update = json!({
+            "sessionUpdate": "tool_call", "toolCallId": "read-1", "kind": "read",
+            "title": "Read remote.rs",
+            "rawInput": { "command": "sed -n 1,80p src/remote.rs", "workdir": "/home/me/other-repo" }
+        });
+        assert_eq!(tool_details(&update).path.as_deref(), Some("/home/me/other-repo/src/remote.rs"));
+
+        let located = json!({
+            "sessionUpdate": "tool_call", "toolCallId": "read-2", "kind": "read",
+            "locations": [{ "path": "src/remote.rs" }, { "path": "/etc/hosts" }],
+            "rawInput": { "cwd": "/home/me/other-repo/" }
+        });
+        assert_eq!(
+            tool_details(&located).path.as_deref(),
+            Some("/home/me/other-repo/src/remote.rs\n/etc/hosts")
+        );
+
+        // No recorded folder: the path stays as the call gave it.
+        let bare = json!({ "sessionUpdate": "tool_call", "kind": "read", "rawInput": { "file_path": "src/main.rs" } });
+        assert_eq!(tool_details(&bare).path.as_deref(), Some("src/main.rs"));
+    }
+
+    #[test]
+    fn a_past_shell_read_carries_the_full_path_of_its_working_folder() {
+        let input = json!({ "cmd": "sed -n '1,80p' src/remote.rs", "workdir": "/home/me/other-repo" });
+        let record = tool_record("call-1", "exec_command", &input, 0);
+        assert_eq!(record.payload.get("path"), Some(&json!("/home/me/other-repo/src/remote.rs")));
+    }
+}

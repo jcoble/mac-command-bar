@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   onOpenFile,
+  requestOpenConversationFile,
   requestOpenFile,
   resolveConversationFilePath
 } from '../src/lib/shell/openFileBus.ts';
@@ -56,6 +57,28 @@ assert.equal(
   const offLate = onOpenFile((request) => late.push(request.path));
   assert.deepEqual(late, [], 'delivered requests are not replayed');
   offLate();
+}
+
+// A tool-call link outside the session's project opens the full path the call
+// recorded, read-only, on the session's own machine.
+{
+  const seen = [];
+  const off = onOpenFile((request) => seen.push(request));
+  const outside = '/home/me/other-repo/src/remote.rs';
+  const local = { cwd: '/work/session', executionEnvironment: 'local' };
+  assert.equal(requestOpenConversationFile(local, 'remote.rs', { path: outside }), null);
+  const remote = { cwd: '/work/session', executionEnvironment: 'remote', remoteProfileId: 'box' };
+  assert.equal(requestOpenConversationFile(remote, outside, { root: '/work/session' }), null);
+  assert.deepEqual(seen, [
+    { path: outside, projectRoot: '/work/session', readOnly: true, line: undefined },
+    {
+      path: `assembly-remote://box${outside}`,
+      projectRoot: 'assembly-remote://box/work/session',
+      readOnly: true,
+      line: undefined
+    }
+  ]);
+  off();
 }
 
 console.log('openFileBus: all tests passed');
