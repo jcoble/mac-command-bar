@@ -181,8 +181,8 @@ fn a_session_that_dies_while_a_request_waits_ends_the_paused_run() {
     script.send(turn(TurnState::Started));
     script.send(delta("msg-1", "Half a"));
     let ended = script.send(Payload::Connection { state: ConversationConnectionState::Failed, native_session_id: None });
-    assert_eq!(ended[0]["type"], "RUN_FINISHED");
-    assert_eq!(ended[0]["outcome"]["type"], "cancelled");
+    assert_eq!(types(&ended), ["TEXT_MESSAGE_END", "RUN_FINISHED", "CUSTOM"], "the half reply ends before its run");
+    assert_eq!(ended[1]["outcome"]["type"], "cancelled");
 }
 
 #[test]
@@ -259,13 +259,21 @@ fn only_a_failed_turn_is_a_run_error_and_stop_cancels_the_run() {
     let failed_error = script.send(Payload::Error { code: "provider_error".into(), message: "The model is overloaded".into(), recoverable: false });
     assert_eq!(types(&failed_error), ["CUSTOM"]);
     let failed = script.send(turn(TurnState::Failed));
-    assert_eq!(failed[0]["type"], "RUN_ERROR");
-    assert_eq!(failed[0]["message"], "The model is overloaded");
+    assert_eq!(types(&failed), ["TEXT_MESSAGE_END", "RUN_ERROR"], "the reply ends before its run");
+    assert_eq!(failed[1]["message"], "The model is overloaded");
     script.send(turn(TurnState::Started));
     script.send(permission("perm-2", ApprovalState::Requested));
     let stopped = script.send(turn(TurnState::Interrupted));
     assert_eq!(stopped.len(), 1);
     assert_eq!(stopped[0]["outcome"]["type"], "cancelled");
+}
+
+#[test]
+fn a_turn_that_ends_mid_reply_ends_the_reply_before_the_run() {
+    let mut script = Script::open();
+    script.send(turn(TurnState::Started));
+    script.send(delta("msg-1", "Working"));
+    assert_eq!(types(&script.send(turn(TurnState::Completed))), ["TEXT_MESSAGE_END", "RUN_FINISHED"]);
 }
 
 #[test]

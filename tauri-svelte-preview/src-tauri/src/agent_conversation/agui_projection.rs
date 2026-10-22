@@ -464,6 +464,10 @@ impl View {
             self.open(out, thread, sequence);
         }
         if let Some(run) = self.open_run.take() {
+            // A reply still streaming ends before its run does.
+            let mut open: Vec<String> = self.texts.drain().map(|(id, _)| id).collect();
+            open.sort();
+            out.extend(open.iter().map(|id| agui::text_end(id)));
             let usage = self.usage.take();
             out.push(match state {
                 TurnState::Failed => {
