@@ -5,8 +5,10 @@
   At rest the row shows one pill per group. Pressing a group opens it: the row
   shows a Back button, which closes the group without changing its selection,
   then the group's options, which toggle on and off. Deselecting every option
-  clears the group. A press anywhere outside the row, or ten
-  seconds with no press, closes the group and keeps its selection. A closed
+  clears the group. Escape, a press anywhere outside the row, or ten
+  seconds with no press, closes the group and keeps its selection. When the
+  keyboard is in the row, opening a group moves focus to its first option and
+  closing it moves focus back to the group's pill. A closed
   group with a selection shows the chosen labels joined ("Claude/Codex") as a
   filled pill, or "All" when every option is selected. The X at the far left
   of the resting row clears every group.
@@ -19,6 +21,8 @@
     <FilterPills label="Filter tasks" groups={GROUPS} value={filters} onChange={(v) => (filters = v)} />
 -->
 <script lang="ts">
+  import { flushSync } from 'svelte';
+
   interface FilterPillOption {
     value: string;
     label: string;
@@ -71,14 +75,35 @@
     timer = window.setTimeout(close, AUTO_CLOSE_MS);
   }
 
+  // The pressed button disappears when the row swaps between pills and
+  // options, which would drop focus to the page. If focus was in the row, put it
+  // on the matching button in the new row.
+  function focusInRow(): boolean {
+    return row?.contains(document.activeElement) ?? false;
+  }
+
   function open(groupId: string): void {
-    openId = groupId;
+    const hadFocus = focusInRow();
+    flushSync(() => (openId = groupId));
     restartTimer();
+    if (hadFocus) row?.querySelector<HTMLElement>('[aria-pressed]')?.focus();
   }
 
   function close(): void {
     clearTimeout(timer);
-    openId = null;
+    const hadFocus = focusInRow();
+    const groupId = openId ?? groups[0]?.id;
+    flushSync(() => (openId = null));
+    // A long open group can leave a narrow row scrolled right, hiding the clear button.
+    if (row) row.scrollLeft = 0;
+    if (hadFocus && groupId) row?.querySelector<HTMLElement>(`[data-group="${CSS.escape(groupId)}"]`)?.focus();
+  }
+
+  function closeOnEscape(event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || openId === null) return;
+    event.preventDefault();
+    event.stopPropagation();
+    close();
   }
 
   function toggle(group: FilterPillGroup, optionValue: string): void {
@@ -127,7 +152,14 @@
   </svg>
 {/snippet}
 
-<div bind:this={row} role="group" aria-label={label} class="flex flex-nowrap items-center gap-2 overflow-x-auto">
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions (Escape bubbles up from the row's buttons) -->
+<div
+  bind:this={row}
+  role="group"
+  aria-label={label}
+  class="flex flex-nowrap items-center gap-2 overflow-x-auto"
+  onkeydown={closeOnEscape}
+>
   {#if openGroup}
     {@const group = openGroup}
     <button
@@ -159,6 +191,7 @@
         type="button"
         class="{PILL} px-3 {selected(group.id).length > 0 ? CHOSEN : REST}"
         aria-expanded="false"
+        data-group={group.id}
         onclick={() => open(group.id)}
       >{pillLabel(group)}</button>
     {/each}
