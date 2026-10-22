@@ -5,12 +5,14 @@
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as Popover from '$lib/components/ui/popover/index.js';
+  import { sendSystemNotification } from '$lib/shell/conversation/sessionNotifications.ts';
   import { sessionWaitsOnYou } from '$lib/shell/ownedSessions.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { listenAgentMessagesChanged } from '$lib/tauriSource.ts';
   import { cn } from '$lib/utils.js';
   import Board from './Board.svelte';
-  import { countBoard } from './boardSource.ts';
+  import { boardNotifications } from './boardNotifications.ts';
+  import { countBoard, readBoard, type MachineBoard } from './boardSource.ts';
 
   let open = $state(false);
   /** Needs-you cards that are not snoozed, plus workflow steps waiting, on every machine. */
@@ -19,6 +21,8 @@
   let version = $state(0);
   const waiting = $derived(rail.owned.filter(sessionWaitsOnYou));
   const badge = $derived(counted + waiting.length);
+  /** The last board read, kept across reconnects, so each card or question notifies once. */
+  let lastRead: MachineBoard[] | null = null;
   /** The connected machines; a change counts again and reloads an open board. */
   const connected = $derived(Object.keys(rail.remoteConnections).filter((id) => rail.remoteConnections[id] === 'connected').join(','));
 
@@ -38,6 +42,11 @@
         if (!result || current.signal.aborted) return;
         counted = result.count;
         if (result.snoozed_until_ms) timer = window.setTimeout(() => { version += 1; void recount(); }, Math.max(0, result.snoozed_until_ms - Date.now()));
+        const read = await readBoard(Date.now(), Date.now(), current.signal);
+        if (!read || current.signal.aborted) return;
+        const notifications = boardNotifications(lastRead, read);
+        lastRead = read;
+        for (const notification of notifications) await sendSystemNotification(notification);
       } catch {
         // The next change counts again; until then the badge keeps its last number.
       }

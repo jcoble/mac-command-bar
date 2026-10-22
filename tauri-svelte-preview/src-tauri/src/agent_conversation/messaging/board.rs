@@ -1,12 +1,25 @@
 use super::super::{protocol::CommandResult, remote::RemoteConnectionManager};
 use mcb_core::session_store::SessionStore;
 use serde_json::{json, Value};
+use std::sync::{Mutex, PoisonError};
 use tokio::sync::broadcast::{error::RecvError, Receiver};
+
+/// When `notify` sent something to the phone since the owner last answered a board question.
+static NOTIFIED: Mutex<Vec<i64>> = Mutex::new(Vec::new());
+const PHONE_LIMIT: &str = "phone limit reached: the owner hasn't answered; 3 in 30 minutes, 5 in an hour";
+const NOT_ORCHESTRATOR: &str = "only the main orchestrator can message the owner's phone; the board has notified the desktop";
+
+/// The phone gets at most 3 pushes in any 30 minutes and 5 in any hour until the owner answers.
+fn phone_limited(now: i64) -> bool {
+    let mut sent = NOTIFIED.lock().unwrap_or_else(PoisonError::into_inner);
+    sent.retain(|at| now - at < 3_600_000);
+    sent.len() >= 5 || sent.iter().filter(|at| now - **at < 1_800_000).count() >= 3
+}
 
 pub fn tool() -> Value {
     json!({
         "name": "board_update",
-        "description": "Create or update a card on the owner's Build board. The session the owner gave a task to keeps one card for it; the main orchestrator may update any card. Helpers cannot post, and workflow workers should not: their parent's card or their run already shows. Key: the task key if there is one, otherwise a short name no other session would pick. Post when you start, update when the state changes, and use needs_you only when the owner must act, with steps saying what to do. Record every question you ask the owner before you ask it, in the same turn: pass question (the explanation, with options, your recommendation and why, and PR, task and proof links), title and recommended. The reply gives its number n: start your chat question with Q<n>, since the owner's answer arrives as 'Q<n>: …'. When it is answered anywhere, call again with the same key and answer. To ask it again, call with the same key and a new question. Approvals and workflow pauses already show.",
+        "description": "Create or update a card on the owner's Build board. The session the owner gave a task to keeps one card for it; the main orchestrator may update any card. Helpers cannot post, and workflow workers should not: their parent's card or their run already shows. Key: the task key if there is one, otherwise a short name no other session would pick. Post when you start, update when the state changes, and use needs_you only when the owner must act, with steps saying what to do. A needs_you card waits on the board as a small on-hold card, and the board notifies the owner's desktop; only the main orchestrator can pass notify to send a card or question to the owner's phone. Record every question you ask the owner before you ask it, in the same turn: pass question (the explanation, with options, your recommendation and why, and PR, task and proof links), title and recommended. The reply gives its number n: start your chat question with Q<n>, since the owner's answer arrives as 'Q<n>: …'. When it is answered anywhere, call again with the same key and answer. To ask it again, call with the same key and a new question. Approvals and workflow pauses already show.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -31,7 +44,9 @@ pub fn tool() -> Value {
                     "description": "Marks this call as a question; required to ask or re-ask. At most 1200."},
                 "recommended": {"type": "string", "maxLength": 300, "description": "Your recommended answer, at most 300."},
                 "answer": {"type": "string", "maxLength": 600,
-                    "description": "The answer the question got, at most 600; marks it answered."}
+                    "description": "The answer the question got, at most 600; marks it answered."},
+                "notify": {"type": "boolean",
+                    "description": "Main orchestrator only. Send this card to the owner's phone now. Use it whenever it's a reasonable reason to message the owner: a question, something ready for them to test or look at, a blocker, a finished batch, an emergency. Don't use it for routine progress."}
             },
             "required": ["key"]
         }
@@ -52,17 +67,21 @@ pub(super) fn update(store: &SessionStore, caller: &str, role: &str, mut args: V
         };
         args["session"] = json!(owned_id);
     }
-    let key = args["key"].as_str().ok_or("key must be a string")?;
+    let key = args["key"].as_str().ok_or("key must be a string")?.to_string();
     let now = chrono::Utc::now().timestamp_millis();
+    let refused = if args["notify"] != true { None } else if role != "orchestrator" { Some(NOT_ORCHESTRATOR) }
+        else if phone_limited(now) { Some(PHONE_LIMIT) } else { None };
+    if refused.is_some() { args["notify"] = json!(false); }
+    let mut reply = json!({"key": key, "saved": true});
     if args.get("question").is_some() || args.get("answer").is_some() {
-        let id = store.board_question_update(key, caller, role == "orchestrator", &args, now).map_err(|e| e.to_string())?;
-        mcb_core::broker::messages_changed();
-        return Ok(json!({"key": key, "saved": true, "question": id}));
+        reply["question"] = json!(store.board_question_update(&key, caller, role == "orchestrator", &args, now).map_err(|e| e.to_string())?);
+    } else {
+        store.board_update(&key, caller, role == "orchestrator", &args, now).map_err(|error| error.to_string())?;
     }
-    store.board_update(key, caller, role == "orchestrator", &args, now)
-        .map_err(|error| error.to_string())?;
+    if args["notify"] == true { NOTIFIED.lock().unwrap_or_else(PoisonError::into_inner).push(now); }
+    if let Some(text) = refused { reply["phone"] = json!(text); }
     mcb_core::broker::messages_changed();
-    Ok(json!({"key": key, "saved": true}))
+    Ok(reply)
 }
 
 /// The owner's board operations on this machine's own store; agents never reach these.
@@ -79,6 +98,7 @@ pub(super) fn answer(store: &SessionStore, op: &str, args: &Value) -> Result<Val
     };
     let value = result.map_err(|error| error.to_string())?;
     if matches!(op, "board_card" | "board_note" | "board_question") && value == Value::Bool(true) {
+        if op == "board_question" { NOTIFIED.lock().unwrap_or_else(PoisonError::into_inner).clear(); }
         mcb_core::broker::messages_changed();
     }
     Ok(value)
@@ -167,6 +187,38 @@ mod tests {
         assert_eq!(fired.load(Ordering::SeqCst), 5);
         assert_eq!(answer(&store, "board_question", &json!({"id": id, "asked_at_ms": asked, "answer": "Q1: no", "now_ms": 6})).unwrap(), json!(false));
         assert_eq!(fired.load(Ordering::SeqCst), 5);
+    }
+
+    #[test]
+    fn board_tool_schema_has_notify() {
+        let schema = tool();
+        assert_eq!(schema["inputSchema"]["properties"]["notify"]["type"], "boolean");
+        assert!(schema["description"].as_str().unwrap().contains("notify"));
+    }
+
+    #[test]
+    fn notify_is_capped_until_the_owner_answers() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let id = update(&store, "lead", "top", json!({"key": "q", "title": "Merge?", "question": "Why"})).unwrap()["question"].as_i64().unwrap();
+        let notify = |key: &str| update(&store, "lead", "orchestrator", json!({"key": key, "title": "Ready", "state": "needs_you", "notify": true})).unwrap();
+        let replies: Vec<Value> = (0..6).map(|n| notify(&format!("card-{n}"))).collect();
+        assert_eq!(store.board_notified_since(0).unwrap().len(), 3, "six notify updates send three");
+        assert_eq!(replies[3], json!({"key": "card-3", "saved": true,
+            "phone": "phone limit reached: the owner hasn't answered; 3 in 30 minutes, 5 in an hour"}));
+        let asked = store.board(0, i64::MAX).unwrap()["questions"][0]["asked_at_ms"].as_i64().unwrap();
+        answer(&store, "board_question", &json!({"id": id, "asked_at_ms": asked, "answer": "yes", "now_ms": 1})).unwrap();
+        assert_eq!(notify("after"), json!({"key": "after", "saved": true}));
+        assert_eq!(store.board_notified_since(0).unwrap().len(), 4, "an answer resets the count");
+    }
+
+    #[test]
+    fn notify_from_a_non_orchestrator_session_does_not_push() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let reply = update(&store, "lead", "top", json!({"key": "one", "title": "Ready", "state": "needs_you", "notify": true})).unwrap();
+        assert_eq!(reply, json!({"key": "one", "saved": true,
+            "phone": "only the main orchestrator can message the owner's phone; the board has notified the desktop"}));
+        assert_eq!(store.board(0, i64::MAX).unwrap()["cards"][0]["key"], "one", "the card is saved");
+        assert_eq!(store.board_notified_since(0).unwrap(), Vec::<Value>::new(), "nothing goes to the phone");
     }
 
     #[test]

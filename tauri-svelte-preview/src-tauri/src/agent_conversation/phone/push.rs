@@ -1,7 +1,9 @@
 //! Push notifications for new inbox items (phone spec §5.4): a Firebase Cloud Messaging sender that
 //! signs a service-account JWT, trades it for an access token, and sends each paired phone one
-//! message that names the kind of item and its task, never the agent's words.
+//! message that names the kind of item and its task, never the agent's words. A Build Board card or
+//! question an agent sends with `notify` is the one push that carries an agent's text: its title and short text.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -9,6 +11,8 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use mcb_core::session_store::SessionStore;
 use serde::Deserialize;
 use serde_json::{json, Value};
+
+use super::{inbox_items, now_ms, Payload, ServerState};
 
 const SCOPE: &str = "https://www.googleapis.com/auth/firebase.messaging";
 const FCM_BASE: &str = "https://fcm.googleapis.com";
@@ -82,6 +86,11 @@ impl PushSender {
         self.send_to_each(store, |token| message(token, machine, item)).await;
     }
 
+    /// Sends a board card or question (from `SessionStore::board_notified_since`) to every phone with a push token.
+    pub(super) async fn send_board_push(&self, store: &SessionStore, machine: &(String, String), item: &Value) {
+        self.send_to_each(store, |token| board_message(token, machine, item)).await;
+    }
+
     async fn send_to_each(&self, store: &SessionStore, build: impl Fn(&str) -> Value) {
         let tokens = match store.phone_push_tokens() {
             Ok(tokens) if !tokens.is_empty() => tokens,
@@ -113,6 +122,55 @@ impl PushSender {
     }
 }
 
+/// Rings the phones once for each inbox item that appears. It wakes on any permission request or run
+/// change, recomputes the inbox, and sends for each `(id, version)` it has not seen. It starts from
+/// the items already waiting, so a restart does not ring for them again. A finished reply rings nothing.
+/// It also rings once for each board card or question update an agent sends with `notify`, after it started.
+pub(super) fn spawn_push(state: ServerState, sender: PushSender) {
+    use tokio::sync::broadcast::error::RecvError;
+    tokio::spawn(async move {
+        let mut events = state.events.subscribe();
+        let mut runs = state.workflow.run_changes();
+        let mut messages = super::super::remote::MESSAGE_CHANGES.subscribe();
+        let mut notified_after = now_ms();
+        let mut seen: HashSet<(String, i64)> = inbox_items(&state).map(|items| item_keys(&items)).unwrap_or_default();
+        loop {
+            let closed = tokio::select! {
+                _ = messages.changed() => {
+                    let store = state.manager.store();
+                    let items = store.board_notified_since(notified_after).unwrap_or_default();
+                    if let (false, Ok(Some(machine))) = (items.is_empty(), store.phone_machine()) {
+                        for item in &items { sender.send_board_push(store, &machine, item).await; }
+                    }
+                    notified_after = items.iter().filter_map(|item| item["notified_at_ms"].as_i64()).fold(notified_after, i64::max);
+                    continue;
+                },
+                event = events.recv() => match event {
+                    Ok(event) if !matches!(event.payload, Payload::Approval { .. }) => continue,
+                    Err(RecvError::Closed) => true,
+                    _ => false,
+                },
+                change = runs.recv() => matches!(change, Err(RecvError::Closed)),
+            };
+            if closed { break; }
+            let Ok(items) = inbox_items(&state) else { continue };
+            let store = state.manager.store();
+            let machine = store.phone_machine().unwrap_or(None);
+            for (_, item) in &items {
+                let key = (item["id"].as_str().unwrap_or_default().to_string(), item["version"].as_i64().unwrap_or(0));
+                if let (false, Some(machine)) = (seen.contains(&key), &machine) {
+                    sender.send_inbox_push(store, machine, item).await;
+                }
+            }
+            seen = item_keys(&items);
+        }
+    });
+}
+
+fn item_keys(items: &[(Option<String>, Value)]) -> HashSet<(String, i64)> {
+    items.iter().map(|(_, item)| (item["id"].as_str().unwrap_or_default().to_string(), item["version"].as_i64().unwrap_or(0))).collect()
+}
+
 /// The FCM message for one phone. Its body is the item's kind and task key only: no title,
 /// detail, session name, evidence or command.
 fn message(token: &str, (machine_id, machine_name): &(String, String), item: &Value) -> Value {
@@ -134,6 +192,20 @@ fn message(token: &str, (machine_id, machine_name): &(String, String), item: &Va
         "notification": { "title": format!("Assembly — {machine_name}"), "body": body },
         "data": { "machineId": machine_id, "itemId": item["id"] },
         "android": { "notification": { "channel_id": "assembly_inbox" } },
+    } })
+}
+
+/// The FCM message for a board card or question: "From <session> · <title>", and the first 180
+/// characters of its text as the body, sent at high priority.
+fn board_message(token: &str, (machine_id, _): &(String, String), item: &Value) -> Value {
+    let text = |field: &str| item[field].as_str().filter(|text| !text.is_empty());
+    let session = text("session_name").unwrap_or("an agent");
+    let body: String = text("text").unwrap_or_default().chars().take(180).collect();
+    json!({ "message": {
+        "token": token,
+        "notification": { "title": format!("From {session} · {}", text("title").unwrap_or_default()), "body": body },
+        "data": { "machineId": machine_id, "cardKey": item["key"] },
+        "android": { "priority": "high", "notification": { "channel_id": "assembly_inbox" } },
     } })
 }
 
