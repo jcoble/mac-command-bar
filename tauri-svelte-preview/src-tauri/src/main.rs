@@ -3851,7 +3851,7 @@ fn main() {
             helper::write_helper_settings,
             helper::test_helper,
             continue_app_exit,
-            cancel_app_exit
+            cancel_app_exit, debug_log::debug_off
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. }
