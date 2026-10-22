@@ -419,14 +419,15 @@ mod tests {
             projector.cursor.last_reconcile,
             Some(ReconcileReason::Truncated)
         );
-        fs::remove_file(&path).unwrap();
+        let rotated = path.with_file_name("session.jsonl.new");
         fs::write(
-            &path,
+            &rotated,
             include_bytes!(
                 "../../fixtures/agent_conversation/terminal_projection/codex_append.jsonl"
             ),
         )
         .unwrap();
+        fs::rename(&rotated, &path).unwrap();
         projector.poll_location(location(&path)).unwrap();
         assert_eq!(
             projector.cursor.last_reconcile,
