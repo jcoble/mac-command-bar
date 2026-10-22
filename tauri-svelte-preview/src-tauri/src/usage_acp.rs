@@ -45,6 +45,8 @@ pub struct AcpTurn {
     /// The latest `usage_update` cost: the session's running total in USD.
     pub cost_total_usd: Option<f64>,
     pub node_run_id: Option<String>,
+    /// When the turn's prompt went out. Transcript rows from then on are this
+    /// turn's or a later one's, and ACP counts them.
     pub occurred_at_micros: i64,
 }
 
@@ -96,8 +98,8 @@ impl UsageDb {
     /// total, so the turn's share is that total less what the session's rows
     /// already hold; the share goes on the turn's largest row. A total below the
     /// stored sum means the provider restarted its count, and is taken as is.
-    /// Transcript rows for the same native session are dropped: this is the
-    /// count for an Assembly session.
+    /// Transcript rows for the same native session from the turn's start on are
+    /// dropped, since ACP now counts those turns; earlier transcript rows stay.
     pub fn insert_acp_turn(&self, turn: &AcpTurn) -> Result<usize, String> {
         let tokens = turn_tokens(turn);
         if tokens.is_empty() {
@@ -127,7 +129,7 @@ impl UsageDb {
                     format!("{}:{}:{}", turn.owned_id, turn.turn_id, t.model), source_key],
             ).map_err(|error| self.database_error("could not write ACP usage", error))?;
         }
-        transaction.execute("DELETE FROM usage_events WHERE owned_id = ?1 AND source_kind <> ?2", params![source_key, ACP_SOURCE_KIND])
+        transaction.execute("DELETE FROM usage_events WHERE owned_id = ?1 AND source_kind <> ?2 AND occurred_at_micros >= ?3", params![source_key, ACP_SOURCE_KIND, turn.occurred_at_micros])
             .map_err(|error| self.database_error("could not drop transcript usage", error))?;
         transaction.commit().map_err(|error| self.database_error("could not finish ACP usage write", error))?;
         Ok(tokens.len())
@@ -238,26 +240,32 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    fn transcript_row(id: &str, owned_id: &str) -> UsageEvent {
+    fn transcript_row(id: &str, owned_id: &str, occurred_at_micros: i64) -> UsageEvent {
         UsageEvent {
             provider: "claude".into(), provider_instance_id: "local".into(), owned_id: Some(owned_id.into()),
-            workflow_id: None, turn_id: None, project_id: None, workspace_id: None, occurred_at_micros: 1_700_000_000_000_000,
+            workflow_id: None, turn_id: None, project_id: None, workspace_id: None, occurred_at_micros,
             input_tokens: 5, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0,
             model: "claude-opus-5-5".into(), estimated_cost_micros: None, estimate_rate_version: None,
             source_kind: "claude-jsonl".into(), source_event_id: id.into(), source_key: "transcript-file".into(),
         }
     }
 
+    // The turn starts at 1_700_000_000_000_000 (see `turn`); its transcript lines come after that.
     #[test]
-    fn the_transcript_reader_does_not_count_an_acp_session_again() {
+    fn transcript_history_before_the_first_acp_turn_stays_and_later_turns_count_once() {
         let (path, db) = open();
-        db.insert_events_with_cursor(&[transcript_row("before", "native-1"), transcript_row("other", "native-2")], None).unwrap();
+        let start = 1_700_000_000_000_000;
+        db.insert_events_with_cursor(&[transcript_row("old-1", "native-1", start - 2_000_000), transcript_row("old-2", "native-1", start - 1_000_000),
+            transcript_row("other", "native-2", start + 1), transcript_row("this-turn-early", "native-1", start + 1)], None).unwrap();
         db.insert_acp_turn(&turn("turn-1", vec![model("claude-opus-5-5", 2, 10, 10, 5)], None)).unwrap();
-        db.insert_events_with_cursor(&[transcript_row("after", "native-1")], None).unwrap();
+        db.insert_events_with_cursor(&[transcript_row("this-turn-late", "native-1", start + 2), transcript_row("old-3", "native-1", start - 500_000)], None).unwrap();
         let connection = db.connection().unwrap();
-        let mut statement = connection.prepare("SELECT source_event_id FROM usage_events WHERE source_kind = 'claude-jsonl'").unwrap();
+        let mut statement = connection.prepare("SELECT source_event_id FROM usage_events WHERE source_kind = 'claude-jsonl' ORDER BY id").unwrap();
         let kept: Vec<String> = statement.query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
-        assert_eq!(kept, ["other"]);
+        assert_eq!(kept, ["old-1", "old-2", "other", "old-3"]);
+        let summary = db.read_usage_summary(&UsageFilter::default()).unwrap();
+        // Three old transcript rows and native-2's (5 in, 5 out each), plus the ACP turn once.
+        assert_eq!((summary.input_tokens, summary.output_tokens, summary.cache_read_tokens), (4 * 5 + 2, 4 * 5 + 5, 10));
         let _ = std::fs::remove_file(path);
     }
 
@@ -265,7 +273,7 @@ mod tests {
     fn estimated_cost_joins_the_rates_table() {
         let (path, db) = open();
         db.rebuild_rates(SEEDED_RATES).unwrap();
-        let mut priced = transcript_row("priced", "native-9");
+        let mut priced = transcript_row("priced", "native-9", 1);
         (priced.model, priced.input_tokens, priced.output_tokens) = ("gpt-5.6-sol".into(), 10, 4);
         db.insert_events_with_cursor(&[priced], None).unwrap();
         let rows = db.read_usage_provider_summary(&UsageFilter::default()).unwrap();

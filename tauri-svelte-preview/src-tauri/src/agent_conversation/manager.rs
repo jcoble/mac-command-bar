@@ -250,7 +250,7 @@ pub struct ManagedAgentSession {
     /// recorded carries none, and counts as the first prompt.
     title_source: Option<String>,
     suspending: bool,
-    reported_cost_usd: Option<f64>, // The running cost total from the latest `usage_update`; taken when the turn ends.
+    turn_usage: turn_usage::TurnUsageState, // When the prompt went out and the latest reported cost total.
 }
 
 #[derive(Clone, Debug)]
@@ -1967,7 +1967,7 @@ impl AgentRuntimeManager {
                 title_source: prior
                     .as_ref()
                     .and_then(|session| session.title_source.clone()),
-                suspending: false, reported_cost_usd: None,
+                suspending: false, turn_usage: Default::default(),
             },
         );
         let session = sessions
@@ -2553,7 +2553,7 @@ impl AgentRuntimeManager {
                 super::protocol::TurnState::Completed,
                 AgentRuntimeState::Ready,
             );
-            session.active_turn_id = Some(turn_id.clone());
+            session.active_turn_id = Some(turn_id.clone()); turn_usage::turn_started(session);
             if session_title_is_empty(session.rail_meta.title.as_deref()) {
                 let is_first_user_prompt = session
                     .store
@@ -5147,7 +5147,7 @@ fn recovered_session_from_row(
         claude_children: stored.claude_children,
         rail_meta: stored.rail_meta,
         title_source: row.title_source,
-        suspending: false, reported_cost_usd: None,
+        suspending: false, turn_usage: Default::default(),
     };
     Ok(session)
 }
