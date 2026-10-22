@@ -1,5 +1,6 @@
 use super::super::{protocol::CommandResult, remote::RemoteConnectionManager};
 use mcb_core::session_store::SessionStore;
+use rmcp::schemars::{self, JsonSchema};
 use serde_json::{json, Value};
 use std::sync::{Mutex, PoisonError};
 use tokio::sync::broadcast::{error::RecvError, Receiver};
@@ -16,42 +17,57 @@ fn phone_limited(now: i64) -> bool {
     sent.len() >= 5 || sent.iter().filter(|at| now - **at < 1_800_000).count() >= 3
 }
 
-pub fn tool() -> Value {
-    json!({
-        "name": "board_update",
-        "description": "Create or update a card on the owner's Build board. The session the owner gave a task to keeps one card for it; the main orchestrator may update any card. Helpers cannot post, and workflow workers should not: their parent's card or their run already shows. Key: the task key if there is one, otherwise a short name no other session would pick. Post when you start, update when the state changes, and use needs_you only when the owner must act, with steps saying what to do. A needs_you card waits on the board as a small on-hold card, and the board notifies the owner's desktop; only the main orchestrator can pass notify to send a card or question to the owner's phone. Record every question you ask the owner before you ask it, in the same turn: pass question (the explanation, with options, your recommendation and why, and PR, task and proof links), title and recommended. The reply gives its number n: start your chat question with Q<n>, since the owner's answer arrives as 'Q<n>: …'. When it is answered anywhere, call again with the same key and answer. To ask it again, call with the same key and a new question. Approvals and workflow pauses already show.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "key": {"type": "string", "maxLength": 80,
-                    "description": "Short id for this work (see above). One line, at most 80 characters."},
-                "title": {"type": "string", "maxLength": 120,
-                    "description": "Required for a new card. One line, at most 120."},
-                "state": {"type": "string", "enum": ["needs_you", "running", "in_review", "done"],
-                    "description": "Required for a new card."},
-                "summary": {"type": "string", "maxLength": 600, "description": "At most 600."},
-                "steps": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 160},
-                    "description": "What the owner should do, plain text, at most 6 of 160 each."},
-                "note": {"type": "string", "maxLength": 600,
-                    "description": "One note for the owner, at most 600."},
-                "task_key": {"type": "string", "description": "The Notion task; hidden when Notion is off."},
-                "task_url": {"type": "string", "description": "The Notion task; hidden when Notion is off."},
-                "pr_url": {"type": "string", "description": "The PR."},
-                "run_id": {"type": "string", "description": "A run on this machine."},
-                "session": {"type": "string",
-                    "description": "A session on this machine (handle or name); default the caller."},
-                "question": {"type": "string", "maxLength": 1200,
-                    "description": "Marks this call as a question; required to ask or re-ask. At most 1200."},
-                "recommended": {"type": "string", "maxLength": 300, "description": "Your recommended answer, at most 300."},
-                "answer": {"type": "string", "maxLength": 600,
-                    "description": "The answer the question got, at most 600; marks it answered."},
-                "notify": {"type": "boolean",
-                    "description": "Main orchestrator only. Send this card to the owner's phone now. Use it whenever it's a reasonable reason to message the owner: a question, something ready for them to test or look at, a blocker, a finished batch, an emergency. Don't use it for routine progress."}
-            },
-            "required": ["key"]
-        }
-    })
+pub(super) const DESCRIPTION: &str = "Create or update a card on the owner's Build board. The session the owner gave a task to keeps one card for it; the main orchestrator may update any card. Helpers cannot post, and workflow workers should not: their parent's card or their run already shows. Key: the task key if there is one, otherwise a short name no other session would pick. Post when you start, update when the state changes, and use needs_you only when the owner must act, with steps saying what to do. A needs_you card waits on the board as a small on-hold card, and the board notifies the owner's desktop; only the main orchestrator can pass notify to send a card or question to the owner's phone. Record every question you ask the owner before you ask it, in the same turn: pass question (the explanation, with options, your recommendation and why, and PR, task and proof links), title and recommended. The reply gives its number n: start your chat question with Q<n>, since the owner's answer arrives as 'Q<n>: …'. When it is answered anywhere, call again with the same key and answer. To ask it again, call with the same key and a new question. Approvals and workflow pauses already show.";
+
+/// `board_update`'s arguments; `update` reads them.
+#[derive(JsonSchema)]
+#[allow(dead_code)]
+pub(super) struct BoardUpdate {
+    /// Short id for this work (see above). One line, at most 80 characters.
+    #[schemars(length(max = 80))]
+    key: String,
+    /// Required for a new card. One line, at most 120.
+    #[schemars(length(max = 120))]
+    title: Option<String>,
+    /// Required for a new card.
+    state: Option<CardState>,
+    /// At most 600.
+    #[schemars(length(max = 600))]
+    summary: Option<String>,
+    /// What the owner should do, plain text, at most 6 of 160 each.
+    #[schemars(length(max = 6), inner(length(max = 160)))]
+    steps: Option<Vec<String>>,
+    /// One note for the owner, at most 600.
+    #[schemars(length(max = 600))]
+    note: Option<String>,
+    /// The Notion task; hidden when Notion is off.
+    task_key: Option<String>,
+    /// The Notion task; hidden when Notion is off.
+    task_url: Option<String>,
+    /// The PR.
+    pr_url: Option<String>,
+    /// A run on this machine.
+    run_id: Option<String>,
+    /// A session on this machine (handle or name); default the caller.
+    session: Option<String>,
+    /// Marks this call as a question; required to ask or re-ask. At most 1200.
+    #[schemars(length(max = 1200))]
+    question: Option<String>,
+    /// Your recommended answer, at most 300.
+    #[schemars(length(max = 300))]
+    recommended: Option<String>,
+    /// The answer the question got, at most 600; marks it answered.
+    #[schemars(length(max = 600))]
+    answer: Option<String>,
+    /// Main orchestrator only. Send this card to the owner's phone now. Use it whenever it's a reasonable reason to message the owner: a question, something ready for them to test or look at, a blocker, a finished batch, an emergency. Don't use it for routine progress.
+    notify: Option<bool>,
 }
+
+#[derive(JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(inline)]
+#[allow(dead_code)]
+enum CardState { NeedsYou, Running, InReview, Done }
 
 pub(super) fn update(store: &SessionStore, caller: &str, role: &str, mut args: Value) -> Result<Value, String> {
     if role == "helper" {
@@ -191,9 +207,9 @@ mod tests {
 
     #[test]
     fn board_tool_schema_has_notify() {
-        let schema = tool();
-        assert_eq!(schema["inputSchema"]["properties"]["notify"]["type"], "boolean");
-        assert!(schema["description"].as_str().unwrap().contains("notify"));
+        let schema = serde_json::to_value(schemars::schema_for!(BoardUpdate)).unwrap();
+        assert!(schema["properties"]["notify"]["description"].as_str().unwrap().starts_with("Main orchestrator only."));
+        assert!(DESCRIPTION.contains("only the main orchestrator can pass notify"));
     }
 
     #[test]
