@@ -28,7 +28,7 @@ pub fn set_turn_usage_listener(listener: TurnUsageListener) {
 
 /// Keeps the running cost total a `usage_update` reports, for the turn's rows.
 pub(super) fn note_reported_cost(session: &mut ManagedAgentSession, params: &Value) {
-    if let Some(amount) = params.pointer("/update/cost/amount").and_then(Value::as_f64) {
+    if let Some(amount) = super::super::normalization::turn_usage::reported_cost_total(params) {
         session.turn_usage.cost_total_usd = Some(amount);
     }
 }
@@ -42,8 +42,7 @@ pub(super) fn report_turn_usage(session: &mut ManagedAgentSession, turn_id: &str
         native_session_id: session.native_session_id.clone(),
         provider: provider_id(session.provider).to_string(),
         turn_id: turn_id.to_string(),
-        model: session.config.model.clone(),
-        result: result.clone(),
+        models: super::super::normalization::turn_usage::turn_model_tokens(result, session.config.model.as_deref()),
         cost_total_usd,
         node_run_id: None,
         occurred_at_micros: started_at_micros.unwrap_or_else(now_micros),

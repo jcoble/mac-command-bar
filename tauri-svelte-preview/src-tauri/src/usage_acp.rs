@@ -7,8 +7,8 @@
 //! columns. Claude and Codex both report `inputTokens` that way over ACP.
 
 use super::UsageDb;
-use rusqlite::{params, Transaction, TransactionBehavior};
-use serde_json::Value;
+use crate::agent_conversation::normalization::turn_usage::ModelTokens;
+use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 
 /// Rows written from ACP turns. Their `source_key` is the native session id, so
 /// the transcript reader can tell which sessions it must not count again.
@@ -38,10 +38,8 @@ pub struct AcpTurn {
     pub native_session_id: Option<String>,
     pub provider: String,
     pub turn_id: String,
-    /// The session's model, for a result that has no per-model breakdown.
-    pub model: Option<String>,
-    /// The `session/prompt` result.
-    pub result: Value,
+    /// What each model used in the turn.
+    pub models: Vec<ModelTokens>,
     /// The latest `usage_update` cost: the session's running total in USD.
     pub cost_total_usd: Option<f64>,
     pub node_run_id: Option<String>,
@@ -50,34 +48,6 @@ pub struct AcpTurn {
     pub occurred_at_micros: i64,
     /// The session's working folder; its last part is the project, as for transcript rows.
     pub cwd: Option<String>,
-}
-
-struct Tokens { model: String, input: u64, output: u64, cache_read: u64, cache_write: u64, reasoning: u64 }
-
-fn count(value: &Value, keys: &[&str]) -> u64 {
-    keys.iter().find_map(|key| value.get(*key).and_then(Value::as_u64)).unwrap_or(0)
-}
-
-/// One entry per model from `_meta.quota.model_usage`, or the standard ACP
-/// `usage` under the session's model when the agent gives no breakdown.
-fn turn_tokens(turn: &AcpTurn) -> Vec<Tokens> {
-    let read = |model: &str, usage: &Value| Tokens {
-        model: model.to_string(),
-        input: count(usage, &["inputTokens"]),
-        output: count(usage, &["outputTokens"]),
-        cache_read: count(usage, &["cachedReadTokens", "cachedInputTokens"]),
-        cache_write: count(usage, &["cachedWriteTokens", "cacheWriteInputTokens"]),
-        reasoning: count(usage, &["thoughtTokens", "reasoningOutputTokens"]),
-    };
-    let models = turn.result.pointer("/_meta/quota/model_usage").and_then(Value::as_array);
-    let tokens: Vec<Tokens> = match models {
-        Some(models) => models.iter().filter_map(|entry| {
-            Some(read(entry.get("model")?.as_str()?, entry.get("token_count")?))
-        }).collect(),
-        None => turn.result.get("usage").filter(|usage| usage.is_object())
-            .map(|usage| read(turn.model.as_deref().unwrap_or("unknown"), usage)).into_iter().collect(),
-    };
-    tokens.into_iter().filter(|t| t.input + t.output + t.cache_read + t.cache_write > 0).collect()
 }
 
 impl UsageDb {
@@ -100,28 +70,38 @@ impl UsageDb {
     /// total, so the turn's share is that total less the session's previous
     /// total; both go on the turn's largest row. A total below the previous one
     /// means the provider restarted its count, so the whole total is the share.
+    /// The session's remaining transcript rows are attributed to it.
     /// Transcript rows for the same native session written during the turn are
     /// dropped, since ACP counts it; rows of any other turn stay.
     pub fn insert_acp_turn(&self, turn: &AcpTurn) -> Result<usize, String> {
-        let tokens = turn_tokens(turn);
+        let tokens = &turn.models;
         if tokens.is_empty() {
             return Ok(0);
         }
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| self.database_error("could not start ACP usage write", error))?;
+        let source_key = turn.native_session_id.clone().unwrap_or_else(|| turn.owned_id.clone());
         let cost = turn.cost_total_usd.map(|total| (total * 1_000_000.0).round() as i64)
-            .map(|total| -> rusqlite::Result<(i64, i64)> {
-                let previous: i64 = transaction.query_row(
-                    "SELECT COALESCE((SELECT reported_cost_total_micros FROM usage_events WHERE owned_id = ?1 AND source_kind = ?2 AND reported_cost_total_micros IS NOT NULL ORDER BY id DESC LIMIT 1), 0)",
-                    params![turn.owned_id, ACP_SOURCE_KIND], |row| row.get(0))?;
-                Ok((if total >= previous { total - previous } else { total }, total))
+            .map(|total| -> rusqlite::Result<(Option<i64>, i64)> {
+                let previous: Option<i64> = transaction.query_row(
+                    "SELECT reported_cost_total_micros FROM usage_events WHERE owned_id = ?1 AND source_kind = ?2 AND reported_cost_total_micros IS NOT NULL ORDER BY id DESC LIMIT 1",
+                    params![turn.owned_id, ACP_SOURCE_KIND], |row| row.get(0)).optional()?;
+                // A session with transcript history from before its first ACP turn has an
+                // unknown earlier total, so that turn only sets the baseline.
+                let older_history: bool = transaction.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM usage_events WHERE owned_id IN (?1, ?2) AND source_kind <> ?3 AND occurred_at_micros < ?4)",
+                    params![turn.owned_id, source_key, ACP_SOURCE_KIND, turn.occurred_at_micros], |row| row.get(0))?;
+                let share = match previous {
+                    Some(previous) => Some(if total >= previous { total - previous } else { total }),
+                    None => (!older_history).then_some(total),
+                };
+                Ok((share, total))
             }).transpose().map_err(|error| self.database_error("could not read reported cost", error))?;
         let largest = (0..tokens.len()).max_by_key(|&i| {
             let t = &tokens[i];
             t.input + t.output + t.cache_read + t.cache_write
         });
-        let source_key = turn.native_session_id.clone().unwrap_or_else(|| turn.owned_id.clone());
         let project_id = turn.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).file_name()).map(|name| name.to_string_lossy().to_string());
         let written_at = super::now_micros();
         for (index, t) in tokens.iter().enumerate() {
@@ -129,13 +109,16 @@ impl UsageDb {
                 "INSERT INTO usage_events (provider, provider_instance_id, owned_id, turn_id, project_id, workspace_id, node_run_id, occurred_at_micros, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, model, reported_cost_micros, reported_cost_total_micros, source_kind, source_event_id, source_key, inserted_at_micros) VALUES (?1, 'local', ?2, ?3, ?17, ?18, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?16, ?13, ?14, ?15, ?19) ON CONFLICT(provider, provider_instance_id, source_kind, source_event_id) DO NOTHING",
                 params![turn.provider, turn.owned_id, turn.turn_id, turn.node_run_id, turn.occurred_at_micros,
                     t.input as i64, t.output as i64, t.cache_read as i64, t.cache_write as i64, t.reasoning as i64, t.model,
-                    cost.filter(|_| Some(index) == largest).map(|(share, _)| share), ACP_SOURCE_KIND,
+                    cost.filter(|_| Some(index) == largest).and_then(|(share, _)| share), ACP_SOURCE_KIND,
                     format!("{}:{}:{}", turn.owned_id, turn.turn_id, t.model), source_key,
                     cost.filter(|_| Some(index) == largest).map(|(_, total)| total), project_id, turn.cwd, written_at],
             ).map_err(|error| self.database_error("could not write ACP usage", error))?;
         }
         transaction.execute("DELETE FROM usage_events WHERE owned_id = ?1 AND source_kind <> ?2 AND occurred_at_micros BETWEEN ?3 AND ?4", params![source_key, ACP_SOURCE_KIND, turn.occurred_at_micros, written_at])
             .map_err(|error| self.database_error("could not drop transcript usage", error))?;
+        // The rows that stay belong to this Assembly session too, so it counts as one session.
+        transaction.execute("UPDATE usage_events SET owned_id = ?1 WHERE owned_id = ?2 AND source_kind <> ?3", params![turn.owned_id, source_key, ACP_SOURCE_KIND])
+            .map_err(|error| self.database_error("could not attribute transcript usage", error))?;
         transaction.commit().map_err(|error| self.database_error("could not finish ACP usage write", error))?;
         Ok(tokens.len())
     }
@@ -167,7 +150,8 @@ pub(super) fn upgrade(transaction: &Transaction) -> rusqlite::Result<()> {
 mod tests {
     use super::super::{UsageEvent, UsageFilter, USAGE_SCHEMA};
     use super::*;
-    use serde_json::json;
+    use crate::agent_conversation::normalization::turn_usage::turn_model_tokens;
+    use serde_json::{json, Value};
 
     fn open() -> (std::path::PathBuf, UsageDb) {
         let path = std::env::temp_dir().join(format!("mcb-usage-acp-{}.sqlite3", uuid::Uuid::new_v4()));
@@ -182,17 +166,17 @@ mod tests {
     fn turn(turn_id: &str, models: Vec<Value>, cost: Option<f64>) -> AcpTurn {
         AcpTurn {
             owned_id: "assembly-1".into(), native_session_id: Some("native-1".into()), provider: "claude".into(),
-            turn_id: turn_id.into(), result: json!({"stopReason": "end_turn", "_meta": {"quota": {"model_usage": models}}}),
+            turn_id: turn_id.into(), models: turn_model_tokens(&json!({"stopReason": "end_turn", "_meta": {"quota": {"model_usage": models}}}), None),
             cost_total_usd: cost, node_run_id: Some("run-1:build:1".into()), occurred_at_micros: 1_700_000_000_000_000,
             cwd: Some("/work/alpha".into()),
             ..AcpTurn::default()
         }
     }
 
-    /// (turn, model, input, cache read, cache write, reported cost, node run) for every row, in order.
+    /// (turn, model, input, cache read, cache write, reported cost, node run) for every ACP row, in order.
     fn rows(db: &UsageDb) -> Vec<(String, String, i64, i64, i64, Option<i64>, Option<String>)> {
         let connection = db.connection().unwrap();
-        let mut statement = connection.prepare("SELECT turn_id, model, input_tokens, cache_read_tokens, cache_write_tokens, reported_cost_micros, node_run_id FROM usage_events ORDER BY id").unwrap();
+        let mut statement = connection.prepare("SELECT turn_id, model, input_tokens, cache_read_tokens, cache_write_tokens, reported_cost_micros, node_run_id FROM usage_events WHERE source_kind = 'acp' ORDER BY id").unwrap();
         statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)))
             .unwrap().collect::<rusqlite::Result<_>>().unwrap()
     }
@@ -231,8 +215,8 @@ mod tests {
         let (path, db) = open();
         let mut codex = turn("turn-1", vec![], None);
         codex.provider = "codex".into();
-        codex.result = json!({"stopReason": "end_turn", "usage": {"totalTokens": 16045, "inputTokens": 3752, "cachedReadTokens": 12288, "cachedWriteTokens": 0, "outputTokens": 5, "thoughtTokens": 0},
-            "_meta": {"quota": {"model_usage": [{"model": "gpt-6.1-sol", "token_count": {"totalTokens": 16045, "inputTokens": 3752, "cachedInputTokens": 12288, "cacheWriteInputTokens": 7, "outputTokens": 5, "reasoningOutputTokens": 0}}]}}});
+        codex.models = turn_model_tokens(&json!({"stopReason": "end_turn", "usage": {"totalTokens": 16045, "inputTokens": 3752, "cachedReadTokens": 12288, "cachedWriteTokens": 0, "outputTokens": 5, "thoughtTokens": 0},
+            "_meta": {"quota": {"model_usage": [{"model": "gpt-6.1-sol", "token_count": {"totalTokens": 16045, "inputTokens": 3752, "cachedInputTokens": 12288, "cacheWriteInputTokens": 7, "outputTokens": 5, "reasoningOutputTokens": 0}}]}}}), None);
         assert_eq!(db.insert_acp_turn(&codex).unwrap(), 1);
         assert_eq!(rows(&db), vec![("turn-1".into(), "gpt-6.1-sol".into(), 3752, 12288, 7, None, Some("run-1:build:1".into()))]);
         let _ = std::fs::remove_file(path);
@@ -242,12 +226,11 @@ mod tests {
     fn standard_usage_is_used_when_there_is_no_breakdown_and_no_usage_writes_nothing() {
         let (path, db) = open();
         let mut plain = turn("turn-1", vec![], None);
-        plain.model = Some("some-model".into());
-        plain.result = json!({"stopReason": "end_turn", "usage": {"inputTokens": 9, "outputTokens": 3, "cachedReadTokens": 4}});
+        plain.models = turn_model_tokens(&json!({"stopReason": "end_turn", "usage": {"inputTokens": 9, "outputTokens": 3, "cachedReadTokens": 4}}), Some("some-model"));
         assert_eq!(db.insert_acp_turn(&plain).unwrap(), 1);
         // agy-acp 1.4.1 answers a prompt with the stop reason alone.
         plain.turn_id = "turn-2".into();
-        plain.result = json!({"stopReason": "end_turn"});
+        plain.models = turn_model_tokens(&json!({"stopReason": "end_turn"}), Some("some-model"));
         assert_eq!(db.insert_acp_turn(&plain).unwrap(), 0);
         assert_eq!(rows(&db), vec![("turn-1".into(), "some-model".into(), 9, 4, 0, None, Some("run-1:build:1".into()))]);
         let _ = std::fs::remove_file(path);
@@ -284,6 +267,20 @@ mod tests {
         assert_eq!((summary.input_tokens, summary.output_tokens, summary.cache_read_tokens), (2, 5, 10));
         let summary = db.read_usage_summary(&UsageFilter::default()).unwrap();
         assert_eq!((summary.input_tokens, summary.output_tokens, summary.cache_read_tokens), (5 * 5 + 2, 5 * 5 + 5, 10));
+        let _ = std::fs::remove_file(path);
+    }
+
+    // A chat started before ACP rows: Claude's running total already includes its earlier turns.
+    #[test]
+    fn an_older_chat_stays_one_session_and_its_first_acp_turn_only_sets_the_cost_baseline() {
+        let (path, db) = open();
+        db.insert_events_with_cursor(&[transcript_row("old", "native-1", 1_600_000_000_000_000)], None).unwrap();
+        db.insert_acp_turn(&turn("turn-1", vec![model("claude-opus-5-5", 2, 10, 10, 5)], Some(0.55))).unwrap();
+        let mut next = turn("turn-2", vec![model("claude-opus-5-5", 2, 10, 10, 5)], Some(0.60));
+        next.occurred_at_micros += 1;
+        db.insert_acp_turn(&next).unwrap();
+        assert_eq!(rows(&db).iter().map(|row| row.5).collect::<Vec<_>>(), [None, Some(50_000)]);
+        assert_eq!(db.read_usage_summary(&UsageFilter::default()).unwrap().session_count, 1);
         let _ = std::fs::remove_file(path);
     }
 
