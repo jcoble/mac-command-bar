@@ -59,7 +59,7 @@ flowchart LR
 
 **Agents: ACP, and only ACP.**
 - ACP (Agent Client Protocol) is how Assembly reaches every agent: Claude Code, Codex and Antigravity today, the API-model sidecar (0.2), and ACP Registry agents such as Grok Build, OpenCode and Goose.
-- **We keep our Rust ACP client, `acp_client.rs`.** It wins on merit over TanStack's `ai-acp` client (lane B §2.2): `ai-acp` starts a new process per turn, has no `set_config_option` (so Antigravity's model can't be picked), handles approvals by "deny, then re-run", and has no elicitation forms, live usage, steering or remote machines. TanStack treats ACP as the outer boundary too: `acpCompatible` drives any ACP agent, and `serveAcp` serves a TanStack loop as one (lane B §2.4).
+- **We keep our Rust ACP client, `acp_client.rs`.** It wins on merit over TanStack's `ai-acp` client (lane B §2.2): `ai-acp` starts a new process per turn, has no `set_config_option` (so Antigravity's model can't be picked), handles approvals by NOT TRUE, IT STARTS RIGHT AFTER DECISION, alot of theese are maybe from old docs or something "deny, then re-run", and has no elicitation forms, live usage, steering or remote machines. TanStack treats ACP as the outer boundary too: `acpCompatible` drives any ACP agent, and `serveAcp` serves a TanStack loop as one (lane B §2.4).
 
 **UI: AG-UI, and only AG-UI.**
 - AG-UI is TanStack AI's wire protocol (`@ag-ui/core` 1.0.0). TanStack ships a Rust (Axum) AG-UI server example (`examples/ag-ui/servers/rust`, PR #963), and its maintainer named Tauri apps as Rust's use case (lane A §1, points 1-3).
