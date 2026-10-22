@@ -1,7 +1,7 @@
 // The Workflows screen's two pure functions: which Board column a run sits in, and where
 // each step's box goes on the Map. Logic only.
 import assert from 'node:assert/strict';
-import { boardColumn, costText, stepGlyph } from '../src/lib/shell/workflows/workflowBoard.ts';
+import { boardColumn, closedByOwnerNote, costText, runEnded, stepGlyph } from '../src/lib/shell/workflows/workflowBoard.ts';
 import { layoutWorkflowMap } from '../src/lib/shell/workflows/workflowMapLayout.ts';
 import type { WorkflowNodeState, WorkflowRunRecord, WorkflowRunState } from '../src/lib/shell/workflows/workflowTypes.ts';
 
@@ -88,6 +88,14 @@ function run(state: WorkflowRunState, states: Partial<Record<string, WorkflowNod
   assert.equal(costText([row(null, 740_000)]), '$0.74 est.');
   assert.equal(costText([row(null, null)]), '');
   assert.equal(costText([]), '');
+}
+
+{ // housekeeping_offers_mark_finished_until_a_run_ends_and_remove_after
+  const states: WorkflowRunState[] = ['draft', 'queued', 'running', 'waiting-approval', 'waiting-input', 'paused', 'completed', 'failed', 'cancelled'];
+  assert.deepEqual(states.filter((state) => runEnded(run(state, {}))), ['completed', 'failed', 'cancelled']);
+  const closed = { ...run('completed', {}), inputSnapshot: { closed_by_owner: { note: 'Done by hand' } } } as WorkflowRunRecord;
+  assert.equal(closedByOwnerNote(closed), 'Done by hand');
+  assert.equal(closedByOwnerNote({ ...closed, inputSnapshot: {} }), null);
 }
 
 console.log('workflow screens tests passed');

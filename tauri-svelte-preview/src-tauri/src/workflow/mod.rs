@@ -1,4 +1,4 @@
-pub(crate) mod commands;
+pub(crate) mod commands; mod housekeeping;
 pub(crate) mod orchestration;
 pub(crate) mod orchestration_commands;
 pub(crate) mod policy;
@@ -3554,7 +3554,7 @@ pub(crate) async fn execute_operation(engine: &WorkflowEngine, operation: &str, 
             "owner", &text("idempotencyKey")?, expected_attempt).await,
         "answer" => engine.answer_pause(&text("runId")?, &text("nodeId")?, &text("decision")?,
             args["reply"].as_str().map(str::to_string), "owner", None, &text("idempotencyKey")?, expected_attempt).await,
-        other => return Err(format!("Unknown workflow operation {other}")),
+        other => return housekeeping::operation(engine, other, &args).await,
     };
     serde_json::to_value(run.map_err(|error| error.to_string())?).map_err(|error| error.to_string())
 }
@@ -3578,7 +3578,7 @@ fn pr_body(task_key: &str, outputs: &[(String, String)], artifacts: &[String]) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    mod permissions; mod agent_tools; mod review_rounds; mod agent_inputs; mod orchestrator_decisions;
+    mod permissions; mod agent_tools; mod review_rounds; mod agent_inputs; mod orchestrator_decisions; mod housekeeping;
     #[test]
     fn pr_body_stays_under_the_github_limit_and_names_every_step() {
         let outputs: Vec<(String, String)> = (0..14).map(|n| (format!("step-{n}"), "x".repeat(20_000))).collect();

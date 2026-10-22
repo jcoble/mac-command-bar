@@ -76,6 +76,17 @@ export function shortDuration(ms: number): string {
   return `${Math.floor(hours / 24)} days`;
 }
 
+/** Whether a run has ended: Mark finished is offered until it has, Remove once it has. */
+export function runEnded(run: Pick<WorkflowRunRecord, 'state'>): boolean {
+  return run.state === 'completed' || run.state === 'cancelled' || run.state === 'failed';
+}
+
+/** The owner's note when the run was marked finished by hand, else null. */
+export function closedByOwnerNote(run: WorkflowRunRecord): string | null {
+  const note = (run.inputSnapshot as { closed_by_owner?: { note?: unknown } } | null)?.closed_by_owner?.note;
+  return typeof note === 'string' ? note : null;
+}
+
 /** The run's task, as its snapshot holds it. */
 export function runTask(run: WorkflowRunRecord): { key: string | null; title: string } {
   const task = (run.inputSnapshot as { task?: { key?: unknown; title?: unknown } } | null)?.task;

@@ -134,6 +134,29 @@ export async function approveWorkflowGate(
   );
 }
 
+/** Ends a run by hand with the owner's one-line note; it never counts as merged. */
+export async function markWorkflowRunFinished(
+  input: { runId: string; note: string; idempotencyKey: string },
+  machine: string | null = null
+): Promise<WorkflowRunRecord | null> {
+  return workflowHousekeeping(machine, 'markFinished', input);
+}
+
+/** Removes one finished run, or every finished run older than `olderThanDays`; resolves to the ids removed. */
+export async function removeWorkflowRuns(
+  input: { runId: string } | { olderThanDays: number },
+  machine: string | null = null
+): Promise<string[] | null> {
+  return workflowHousekeeping(machine, 'remove', input);
+}
+
+async function workflowHousekeeping<T>(machine: string | null, operation: string, args: object): Promise<T | null> {
+  if (machine) return remoteWorkflowFromTauri(machine, operation, args);
+  if (!isNativeTauriRuntime()) return null;
+  const { invoke } = await import('$lib/workspaceInvoke.ts');
+  return invoke<T>('workflow_housekeeping', { operation, args });
+}
+
 type WorkflowSnapshotPayload = WorkflowRunRecord | WorkflowRunRecord[];
 type WorkflowSnapshotListener = (snapshot: WorkflowSnapshotPayload) => void;
 
