@@ -250,6 +250,17 @@ pub(crate) async fn approve_workflow_gate(
     Ok(run)
 }
 
+/// The owner's housekeeping on this Mac's engine: `markFinished` a run by hand, or `remove` finished runs.
+#[tauri::command]
+pub(crate) async fn workflow_housekeeping(
+    engine: tauri::State<'_, WorkflowEngine>,
+    operation: String,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if !matches!(operation.as_str(), "markFinished" | "remove") { return Err(format!("Unknown housekeeping operation {operation}")); }
+    crate::workflow::execute_operation(&engine, &operation, args).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::run_for_watchers;

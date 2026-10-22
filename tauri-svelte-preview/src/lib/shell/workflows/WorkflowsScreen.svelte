@@ -24,7 +24,7 @@
   import { adoptSession } from '$lib/shell/conversation/conversationService.ts';
   import { listAgentMessagesFromTauri, listenAgentMessagesChanged } from '$lib/tauriSource.ts';
   import { parseRemoteWorkspacePath } from '$lib/workspacePaths.ts';
-  import { costText, currentStep, runTask, shortDuration } from './workflowBoard.ts';
+  import { closedByOwnerNote, costText, currentStep, runTask, shortDuration } from './workflowBoard.ts';
   import {
     answerWorkflowPause,
     approveWorkflowGate,
@@ -32,8 +32,10 @@
     followWorkflowRuns,
     listWorkflowRunHistory,
     listWorkflowRuns,
+    markWorkflowRunFinished,
     pauseWorkflowRun,
     readWorkflowUsage,
+    removeWorkflowRuns,
     resumeWorkflowRun,
     retryWorkflowNode,
     watchWorkflowRuns
@@ -46,6 +48,7 @@
   import WorkflowProject from './components/WorkflowProject.svelte';
   import { projectIndex, projectProgress } from './workflowProject.ts';
   import WorkflowStepPanel from './components/WorkflowStepPanel.svelte';
+  import RunHousekeeping from './components/RunHousekeeping.svelte';
   import WorkflowStageCloseup from './components/WorkflowStageCloseup.svelte';
   import { closeupKind } from './workflowCloseup.ts';
 
@@ -205,6 +208,22 @@
     void control('Answer', () => answerWorkflowPause({ runId: run.id, nodeId, decision, reply: null, idempotencyKey: key('answer') }, machine));
   }
 
+  /** Removes the open finished run, or every finished run older than some days, and drops them from the screen. */
+  async function removeRuns(input: { runId: string } | { olderThanDays: number }): Promise<void> {
+    busy = true;
+    error = '';
+    try {
+      const removed = await removeWorkflowRuns(input, machine);
+      if (stop.signal.aborted || !removed) return;
+      runs = runs.filter((run) => !removed.includes(run.id));
+      if (openRunId && removed.includes(openRunId)) openRunPage(null);
+    } catch (cause) {
+      if (!stop.signal.aborted) error = `Remove: ${workflowErrorText(cause)}`;
+    } finally {
+      busy = false;
+    }
+  }
+
   async function openChat(ownedId: string): Promise<void> {
     try {
       if (!(await adoptSession(ownedId, stop.signal))) throw new Error('Agent conversation is not available yet.');
@@ -286,6 +305,8 @@
           <Tabs.Trigger value="cost">Cost</Tabs.Trigger>
         </Tabs.List>
       </Tabs.Root>
+    {:else if runs.length}
+      <span class="ml-auto"><RunHousekeeping run={null} {busy} onRemove={(days) => void removeRuns({ olderThanDays: days ?? 30 })} /></span>
     {/if}
   </header>
 
@@ -302,6 +323,7 @@
       <Chip tone={run.state === 'failed' ? 'bad' : run.state === 'completed' ? 'good' : ENDED.includes(run.state) ? 'neutral' : run.state.startsWith('waiting') ? 'attention' : 'live'}>
         {run.state} · {shortDuration((ENDED.includes(run.state) ? run.updatedAtMs : now) - run.createdAtMs)}
       </Chip>
+      {#if closedByOwnerNote(run) !== null}<Chip tone="neutral">Finished by hand: {closedByOwnerNote(run)}</Chip>{/if}
       <span class="ml-auto flex gap-2">
         {#if run.state === 'running'}
           <Button size="sm" variant="ghost" disabled={busy} onclick={() => void control('Pause', () => pauseWorkflowRun({ runId: run.id, idempotencyKey: key('pause') }, machine))}><Pause />Pause after this step</Button>
@@ -311,6 +333,9 @@
         {#if !ENDED.includes(run.state)}
           <Button size="sm" variant="ghost" disabled={busy} onclick={() => void control('Stop', () => cancelWorkflowRun({ runId: run.id, idempotencyKey: key('cancel') }, machine))}><CircleStop />Stop run</Button>
         {/if}
+        <RunHousekeeping {run} {busy}
+          onMarkFinished={(note) => void control('Mark finished', () => markWorkflowRunFinished({ runId: run.id, note, idempotencyKey: key('mark-finished') }, machine))}
+          onRemove={() => void removeRuns({ runId: run.id })} />
       </span>
     </div>
     {#if runTab === 'map' && closeupId}

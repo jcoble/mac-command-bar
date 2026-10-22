@@ -6,3 +6,4 @@ pub mod reference_counts;
 pub mod scanners;
 pub mod session_store;
 pub mod source;
+mod workflow_runs;

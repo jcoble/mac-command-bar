@@ -3708,7 +3708,7 @@ fn main() {
             workflow_history, workflow_review_reports,
             list_workflow_files,
             list_owner_inbox,
-            answer_workflow_pause,
+            answer_workflow_pause, workflow_housekeeping,
             start_workflow_run,
             pause_workflow_run,
             resume_workflow_run,
