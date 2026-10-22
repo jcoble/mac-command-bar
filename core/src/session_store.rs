@@ -905,7 +905,7 @@ pub struct WorkflowHistoryRow {
     pub finding_count: Option<i64>,
     pub verdict: Option<String>,
     pub files: Vec<String>,
-    /// The owner's latest answer `{step, decision, reply}`, only on `workflow.node.owner-answered`.
+    /// The latest answer `{step, decision, reply, by, why}`, only on `workflow.node.owner-answered`.
     pub answer: Option<serde_json::Value>,
     pub gate_approved: Option<bool>,
 }
@@ -2854,16 +2854,16 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read recent workflow runs", error))
     }
 
-    /// The `limit` newest changes to one run, oldest first: `(time ms, event kind, step id)`.
-    pub fn workflow_run_timeline(&self, run_id: &str, limit: i64) -> Result<Vec<(i64, String, Option<String>)>> {
+    /// The `limit` newest changes to one run, oldest first: `(time ms, event kind, step id, who answered an answer row)`.
+    pub fn workflow_run_timeline(&self, run_id: &str, limit: i64) -> Result<Vec<(i64, String, Option<String>, Option<String>)>> {
         let connection = self.lock()?;
         let mut statement = connection.prepare(
-            "SELECT at, kind, node FROM (
-                SELECT CAST(timestamp AS INTEGER) AS at, kind, json_extract(payload_json,'$.nodeId') AS node, sequence
+            "SELECT at, kind, node, answered_by FROM (
+                SELECT CAST(timestamp AS INTEGER) AS at, kind, json_extract(payload_json,'$.nodeId') AS node, CASE WHEN kind = 'workflow.node.owner-answered' THEN json_extract(payload_json,'$.workflowPayload.run.inputSnapshot.answers[#-1].by') END AS answered_by, sequence
                 FROM orchestration_events WHERE run_id = ?1 AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
                 ORDER BY sequence DESC LIMIT ?2) ORDER BY sequence"
         ).map_err(|error| StoreError::sqlite("could not prepare the run timeline", error))?;
-        let rows = statement.query_map(params![run_id, limit], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        let rows = statement.query_map(params![run_id, limit], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
             .map_err(|error| StoreError::sqlite("could not query the run timeline", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read the run timeline", error))
@@ -5130,7 +5130,7 @@ mod tests {
         assert_eq!(runs[3..], finished[..], "the 20 newest finished runs, newest first");
 
         let timeline = store.workflow_run_timeline("active-1", 1).unwrap();
-        assert_eq!(timeline, [(2, "workflow.run.updated".to_string(), None)], "only the newest line");
+        assert_eq!(timeline, [(2, "workflow.run.updated".to_string(), None, None)], "only the newest line");
     }
 
     #[test]

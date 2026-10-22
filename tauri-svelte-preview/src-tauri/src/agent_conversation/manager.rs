@@ -1,4 +1,4 @@
-#[path = "session_project.rs"] pub mod session_project; mod helper_close;
+#[path = "session_project.rs"] pub mod session_project; mod helper_close; pub mod turn_usage;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -250,6 +250,7 @@ pub struct ManagedAgentSession {
     /// recorded carries none, and counts as the first prompt.
     title_source: Option<String>,
     suspending: bool,
+    turn_usage: turn_usage::TurnUsageState, // When the prompt went out and the latest reported cost total.
 }
 
 #[derive(Clone, Debug)]
@@ -1899,7 +1900,7 @@ impl AgentRuntimeManager {
             state: ConversationConnectionState::Connecting,
             config: AgentConversationConfigState { reasoning_effort: reasoning_effort.clone(), ..Default::default() },
         };
-        let provider_instance_id = format!("{}-{generation}", provider_id(request.provider));
+        let provider_instance_id = format!("{}-{generation}", request.provider.id());
         let created_at_ms = timestamp_millis();
         sessions.insert(
             owned_id.clone(),
@@ -1966,7 +1967,7 @@ impl AgentRuntimeManager {
                 title_source: prior
                     .as_ref()
                     .and_then(|session| session.title_source.clone()),
-                suspending: false,
+                suspending: false, turn_usage: Default::default(),
             },
         );
         let session = sessions
@@ -2110,7 +2111,7 @@ impl AgentRuntimeManager {
                 let environment = session_spawn_environment(provider);
                 let mut adapter = AcpRuntimeAdapter::with_environment(
                     manifest,
-                    format!("provider:{}", provider_id(provider)),
+                    format!("provider:{}", provider.id()),
                     cwd.clone(),
                     environment,
                 );
@@ -2276,9 +2277,8 @@ impl AgentRuntimeManager {
         }
         // An adapter that named an effort control owns the effort from now on.
         let adapter_offers_effort = !started.config.available_efforts.is_empty();
-        let started_new = expected_native_session_id.is_none();
-        if let Some(expected_native_session_id) = expected_native_session_id {
-            if started.native_session_id != expected_native_session_id {
+        if let Some(expected_native_session_id) = &expected_native_session_id {
+            if started.native_session_id != *expected_native_session_id {
                 let _ = self
                     .release_pool_scope(&pool_key, owned_id, Some(&started.native_session_id), true)
                     .await;
@@ -2303,6 +2303,7 @@ impl AgentRuntimeManager {
         }
         session.native_session_id = Some(started.native_session_id.clone());
         session.connection.native_session_id = Some(started.native_session_id);
+        session.turn_usage.resumed = expected_native_session_id.is_some();
         session.adapter_offers_effort = adapter_offers_effort;
         session.config = started.config;
         session.connection.config = session.config.clone();
@@ -2342,7 +2343,7 @@ impl AgentRuntimeManager {
         )?;
         let connection = session.connection.clone();
         drop(sessions);
-        if started_new {
+        if expected_native_session_id.is_none() {
             let transcript = super::history::transcript::discover(provider, connection.native_session_id.as_deref().unwrap_or_default()).ok().flatten();
             if let Err(error) = super::history::track_new_transcript(&self.store, owned_id, transcript.as_ref().map(|location| location.canonical_path.as_path())) { crate::debug_log::stderr_log!("Could not track the new transcript: {error}"); }
         }
@@ -2552,7 +2553,7 @@ impl AgentRuntimeManager {
                 super::protocol::TurnState::Completed,
                 AgentRuntimeState::Ready,
             );
-            session.active_turn_id = Some(turn_id.clone());
+            session.active_turn_id = Some(turn_id.clone()); turn_usage::turn_started(session);
             if session_title_is_empty(session.rail_meta.title.as_deref()) {
                 let is_first_user_prompt = session
                     .store
@@ -5100,7 +5101,7 @@ fn recovered_session_from_row(
     let session = ManagedAgentSession {
         owned_id: row.owned_id.clone(),
         provider,
-        provider_instance_id: format!("{}-{}", provider_id(provider), stored.generation),
+        provider_instance_id: format!("{}-{}", provider.id(), stored.generation),
         native_session_id: row.native_session_id,
         native_session_mode: stored.native_session_mode,
         generation: stored.generation,
@@ -5146,7 +5147,7 @@ fn recovered_session_from_row(
         claude_children: stored.claude_children,
         rail_meta: stored.rail_meta,
         title_source: row.title_source,
-        suspending: false,
+        suspending: false, turn_usage: Default::default(),
     };
     Ok(session)
 }
@@ -5985,7 +5986,7 @@ async fn pump_inbound(
                         break 'update session_is_quiescent(session);
                     }
                     let prior_output = tools::joined_output_so_far(&session.live_tool_calls, &params);
-                    let mut reached_quiescence = update_raw_liveness(session, &params);
+                    let mut reached_quiescence = update_raw_liveness(session, &params); turn_usage::note_reported_cost(session, &params);
                     if let Some(payload) = stopped_background_task_payload(&mut session.background_work, &params) {
                         expect_claude_wake(session);
                         reached_quiescence |= session_is_quiescent(session);
@@ -6245,6 +6246,13 @@ async fn pump_inbound(
                 let options = permission_options(&params);
                 let command = params.pointer("/toolCall/rawInput/command").and_then(|command| command.as_str().map(str::to_owned)
                     .or_else(|| command.as_array().map(|parts| parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))));
+                // The descriptor's permission-handler pre-approval answers the agent's Assembly tools here (TSK-1522).
+                let answer = sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&owned_id).filter(|session| session.generation == generation
+                    && session.writer_lease.owner == AgentWriterLeaseOwner::Structured).and_then(|session| super::providers::descriptors::handler_answer(session.provider, &params));
+                if let Some(answer) = answer {
+                    if let Err(error) = transport_runtime.respond(wire_id, answer).await { crate::debug_log::stderr_log!("Could not pre-approve an Assembly tool: {error}"); }
+                    continue;
+                }
                 let mut sessions = sessions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -7291,7 +7299,7 @@ async fn handle_ordered_session_event(
                         return false;
                     }
                 }
-                record_finished_reply(session, &emitter);
+                record_finished_reply(session, &emitter); turn_usage::report_turn_usage(session, &turn_id, result.as_ref().unwrap_or(&Value::Null));
                 let payload = match result {
                     Ok(_) if cancelled => AgentConversationPayload::Turn {
                         turn_id: turn_id.clone(),
@@ -7725,13 +7733,6 @@ fn provider_is_multi_session_safe(capabilities: &AgentCapabilities) -> bool {
     capabilities.session.multi_session
 }
 
-fn provider_id(provider: AgentConversationProvider) -> &'static str {
-    match provider {
-        AgentConversationProvider::Codex => "codex",
-        AgentConversationProvider::Claude => "claude",
-        AgentConversationProvider::Antigravity => "antigravity",
-    }
-}
 fn timestamp_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -7930,7 +7931,7 @@ fn normalize_codex_composite_config_update(
     current: &AgentConversationConfigState,
     update: &mut AgentConversationConfigUpdate,
 ) {
-    if provider != AgentConversationProvider::Codex || current.available_efforts.is_empty() {
+    if !provider.descriptor().effort_in_model_id || current.available_efforts.is_empty() {
         return;
     }
     let Some(model) = update.model.as_deref() else {
@@ -11942,7 +11943,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_helper_starts_in_auto_even_when_its_parent_is_in_default() {
-        use AgentConversationProvider::{Claude, Codex};
+        #[allow(non_snake_case)] let (Claude, Codex) = (AgentConversationProvider::Claude, AgentConversationProvider::Codex);
         for (parent_provider, parent_mode, helper_provider, log, asked) in [
             (Claude, Some("default"), "claude", "config_options", r#""modeId":"auto""#),
             (Claude, None, "codex", "multiplex", r#""approvalPolicy":"agent""#),
@@ -12608,7 +12609,6 @@ mod tests {
             .unwrap();
         fs::remove_dir_all(root).unwrap();
     }
-
 
     // Claude keeps a transcript this side can read. When it holds no turn — the
     // process was stopped before it wrote one — there is nothing on Claude's

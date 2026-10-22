@@ -23,6 +23,16 @@ where S: StreamExt<Item = Result<TungsteniteMessage, tokio_tungstenite::tungsten
     parse_server_frame(message).unwrap().unwrap()
 }
 
+/// The next frame about a session. `MessagesChanged` is skipped: it comes from a process-wide
+/// signal that any test running at the same time may raise, and it names no session.
+async fn next_session_frame<S>(socket: &mut S) -> ServerFrame
+where S: StreamExt<Item = Result<TungsteniteMessage, tokio_tungstenite::tungstenite::Error>> + Unpin {
+    loop {
+        let frame = next_server_frame(socket).await;
+        if !matches!(frame, ServerFrame::MessagesChanged) { return frame; }
+    }
+}
+
 fn event(sequence: i64) -> ServerFrame { ServerFrame::Event { event: history_event(sequence) } }
 
 fn replay_complete(head: i64) -> ServerFrame {
@@ -209,13 +219,13 @@ async fn resume_replays_only_the_sessions_it_names() {
     let both = BTreeMap::from([("large-history".into(), 0), ("other-history".into(), 0)]);
     send_client_frame(&mut socket, &ClientFrame::Resume { cursors: both }).await.unwrap();
     let mut completed = 0;
-    while completed < 2 { if matches!(next_server_frame(&mut socket).await, ServerFrame::ReplayComplete { .. }) { completed += 1; } }
+    while completed < 2 { if matches!(next_session_frame(&mut socket).await, ServerFrame::ReplayComplete { .. }) { completed += 1; } }
     send_client_frame(&mut socket, &ClientFrame::Resume { cursors: BTreeMap::from([("large-history".into(), 1)]) }).await.unwrap();
-    assert!(matches!(next_server_frame(&mut socket).await, ServerFrame::ReplayStart { owned_id } if owned_id == "large-history"));
-    assert!(matches!(next_server_frame(&mut socket).await, ServerFrame::Event { event } if event.owned_id == "large-history" && event.sequence == 2));
-    assert!(matches!(next_server_frame(&mut socket).await, ServerFrame::ReplayComplete { owned_id, .. } if owned_id == "large-history"));
+    assert!(matches!(next_session_frame(&mut socket).await, ServerFrame::ReplayStart { owned_id } if owned_id == "large-history"));
+    assert!(matches!(next_session_frame(&mut socket).await, ServerFrame::Event { event } if event.owned_id == "large-history" && event.sequence == 2));
+    assert!(matches!(next_session_frame(&mut socket).await, ServerFrame::ReplayComplete { owned_id, .. } if owned_id == "large-history"));
     send_client_frame(&mut socket, &ClientFrame::Request { id: 7, command: RemoteCommand::ListSessions }).await.unwrap();
-    let frame = next_server_frame(&mut socket).await;
+    let frame = next_session_frame(&mut socket).await;
     assert!(matches!(frame, ServerFrame::Response { id: 7, .. }), "an unnamed session replayed: {frame:?}");
     server.abort();
     let _ = server.await;

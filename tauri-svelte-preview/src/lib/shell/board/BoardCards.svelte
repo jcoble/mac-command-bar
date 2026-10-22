@@ -141,7 +141,7 @@
 {/snippet}
 
 {#snippet more(count: number)}
-  {#if count > 0}<p class="muted px-1 pt-1.5">{count} more not shown. Mark cards done or drop them to see the rest.</p>{/if}
+  {#if count > 0}<p class="muted px-0.5">{count} more not shown. Mark cards done or drop them to see the rest.</p>{/if}
 {/snippet}
 
 {#snippet cardRow(entry: Entry)}
@@ -162,7 +162,7 @@
       <button type="button" class="chead" aria-expanded={open} onclick={() => (toggled[entry.id] = !open)}>
         <ChevronRight class={cn('size-3.5 shrink-0 text-(--color-text-3) transition-transform', open && 'rotate-90')} aria-hidden="true" />
         {#if notion && card.task_key}<span class="key">{card.task_key}</span>{/if}
-        <span class="ctitle">{card.title}</span>
+        <span class={cn('ctitle', open && 'wrap')}>{card.title}</span>
         <span class="ctime">{when(card.updated_at_ms)}</span>
       </button>
       {#if card.summary}<p class={cn('sum', !open && 'one')}>{card.summary}</p>{/if}
@@ -272,7 +272,7 @@
         <Button size="xs" variant="secondary" disabled={busy} onclick={() => void clearDone()}>Clear</Button>
       </div>
       {#if doneOpen}
-        <ul class="list pt-1">
+        <ul class="list">
           {#each done as entry (entry.id)}{@render cardRow(entry)}{/each}
         </ul>
         {@render more(notShown('done', done))}
@@ -283,32 +283,38 @@
 
 <style>
   /* Surfaces from the Usage screen (UsageWorkspace.svelte): .panel, .provider-card, .provider-metrics, .quota-empty. */
-  .col { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; overflow-y: auto; }
-  .panel { flex: none; padding: 8px; border: 1px solid color-mix(in srgb, var(--color-border) 36%, transparent); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--color-elevated) 38%, var(--color-surface)); }
-  .ph { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 1px 4px 7px; }
-  h3 { margin: 0; display: inline-flex; align-items: center; gap: 7px; font-size: 0.88rem; line-height: 1.35; font-weight: 600; white-space: nowrap; }
+  /* Panels carry a full hairline and cards sit a step lighter with their own edge, so every boundary reads. */
+  .col { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; overflow-y: auto; }
+  .panel { display: flex; flex: none; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--color-elevated) 38%, var(--color-surface)); }
+  .ph { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 0 2px; }
+  h3 { margin: 0; display: flex; align-items: center; gap: 7px; font-size: 0.88rem; line-height: 1.35; font-weight: 600; white-space: nowrap; }
   .ph strong { margin-left: auto; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
   .muted { margin: 0; min-width: 0; overflow: hidden; color: var(--color-text-2); font-size: 0.76rem; line-height: 1.45; text-overflow: ellipsis; }
   .ph .muted { white-space: nowrap; }
   .dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 2px; }
   .list, .steps { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
-  .list { gap: 6px; }
-  .card { min-width: 0; padding: 9px 12px; border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-elevated) 52%, var(--color-surface)); }
+  .list { gap: 8px; }
+  .card { min-width: 0; padding: 10px 12px 11px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-elevated) 72%, var(--color-surface)); }
   .chead, .done-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; border-radius: var(--radius-sm); text-align: left; }
-  .done-toggle { padding: 2px 4px; font: inherit; font-weight: 600; }
+  /* A wrapped title keeps the chevron, key and time on its first line. */
+  .chead { align-items: flex-start; }
+  .chead > :global(svg) { margin-top: 3px; }
+  .chead .key { margin-top: 1px; }
+  .done-toggle { padding: 2px; font: inherit; font-weight: 600; }
   .chead:focus-visible, .done-toggle:focus-visible { outline: none; box-shadow: var(--focus-ring); }
   .key { flex: none; padding: 1px 6px; border-radius: var(--radius-xs); background: color-mix(in srgb, var(--color-bg) 44%, transparent); color: var(--color-text-2); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .ctitle { min-width: 0; overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-  .ctime { flex: none; margin-left: auto; color: var(--color-text-3); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
-  .sum { margin: 3px 0 0; color: var(--color-text-2); font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
+  .ctitle.wrap { white-space: normal; overflow-wrap: anywhere; }
+  .ctime { flex: none; margin-left: auto; padding-top: 2px; color: var(--color-text-3); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+  .sum { margin: 4px 0 0; color: var(--color-text-2); font-size: 13px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
   .sum.one { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .stale { margin: 3px 0 0; color: var(--color-text-3); font-size: 0.75rem; }
+  .stale { margin: 3px 0 0; color: var(--color-attention); font-size: 0.75rem; }
   .first-step { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 6px 0 0; font-size: 13px; }
   .more { flex: none; color: var(--color-text-3); font-size: 0.75rem; }
   .circ { display: grid; flex: none; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: color-mix(in srgb, var(--color-text) 10%, transparent); color: var(--color-text-2); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .cmeta { display: flex; align-items: center; gap: 6px; min-width: 0; margin: 6px 0 0; }
   .linkchip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; height: 22px; padding: 0 8px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-bg) 44%, transparent); color: var(--color-text-2); font-size: 12px; white-space: nowrap; }
-  .detail { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .detail { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
   .sh { display: flex; align-items: baseline; margin: 0 2px; font-size: 0.75rem; font-weight: 600; }
   .quiet-label { margin-left: auto; color: var(--color-text-3); font-weight: 400; white-space: nowrap; }
   .steps li { display: flex; align-items: center; gap: 10px; padding: 5px 2px; font-size: 13px; line-height: 1.4; border-top: 1px solid color-mix(in srgb, var(--color-border) 28%, transparent); }
@@ -316,7 +322,7 @@
   .actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .well { display: grid; gap: 2px; padding: 7px 10px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-bg) 48%, transparent); }
   .well > span { font-size: 0.75rem; font-weight: 600; }
-  .well p { margin: 0; color: var(--color-text-2); font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
+  .well p { margin: 0; color: var(--color-text-2); font-size: 13px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
   .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
   .metrics > span { display: grid; gap: 1px; min-width: 0; padding: 7px 10px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-bg) 44%, transparent); }
   .metrics small { color: var(--color-text-2); font-size: 0.75rem; }
@@ -327,6 +333,6 @@
   .notes-head > span { color: var(--color-text); font-variant-numeric: tabular-nums; }
   .foot { display: flex; gap: 8px; margin: 0; color: var(--color-text-3); font-size: 0.75rem; }
   .foot > span:last-child { margin-left: auto; }
-  .fold-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 4px 4px 4px 12px; color: var(--color-text-2); font-size: 0.75rem; }
+  .fold-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; min-height: 34px; padding: 4px 6px 4px 12px; border: 1px dashed var(--color-border); border-radius: var(--radius-md); color: var(--color-text-2); font-size: 0.75rem; }
   .quiet { color: var(--color-text-3); }
 </style>

@@ -228,14 +228,10 @@
   const activeFileMissing = $derived(
     Boolean(activeFile?.error && /(?:os error 2|No such file)/i.test(activeFile.error))
   );
-  /**
-   * Files opened for reading only, keyed by path. A file link in a conversation
-   * that points outside the workspace opens this way: the reader can see what
-   * it pointed at, but the session does not own the file, so nothing here may
-   * edit or save over it.
-   */
-  /** Inspection root for read-only tabs; a path alone is not enough context. */
+  /** Files outside the session's project open read-only until "Edit anyway",
+   * keyed by path; the value is the root to inspect them from. */
   let readOnlyByPath = $state<Record<string, string>>({});
+  const dropReadOnly = (path: string): void => { const { [path]: _dropped, ...rest } = readOnlyByPath; readOnlyByPath = rest; };
   const activeFileReadOnly = $derived(Boolean(activeFile && readOnlyByPath[activeFile.path]));
   /** The breadcrumb menus open right now, outermost first: depth 0 is a
    * segment's menu (or a folder row of the "…" menu), each deeper entry a
@@ -1161,8 +1157,7 @@
       sourceIntelligence.releasePreview(replacedPreviewPath);
       const { [replacedPreviewPath]: _closed, ...rest } = diagnosticsByPath;
       diagnosticsByPath = rest;
-      const { [replacedPreviewPath]: _wasReadOnly, ...remaining } = readOnlyByPath;
-      readOnlyByPath = remaining;
+      dropReadOnly(replacedPreviewPath);
     }
     rememberMarkdownDefault(record.path, entry.fileName, origin);
     if (typeof line === 'number' && line > 0) revealEditorLine(record.path, line);
@@ -1178,12 +1173,8 @@
     // Marked before the open, so the file is never editable for a frame. The
     // record's path is the key: it is what the strip and the editor hold.
     const record = recordForPath(request.path, request.projectRoot);
-    if (request.readOnly) {
-      readOnlyByPath = { ...readOnlyByPath, [record.path]: request.projectRoot?.trim() || 'outside the session workspace' };
-    } else if (readOnlyByPath[record.path]) {
-      const { [record.path]: _wasReadOnly, ...remaining } = readOnlyByPath;
-      readOnlyByPath = remaining;
-    }
+    if (request.readOnly) readOnlyByPath = { ...readOnlyByPath, [record.path]: request.projectRoot?.trim() || 'outside the session workspace' };
+    else if (readOnlyByPath[record.path]) dropReadOnly(record.path);
     // A rendered Markdown document has no source-line coordinates. An explicit
     // jump (diff hunk, problem, definition) therefore has to reveal the source,
     // even when this tab was previously left on Preview.
@@ -1252,8 +1243,12 @@
     diagnosticsByPath = rest;
     // The read-only mark belongs to the request that opened the file. Keeping
     // it meant a later open of the same path arrived already locked.
-    const { [path]: _wasReadOnly, ...remaining } = readOnlyByPath;
-    readOnlyByPath = remaining;
+    dropReadOnly(path);
+  }
+
+  /** "Edit anyway": the reader chose to change a file the session does not own. */
+  function unlockActiveFile(file = activeEditorFile()): void {
+    if (file?.preview) { dropReadOnly(file.path); setEditorFilePreview(file.path, file.preview); }
   }
 
   /** Close one file; a file with unsaved changes asks first. */
@@ -1761,6 +1756,9 @@
           <button type="button" class="retry" onclick={() => void overwriteConflictedFile()}>Overwrite</button>
         </div>
       {/if}
+      {#if activeFileReadOnly && activeFile?.preview && !activeImageMimeType}
+        <div class="editor-conflict" role="status"><span>Outside this session's project, so it opened read-only.</span><button type="button" class="retry" onclick={() => unlockActiveFile()}>Edit anyway</button></div>
+      {/if}
       {#if activeFile?.error && activeFile.preview}
         <div class="editor-conflict" role="alert">
           <span>{activeFile.error}</span>
@@ -1871,7 +1869,7 @@
       <LanguageIntelligenceControls />
       <span class="status-state" title={activeFile?.conflict ?? undefined}>
         {#if activeFileReadOnly}
-          read-only
+          outside project
         {:else if activeImageMimeType}
           preview
         {:else if activeFile?.saving}
