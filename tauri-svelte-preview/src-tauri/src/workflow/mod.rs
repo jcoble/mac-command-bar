@@ -90,6 +90,7 @@ fn step_and_dependents(definition: &WorkflowDefinitionV1, id: &str) -> BTreeSet<
     }
 }
 
+mod run_setup;
 mod step_end;
 use step_end::{changed_code, record_tree, refuse_parallel_agents, CHANGED_CODE};
 
@@ -1599,7 +1600,7 @@ impl WorkflowEngine {
             return Ok(existing);
         }
         let mut run = self.require_run(run_id)?;
-        // A started run whose dispatch failed (for example, fetching main) is scheduled again.
+        // A started run whose dispatch failed (a failed worktree setup ends the run instead) is scheduled again.
         if run.state == WorkflowRunState::Running {
             return self.dispatch_ready(run_id).await;
         }
@@ -2151,19 +2152,7 @@ impl WorkflowEngine {
                 return Ok(run);
             }
             // YAML runs allocate once; templates continue using their selected workspace.
-            if run.definition.nodes.iter().any(|node| !node.step.is_null()) && run.input_snapshot.get("worktree").is_none() {
-                let task: TaskSnapshot = serde_json::from_value(run.input_snapshot["task"].clone()).map_err(invalid_yaml)?;
-                let number = task.key.strip_prefix("TSK-").filter(|value| !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit()))
-                    .ok_or_else(|| invalid_yaml("Task key must be TSK-<number>"))?;
-                let slug = task.title.to_ascii_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>();
-                let branch = format!("tsk-{number}-{}-{}", slug.trim_matches('-'), &stable_hash(&run.id)[8..]);
-                let root = run.input_snapshot["cwd"].as_str().ok_or_else(|| invalid_yaml("Project root is required"))?;
-                let path = crate::project_folders::create_project_worktree_sync(Path::new(root), &branch).map_err(WorkflowError::Runtime)?;
-                run.input_snapshot["worktree"] = json!({"path":path,"branch":branch,"status":"","removed":false});
-                run.input_snapshot["cwd"] = json!(path);
-                run.worktrees_allocated = 1;
-                self.append(&mut run, "workflow.worktree.allocated", "worktree", None)?;
-            }
+            self.set_up_run_worktree(&mut run)?;
             if run.definition.nodes.iter().any(|node| !node.step.is_null()) && run.input_snapshot["run"].is_null() {
                 // Beside the session database, so evidence outlives temp-folder cleanup.
                 let base = self.store.database_path().map_err(|error| WorkflowError::Ledger(error.to_string()))?
@@ -3604,7 +3593,7 @@ fn pr_body(task_key: &str, outputs: &[(String, String)], artifacts: &[String]) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    mod permissions; mod agent_tools; mod review_rounds; mod agent_inputs; mod orchestrator_decisions; mod step_end;
+    mod permissions; mod agent_tools; mod review_rounds; mod agent_inputs; mod orchestrator_decisions; mod step_end; mod run_setup;
     #[test]
     fn pr_body_stays_under_the_github_limit_and_names_every_step() {
         let outputs: Vec<(String, String)> = (0..14).map(|n| (format!("step-{n}"), "x".repeat(20_000))).collect();
@@ -4171,23 +4160,6 @@ mod tests {
         }
         assert_eq!(step_of(&run, "review").failure.as_ref().unwrap().code, "loop-stopped");
         run
-    }
-
-    #[test]
-    fn a_run_whose_first_dispatch_failed_is_scheduled_again() {
-        let repo = RunRepo::new();
-        let engine = run_engine(Arc::new(FakeRuntime::default()));
-        repo.git(&["remote", "set-url", "origin", "/var/tmp/no-such-origin.git"]);
-        std::fs::create_dir_all(repo.0.join(".assembly/workflows/prompts")).unwrap();
-        std::fs::write(repo.0.join(".assembly/workflows/prompts/p.md"), "Do the work").unwrap();
-        std::fs::write(repo.0.join(".assembly/workflows/loop.yml"), format!("name: Loop\nsteps:\n{LOOP_REVIEW}")).unwrap();
-        let task = TaskSnapshot { key: "TSK-1416".into(), title: "Task title".into(), body: "Task body".into() };
-        let run = engine.create_run_from_file(&repo.0, Path::new(".assembly/workflows/loop.yml"), task, json!({}), "create".into()).unwrap();
-        assert!(tauri::async_runtime::block_on(engine.start(&run.id, "start")).is_err());
-        assert_eq!(engine.recover_after_restart().unwrap(), vec![run.id.clone()]);
-        repo.git(&["remote", "set-url", "origin", repo.0.parent().unwrap().join("origin.git").to_str().unwrap()]);
-        let started = tauri::async_runtime::block_on(engine.start(&run.id, "start-again")).unwrap();
-        assert_eq!(step_of(&started, "build").state, WorkflowNodeState::Running);
     }
 
     #[test]
