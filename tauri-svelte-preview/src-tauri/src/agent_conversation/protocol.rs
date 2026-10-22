@@ -506,9 +506,9 @@ pub enum AgentConversationPayload {
         latest_activity: Option<String>,
     },
     Approval {
-        request_id: String,
-        state: ApprovalState,
-        summary: String,
+        request_id: String, state: ApprovalState, summary: String,
+        /// `(option id, label, kind)` as the provider offered them on the request; none on a legacy approval or an answer.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")] options: Vec<(String, String, String)>,
     },
     UserInputRequested {
         request_id: String,
