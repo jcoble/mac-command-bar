@@ -115,10 +115,9 @@ pub fn read_incremental_jsonl(
     let metadata =
         fs::metadata(path).map_err(|error| format!("Usage source is unavailable: {error}"))?;
     let file_identity = file_identity(path, &metadata)?;
-    let cursor_offset = cursor
-        .filter(|cursor| cursor.file_identity == file_identity && cursor.offset <= metadata.len())
-        .map(|cursor| cursor.offset as usize)
-        .unwrap_or(0);
+    let cursor = cursor
+        .filter(|cursor| cursor.file_identity == file_identity && cursor.offset <= metadata.len());
+    let cursor_offset = cursor.map(|cursor| cursor.offset as usize).unwrap_or(0);
     let mut file = fs::File::open(path)
         .map_err(|error| format!("Usage source could not be opened: {error}"))?;
     file.seek(SeekFrom::Start(cursor_offset as u64))
@@ -146,7 +145,8 @@ pub fn read_incremental_jsonl(
         offset: complete_len as u64,
         size: metadata.len(),
         modified_at_micros: metadata_modified_micros(&metadata),
-        last_event_id: None,
+        // Codex sources keep their last token_count total here (see the parser).
+        last_event_id: cursor.and_then(|cursor| cursor.last_event_id.clone()),
     };
     Ok(IncrementalJsonl { lines, next_cursor })
 }
@@ -158,6 +158,7 @@ pub fn parse_usage_events_for_source_with_context(
     source_kind: &str,
     source_key: &str,
     context: &UsageSourceContext,
+    last_codex_total: &mut Option<String>,
 ) -> Vec<UsageEvent> {
     let mut session_id = context.session_id.clone();
     let mut cwd = context.cwd.clone();
@@ -189,6 +190,17 @@ pub fn parse_usage_events_for_source_with_context(
                     .filter(|value| !value.trim().is_empty())
                     .map(ToString::to_string)
                     .or(model);
+            }
+            // Codex can repeat a token_count with an unchanged total (sometimes
+            // with a different last usage); only the first one is counted.
+            if let Some(total) = value
+                .pointer("/payload/info/total_token_usage")
+                .map(Value::to_string)
+            {
+                if last_codex_total.as_ref() == Some(&total) {
+                    continue;
+                }
+                *last_codex_total = Some(total);
             }
             parse_codex_usage_event(
                 &value,
@@ -677,6 +689,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     mod claude;
+    mod codex;
 
     #[test]
     fn usage_source_cursor_resets_after_truncation_without_replaying_same_suffix() {
@@ -703,30 +716,6 @@ mod tests {
         assert_eq!(first.next_cursor.source_key, opaque_source_key("source"));
         assert!(!first.next_cursor.source_key.contains("/"));
         let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn codex_token_count_records_become_non_zero_events() {
-        let lines = vec![
-            r#"{"type":"session_meta","payload":{"id":"session-2","cwd":"/tmp/project/workspace"}}"#.to_string(),
-            r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#.to_string(),
-            r#"{"type":"event_msg","timestamp":"2026-08-08T12:34:56Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":9,"reasoning_output_tokens":4}}}}"#.to_string(),
-        ];
-        let events = parse_usage_events_for_source_with_context(
-            &lines,
-            "codex",
-            "local",
-            "codex-jsonl",
-            "/tmp/rollout.jsonl",
-            &UsageSourceContext::default(),
-        );
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].owned_id.as_deref(), Some("session-2"));
-        assert_eq!(events[0].input_tokens, 15);
-        assert_eq!(events[0].cache_read_tokens, 5);
-        assert_eq!(events[0].output_tokens, 9);
-        assert_eq!(events[0].reasoning_tokens, 4);
-        assert_eq!(events[0].model, "gpt-5.6-sol");
     }
 
     #[test]
