@@ -40,7 +40,7 @@ impl Script {
 fn event(sequence: i64, payload: Payload) -> AgentConversationEvent {
     AgentConversationEvent {
         runtime_state: None, owned_id: THREAD.into(), provider: AgentConversationProvider::Claude, generation: 2,
-        sequence, timestamp_ms: 0, turn_id: Some("turn-1".into()), payload,
+        sequence, timestamp_ms: sequence as u128 * 1000, turn_id: Some("turn-1".into()), payload,
     }
 }
 
@@ -70,7 +70,7 @@ fn assert_well_formed(chunks: &[Value]) {
             "TEXT_MESSAGE_END" | "TOOL_CALL_END" => {
                 assert!(started.len() > ended.len() && open.remove(&item), "an end outside a run or for nothing open: {chunk}");
             }
-            "CUSTOM" | "SUBAGENT_STARTED" | "SUBAGENT_FINISHED" | "SUBAGENT_ERROR" => {}
+            "CUSTOM" | "ACTIVITY_SNAPSHOT" | "SUBAGENT_STARTED" | "SUBAGENT_FINISHED" | "SUBAGENT_ERROR" => {}
             kind => {
                 assert!(!live.is_empty(), "{kind} outside a live run: {chunk}");
                 if kind.ends_with("_START") {
@@ -146,7 +146,7 @@ fn a_permission_pauses_the_run_and_the_client_resume_continues_it() {
     ]);
     assert_eq!(chunks[0]["runId"], "run-client-1");
     assert!(chunks[0].get("parentRunId").is_none(), "a first run has no parent field: {}", chunks[0]);
-    assert_eq!(chunks[1]["metadata"]["assembly"]["attachmentIds"], json!(["shot-1"]));
+    assert_eq!(chunks[1]["metadata"]["attachmentIds"], json!(["shot-1"]));
     let pause = &chunks[5];
     assert_eq!(pause["outcome"]["type"], "interrupt");
     let interrupt = &pause["outcome"]["interrupts"][0];
@@ -269,7 +269,7 @@ fn a_failure_while_paused_is_a_run_error_on_the_paused_run() {
     let failed: Vec<Value> = [Payload::Error { code: "provider_error".into(), message: "The model is overloaded".into(), recoverable: false },
         Payload::UserInputResolved { request_id: "ask-1".into(), cancelled: true }, turn(TurnState::Failed)]
         .into_iter().flat_map(|payload| script.send(payload)).collect();
-    assert_eq!(types(&failed), ["CUSTOM", "RUN_ERROR"]);
+    assert_eq!(types(&failed), ["ACTIVITY_SNAPSHOT", "RUN_ERROR"]);
     assert_eq!((&failed[1]["runId"], &failed[1]["message"]), (&chunks[0]["runId"], &json!("The model is overloaded")));
     chunks.extend(failed);
     assert_well_formed(&chunks);
@@ -401,6 +401,72 @@ fn a_legacy_approval_offers_allow_and_deny_and_is_answered_with_a_decision() {
         Answer::Approval { request_id: "approval-1".into(), generation: 2, accept: true });
 }
 
+/// Every start carries what the timeline draws its row from; a call is a
+/// message of its own, its result the native call; the chat's ids are kept.
+#[test]
+fn every_start_carries_the_row_facts_and_a_call_is_its_own_message() {
+    let mut script = Script::open();
+    script.views.start_run(&RunAgentInput { thread_id: THREAD.into(), run_id: "run-client-1".into(), parent_run_id: None,
+        resume: Vec::new(), message: None, message_id: Some("chat-message-1".into()) }).unwrap();
+    script.send(turn(TurnState::Started));
+    let facts = |kind: &str, sequence: i64| json!({ "itemType": kind, "turnId": "turn-1", "startedAtMs": sequence * 1000, "firstSequence": sequence });
+    let asked = script.send(user("user-1", "Write hello"));
+    assert_eq!(asked[0]["messageId"], "chat-message-1", "the chat already shows the message it sent under that id");
+    let mut expected = facts("user-message", 2);
+    expected["attachmentIds"] = json!(["shot-1"]);
+    assert_eq!((&asked[0]["metadata"], &asked[2]["metadata"]), (&expected, &json!({ "completed": true })));
+    let mut expected = facts("assistant-message", 3);
+    expected["completed"] = json!(false);
+    assert_eq!(script.send(delta("msg-1", "On it"))[0]["metadata"], expected);
+    let call = script.send(tool("tool-1", ToolState::Started, Some("Write notes/hello.txt"), None));
+    assert_eq!(call[0]["parentMessageId"], "tool-1", "a call is not folded into the reply before it");
+    assert_eq!(call[0]["metadata"], facts("mcp-tool", 4));
+    let done = script.send(tool("tool-1", ToolState::Completed, Some("Write notes/hello.txt"), Some("notes/hello.txt")));
+    let native: Value = serde_json::from_str(done.last().unwrap()["content"].as_str().unwrap()).unwrap();
+    assert_eq!(native, json!({ "kind": "tool", "itemId": "tool-1", "name": "Write", "state": "completed",
+        "summary": "Write notes/hello.txt", "output": "notes/hello.txt", "path": "notes/hello.txt" }));
+    let blocks = serde_json::from_value(json!([{ "kind": "code", "language": "sh", "value": "ls", "complete": true }])).unwrap();
+    let ended = script.send(Payload::AssistantMessage { item_id: "msg-1".into(), text: "On it".into(), completed: true, blocks: Some(blocks) });
+    assert_eq!((&ended[0]["metadata"]["completed"], &ended[0]["metadata"]["blocks"][0]["kind"]), (&json!(true), &json!("code")));
+    script.send(turn(TurnState::Completed));
+    assert_eq!(script.send(user("user-2", "From the phone"))[1]["messageId"], "user-2");
+}
+
+/// Rows AG-UI has no event for are activity messages carrying the native
+/// event, and none opens a run.
+#[test]
+fn rows_without_an_agui_event_are_activity_messages_outside_runs() {
+    let mut script = Script::open();
+    let terminal: Payload = serde_json::from_value(json!({ "kind": "terminalProjection", "eventType": "item.completed",
+        "providerInstanceId": "claude", "nativeSessionId": "native-1", "itemId": "item-7", "payload": {}, "providerMetadata": {},
+        "rawFrameReference": { "id": "frame-1", "redacted": false } })).unwrap();
+    let rows: Vec<Value> = [
+        Payload::Plan { items: vec![PlanItem { text: "Write".into(), status: "pending".into() }] },
+        Payload::ContextCompaction { trigger: Some("auto".into()), pre_tokens: Some(90_000), post_tokens: Some(20_000) },
+        Payload::CheckoutChanged { from_cwd: "/a".into(), to_cwd: "/b".into() },
+        Payload::Error { code: "provider_error".into(), message: "Overloaded".into(), recoverable: true },
+        terminal,
+    ].into_iter().flat_map(|payload| script.send(payload)).collect();
+    assert_eq!(types(&rows), ["ACTIVITY_SNAPSHOT"; 5]);
+    let ids: Vec<&str> = rows.iter().map(|row| row["messageId"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["plan:1", "compaction:2", "checkout:3", "error:2:4", "item-7"]);
+    assert_eq!((&rows[0]["activityType"], &rows[4]["activityType"]), (&json!("assembly.plan"), &json!("assembly.terminalProjection")));
+    assert_eq!(rows[0]["content"]["event"]["payload"]["items"][0]["text"], "Write");
+    assert_well_formed(&rows);
+}
+
+#[test]
+fn a_large_drop_in_used_tokens_marks_a_compaction() {
+    let mut script = Script::open();
+    let usage = |used| Payload::Usage { input_tokens: None, output_tokens: None, used_tokens: Some(used), context_window: None, total_tokens: None };
+    assert_eq!(types(&script.send(usage(100_000))), ["CUSTOM"]);
+    assert_eq!(types(&script.send(usage(90_000))), ["CUSTOM"], "a small drop is not one");
+    let dropped = script.send(usage(20_000));
+    assert_eq!((types(&dropped), &dropped[0]["messageId"]), (vec!["ACTIVITY_SNAPSHOT", "CUSTOM"], &json!("compaction:3")));
+    assert_eq!(dropped[0]["content"]["event"]["payload"], json!({ "kind": "contextCompaction", "preTokens": 90_000, "postTokens": 20_000 }));
+    assert_eq!(types(&script.send(usage(10_000))), ["CUSTOM"], "below the floor a drop is not one");
+}
+
 #[test]
 fn replays_and_repeated_starts_are_dropped() {
     let mut script = Script::open();
@@ -419,7 +485,7 @@ fn only_a_failed_turn_is_a_run_error_and_stop_cancels_the_run() {
     script.send(turn(TurnState::Started));
     script.send(delta("msg-1", "Working"));
     let failed_error = script.send(Payload::Error { code: "provider_error".into(), message: "The model is overloaded".into(), recoverable: false });
-    assert_eq!(types(&failed_error), ["CUSTOM"]);
+    assert_eq!(types(&failed_error), ["ACTIVITY_SNAPSHOT"]);
     let failed = script.send(turn(TurnState::Failed));
     assert_eq!(types(&failed), ["TEXT_MESSAGE_END", "RUN_ERROR"], "the reply ends before its run");
     assert_eq!(failed[1]["message"], "The model is overloaded");
@@ -439,7 +505,7 @@ fn a_turn_that_ends_mid_reply_ends_the_reply_before_the_run() {
 }
 
 #[test]
-fn child_agents_start_and_finish_once_and_other_events_are_custom() {
+fn child_agents_start_and_finish_once_and_a_plan_is_its_own_row() {
     let mut script = Script::open();
     script.send(turn(TurnState::Started));
     let child = |state: &str| Payload::ChildUpdate { child_id: "child-1".into(), parent_tool_call_id: "tool-9".into(), parent_id: None,
@@ -448,7 +514,7 @@ fn child_agents_start_and_finish_once_and_other_events_are_custom() {
     assert_eq!(types(&script.send(child("finished"))), ["SUBAGENT_FINISHED", "CUSTOM"]);
     assert_eq!(types(&script.send(child("finished"))), ["CUSTOM"]);
     let plan = script.send(Payload::Plan { items: vec![PlanItem { text: "Write".into(), status: "pending".into() }] });
-    assert_eq!(plan[0]["name"], "assembly.plan");
+    assert_eq!(plan[0]["activityType"], "assembly.plan");
 }
 
 #[test]

@@ -18,6 +18,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 /// a decision, as the approval card answers it.
 const DECISIONS: [(&str, &str, &str); 2] = [("accept", "Allow", "allow_once"), ("decline", "Deny", "reject_once")];
 
+/// Used tokens falling this far from at least this many means the agent
+/// compacted its context without saying so.
+const COMPACTION_FLOOR_TOKENS: u64 = 32_000;
+const COMPACTION_DROP_RATIO: f64 = 0.6;
+
 /// A request the agent is waiting on, kept so it can be shown again and answered.
 #[derive(Clone, Debug)]
 struct OpenRequest {
@@ -58,6 +63,9 @@ struct View {
     /// parent an answered pause leaves for its continuation.
     next_run: Option<String>,
     next_parent: Option<String>,
+    /// The id the chat gave the message the client's run sends, which the
+    /// chat already shows; the recorded copy takes it instead of its own.
+    next_user: Option<String>,
     /// The run that ended in an interrupt and is waiting on `requests`.
     paused_run: Option<String>,
     requests: Vec<OpenRequest>,
@@ -68,8 +76,9 @@ struct View {
     tools: HashMap<String, Map<String, Value>>,
     /// Child agents seen this turn, and whether each has finished.
     children: HashMap<String, bool>,
-    last_text: Option<String>,
     usage: Option<Value>,
+    /// The latest occupancy reported, to see a compaction no event announced.
+    used_tokens: Option<u64>,
     error: Option<(String, String)>,
     /// Events held while this view's snapshot is read.
     held: Option<Vec<AgentConversationEvent>>,
@@ -110,7 +119,7 @@ impl AguiProjector {
         if let Some((events, pending, head)) = snapshot {
             let mut fresh = View::default();
             let chunks: Vec<Value> = events.iter().flat_map(|event| fresh.project(event)).collect();
-            (fresh.next_run, fresh.next_parent) = (view.next_run.take(), view.next_parent.take());
+            (fresh.next_run, fresh.next_parent, fresh.next_user) = (view.next_run.take(), view.next_parent.take(), view.next_user.take());
             // The journal can show a request the session no longer waits on.
             fresh.requests.retain(|request| pending.contains(&request.id));
             if fresh.requests.is_empty() {
@@ -141,6 +150,7 @@ impl AguiProjector {
         }).collect::<Result<Vec<_>, String>>()?;
         view.next_run = Some(input.run_id.clone());
         view.next_parent = input.parent_run_id.clone();
+        view.next_user = input.message_id.clone();
         Ok(answers)
     }
 }
@@ -241,6 +251,17 @@ fn input_schema(fields: &[AgentUserInputField]) -> Value {
     json!({ "type": "object", "properties": properties, "required": required })
 }
 
+/// What the timeline draws a row from, on every message and call start.
+fn facts(event: &AgentConversationEvent, item_type: &str) -> Value {
+    json!({ "itemType": item_type, "turnId": event.turn_id, "startedAtMs": event.timestamp_ms as u64, "firstSequence": event.sequence })
+}
+
+fn reply_facts(event: &AgentConversationEvent) -> Value {
+    let mut facts = facts(event, "assistant-message");
+    facts["completed"] = json!(false);
+    facts
+}
+
 impl View {
     fn project(&mut self, event: &AgentConversationEvent) -> Vec<Value> {
         if self.last_sequence.is_some_and(|last| event.sequence <= last) {
@@ -254,18 +275,18 @@ impl View {
             Payload::UserMessage { item_id, text, completed, attachment_ids } => {
                 // A message starts the turn it asks for, or steers the open one.
                 self.open(&mut out, thread, sequence);
-                let mut metadata = json!({ "sequence": sequence });
+                let mut metadata = facts(event, "user-message");
                 if !attachment_ids.is_empty() {
                     metadata["attachmentIds"] = json!(attachment_ids);
                 }
-                self.text(&mut out, item_id, "user", text, *completed, metadata);
+                let id = self.next_user.take().unwrap_or_else(|| item_id.clone());
+                self.text(&mut out, &id, "user", text, *completed, metadata, json!({ "completed": true }));
             }
             Payload::AssistantDelta { item_id, delta } => {
                 self.open(&mut out, thread, sequence);
-                self.last_text = Some(item_id.clone());
                 if !self.ended.contains(item_id) {
                     let sent = self.texts.entry(item_id.clone()).or_insert_with(|| {
-                        out.push(agui::text_start(item_id, "assistant", json!({ "assembly": { "sequence": sequence } })));
+                        out.push(agui::text_start(item_id, "assistant", reply_facts(event)));
                         String::new()
                     });
                     if !delta.is_empty() {
@@ -279,14 +300,17 @@ impl View {
             Payload::AssistantMessage { item_id, .. }
                 if self.ended.contains(item_id)
                     || (self.open_run.is_none() && self.paused_run.is_some() && self.texts.contains_key(item_id)) => {}
-            Payload::AssistantMessage { item_id, text, completed, .. } => {
+            Payload::AssistantMessage { item_id, text, completed, blocks } => {
                 self.open(&mut out, thread, sequence);
-                self.last_text = Some(item_id.clone());
-                self.text(&mut out, item_id, "assistant", text, *completed, json!({ "sequence": sequence }));
+                let mut end = json!({ "completed": true });
+                if let Some(blocks) = blocks {
+                    end["blocks"] = json!(blocks);
+                }
+                self.text(&mut out, item_id, "assistant", text, *completed, reply_facts(event), end);
             }
-            Payload::Tool { item_id, name, state, summary, output, path, diff } => {
+            Payload::Tool { item_id, name, state, summary, path, .. } => {
                 self.open(&mut out, thread, sequence);
-                self.tool(&mut out, item_id, name, *state, [summary, output, path, diff], sequence);
+                self.tool(&mut out, event, item_id, name, *state, [summary, path]);
             }
             Payload::ChildUpdate { child_id, parent_tool_call_id, label, state, .. } => {
                 self.child(&mut out, child_id, parent_tool_call_id, label.as_deref(), state);
@@ -319,7 +343,15 @@ impl View {
                 self.finish(&mut out, thread, TurnState::Interrupted, sequence);
                 custom = true;
             }
-            Payload::Usage { input_tokens, output_tokens, total_tokens, .. } => {
+            Payload::Usage { input_tokens, output_tokens, used_tokens, total_tokens, .. } => {
+                if let Some(used) = *used_tokens {
+                    if let Some(pre) = self.used_tokens.filter(|pre| *pre >= COMPACTION_FLOOR_TOKENS && used as f64 <= *pre as f64 * COMPACTION_DROP_RATIO) {
+                        let mut marker = event.clone();
+                        marker.payload = Payload::ContextCompaction { trigger: None, pre_tokens: Some(pre), post_tokens: Some(used) };
+                        out.push(agui::activity(&format!("compaction:{sequence}"), &marker));
+                    }
+                    self.used_tokens = Some(used);
+                }
                 let mut usage = Map::new();
                 for (key, value) in [("inputTokens", input_tokens), ("outputTokens", output_tokens), ("totalTokens", total_tokens)] {
                     if let Some(value) = value {
@@ -334,7 +366,15 @@ impl View {
             }
             Payload::Error { code, message, .. } => {
                 self.error = Some((code.clone(), message.clone()));
-                custom = true;
+                out.push(agui::activity(&format!("error:{}:{sequence}", event.generation), event));
+            }
+            // Rows AG-UI has no event for; none of them opens a run.
+            Payload::Plan { .. } => out.push(agui::activity(&format!("plan:{sequence}"), event)),
+            Payload::ContextCompaction { .. } => out.push(agui::activity(&format!("compaction:{sequence}"), event)),
+            Payload::CheckoutChanged { .. } => out.push(agui::activity(&format!("checkout:{sequence}"), event)),
+            Payload::TerminalProjection(projection) => {
+                let id = projection.item_id.clone().unwrap_or_else(|| format!("terminalProjection:{sequence}"));
+                out.push(agui::activity(&id, event));
             }
             _ => custom = true,
         }
@@ -360,18 +400,18 @@ impl View {
         let run_id = self.next_run.take().unwrap_or_else(|| format!("run-{sequence}"));
         out.push(agui::run_started(thread, &run_id, self.next_parent.take().as_deref()));
         self.open_run = Some(run_id);
-        self.last_text = None;
     }
 
     /// A whole-message event: start it once, send only text the view hasn't
     /// shown, and end it once.
-    fn text(&mut self, out: &mut Vec<Value>, id: &str, role: &str, text: &str, completed: bool, metadata: Value) {
+    #[allow(clippy::too_many_arguments)]
+    fn text(&mut self, out: &mut Vec<Value>, id: &str, role: &str, text: &str, completed: bool, start: Value, end: Value) {
         if self.ended.contains(id) {
             return;
         }
         match self.texts.get_mut(id) {
             None => {
-                out.push(agui::text_start(id, role, json!({ "assembly": metadata })));
+                out.push(agui::text_start(id, role, start));
                 if !text.is_empty() {
                     out.push(agui::text_content(id, text));
                 }
@@ -389,20 +429,20 @@ impl View {
         if completed {
             self.texts.remove(id);
             self.ended.insert(id.to_string());
-            out.push(agui::text_end(id));
+            out.push(agui::text_end(id, end));
         }
     }
 
-    /// Starts a call once; streams its arguments once they are known (later
-    /// updates carry them), and ends it with the latest ones, then its result.
-    fn tool(&mut self, out: &mut Vec<Value>, id: &str, name: &str, state: ToolState, fields: [&Option<String>; 4], sequence: i64) {
-        let [summary, output, path, diff] = fields;
+    /// Starts a call once, as a message of its own; streams its arguments once
+    /// they are known (later updates carry them), and ends it with the latest
+    /// ones, then its result: the native call, which the client draws from.
+    fn tool(&mut self, out: &mut Vec<Value>, event: &AgentConversationEvent, id: &str, name: &str, state: ToolState, fields: [&Option<String>; 2]) {
+        let [summary, path] = fields;
         if self.ended.contains(id) {
             return;
         }
-        let parent = self.last_text.clone();
         let args = self.tools.entry(id.to_string()).or_insert_with(|| {
-            out.push(agui::tool_start(id, name, parent.as_deref(), json!({ "assembly": { "sequence": sequence } })));
+            out.push(agui::tool_start(id, name, Some(id), facts(event, "mcp-tool")));
             Map::new()
         });
         let first = args.is_empty();
@@ -416,8 +456,8 @@ impl View {
         }
         if matches!(state, ToolState::Completed | ToolState::Failed) {
             out.push(agui::tool_end(id, &Value::Object(self.tools.remove(id).unwrap_or_default())));
-            let content = output.as_deref().or(summary.as_deref()).unwrap_or_default();
-            out.push(agui::tool_result(id, content, state == ToolState::Failed, diff.as_deref()));
+            let content = serde_json::to_string(&event.payload).unwrap_or_default();
+            out.push(agui::tool_result(id, &content, state == ToolState::Failed));
             self.ended.insert(id.to_string());
         }
     }
@@ -484,7 +524,7 @@ impl View {
         // Replies, calls and child agents still open end before their run does.
         let mut texts: Vec<String> = self.texts.drain().map(|(id, _)| id).collect();
         texts.sort();
-        out.extend(texts.iter().map(|id| agui::text_end(id)));
+        out.extend(texts.iter().map(|id| agui::text_end(id, json!({ "completed": true }))));
         let mut tools: Vec<(String, Map<String, Value>)> = self.tools.drain().collect();
         tools.sort_by(|a, b| a.0.cmp(&b.0));
         out.extend(tools.into_iter().map(|(id, args)| agui::tool_end(&id, &Value::Object(args))));
@@ -512,10 +552,10 @@ impl View {
         }
         self.next_run = None;
         self.next_parent = None;
+        self.next_user = None;
         self.usage = None;
         self.error = None;
         self.ended.clear();
-        self.last_text = None;
     }
 
     /// One `RUN_FINISHED` carrying every open request, bound to the paused run.

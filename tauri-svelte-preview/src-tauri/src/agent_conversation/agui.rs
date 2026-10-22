@@ -105,8 +105,9 @@ pub fn text_content(message_id: &str, delta: &str) -> Value {
     json!({ "type": "TEXT_MESSAGE_CONTENT", "messageId": message_id, "delta": delta })
 }
 
-pub fn text_end(message_id: &str) -> Value {
-    json!({ "type": "TEXT_MESSAGE_END", "messageId": message_id })
+/// `metadata` is merged into the message's, such as `completed` and `blocks`.
+pub fn text_end(message_id: &str, metadata: Value) -> Value {
+    json!({ "type": "TEXT_MESSAGE_END", "messageId": message_id, "metadata": metadata })
 }
 
 pub fn tool_start(tool_call_id: &str, name: &str, parent_message_id: Option<&str>, metadata: Value) -> Value {
@@ -127,18 +128,11 @@ pub fn tool_end(tool_call_id: &str, input: &Value) -> Value {
 }
 
 /// A failed call keeps its error on the call (`output-error`), never `RUN_ERROR`.
-pub fn tool_result(tool_call_id: &str, content: &str, failed: bool, diff: Option<&str>) -> Value {
+pub fn tool_result(tool_call_id: &str, content: &str, failed: bool) -> Value {
     let mut chunk = json!({ "type": "TOOL_CALL_RESULT", "toolCallId": tool_call_id,
         "messageId": format!("{tool_call_id}-result"), "role": "tool", "content": content });
-    let mut metadata = Map::new();
     if failed {
-        metadata.insert("tanstack".into(), json!({ "state": "output-error" }));
-    }
-    if let Some(diff) = diff {
-        metadata.insert("assembly".into(), json!({ "diff": diff }));
-    }
-    if !metadata.is_empty() {
-        chunk["metadata"] = Value::Object(metadata);
+        chunk["metadata"] = json!({ "tanstack": { "state": "output-error" } });
     }
     chunk
 }
@@ -159,7 +153,16 @@ pub fn subagent_error(run_id: &str, message: &str) -> Value {
     json!({ "type": "SUBAGENT_ERROR", "subagentRunId": run_id, "message": message })
 }
 
-/// Everything AG-UI has no event for travels as `CUSTOM assembly.<kind>`.
+/// A transcript row AG-UI has no event for (a plan, a compaction, an error):
+/// an activity message of type `assembly.<kind>` carrying the native event.
+pub fn activity(message_id: &str, event: &AgentConversationEvent) -> Value {
+    let event = serde_json::to_value(event).unwrap_or_default();
+    let kind = event["payload"]["kind"].as_str().unwrap_or("event").to_string();
+    json!({ "type": "ACTIVITY_SNAPSHOT", "messageId": message_id, "activityType": format!("assembly.{kind}"),
+        "content": { "event": event } })
+}
+
+/// Other events AG-UI has no event for travel as `CUSTOM assembly.<kind>`.
 pub fn custom(name: &str, value: Value) -> Value {
     json!({ "type": "CUSTOM", "name": format!("assembly.{name}"), "value": value })
 }
