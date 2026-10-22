@@ -16,6 +16,7 @@
     "check:rust": "RUSTFLAGS=\"-D warnings\" cargo check --manifest-path src-tauri/Cargo.toml",
     "check:svelte": "svelte-kit sync && node --experimental-strip-types scripts/checkSvelteNext.ts",
     "test:commit-checks": "node --experimental-strip-types scripts/commitChecks.test.ts",
+    "test:measure": "node --experimental-strip-types scripts/measure.test.ts",
     "test:async-lifecycle": "node --experimental-strip-types scripts/scanSchedulers.ts",
     "test:agent-messages": "node --import ./scripts/svelteRuneTestSetup.ts --experimental-strip-types scripts/agentMessages.test.ts",
     "orch:event": "node scripts/orchestrationEvent.mjs",

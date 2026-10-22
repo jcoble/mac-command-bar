@@ -355,6 +355,27 @@ pub fn phys_footprint_bytes(_pid: u32) -> Option<u64> {
     None
 }
 
+/// A process's memory: its physical footprint on the Mac; on Linux, the web
+/// process's proportional set size, since it shares most of its pages with the
+/// other WebKit processes; otherwise its resident set size.
+pub fn process_footprint_bytes(pid: u32, name: &str, rss_bytes: u64) -> u64 {
+    phys_footprint_bytes(pid)
+        .or_else(|| {
+            // The kernel cuts process names to 15 bytes: `WebKitWebProcess` reads `WebKitWebProces`.
+            name.starts_with("WebKitWebProces")
+                .then(|| std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).ok())
+                .flatten()
+                .and_then(|rollup| smaps_field_bytes(&rollup, "Pss:"))
+        })
+        .unwrap_or(rss_bytes)
+}
+
+/// One `kB` field of `/proc/<pid>/smaps_rollup`, in bytes.
+fn smaps_field_bytes(rollup: &str, field: &str) -> Option<u64> {
+    let value = rollup.lines().find_map(|line| line.strip_prefix(field))?;
+    value.trim().strip_suffix("kB")?.trim().parse::<u64>().ok().map(|kb| kb * 1024)
+}
+
 pub fn scan_resource_snapshot(hints: &[ResourceOwnerHint], generation: u64) -> Result<ResourceSnapshot, String> {
     let ps = Command::new("ps")
         .args(PS_COMMAND_ARGS)
@@ -512,5 +533,20 @@ mod tests {
     #[test]
     fn an_unused_pid_reports_no_footprint() {
         assert_eq!(phys_footprint_bytes(u32::MAX), None);
+    }
+
+    /// On Linux the web process shares most of its pages with the other WebKit
+    /// processes, so it is measured by its proportional set size, not its RSS.
+    #[test]
+    fn the_linux_web_process_is_measured_by_its_proportional_set_size() {
+        let rollup = "55e5-7ffe ---p 00000000 00:00 0  [rollup]\nRss:   2168 kB\nPss:    191 kB\nPss_Anon:  80 kB\n";
+        assert_eq!(smaps_field_bytes(rollup, "Pss:"), Some(191 * 1024));
+        assert_eq!(smaps_field_bytes(rollup, "Private_Dirty:"), None);
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(process_footprint_bytes(std::process::id(), "mac-command-bar", 7), 7);
+            let measured = process_footprint_bytes(std::process::id(), "WebKitWebProces", u64::MAX);
+            assert!(measured > 0 && measured < u64::MAX, "the web process reads its own smaps_rollup");
+        }
     }
 }
