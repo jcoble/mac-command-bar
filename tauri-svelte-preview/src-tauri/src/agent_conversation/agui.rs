@@ -287,6 +287,12 @@ pub fn unregister_agui_stream(streams: State<'_, ProjectionStreams>, registratio
 }
 
 #[tauri::command]
+/// The chat view closed: its session is no longer projected. The session goes on.
+pub fn close_agui_view(streams: State<'_, ProjectionStreams>, owned_id: String) {
+    streams.with_agui_views(|views| views.close(&owned_id));
+}
+
+#[tauri::command]
 /// AG-UI's run request. It records the client's run id for the turn that
 /// follows and answers each `resume` entry through the same commands the
 /// approval card uses, local or remote. The prompt itself still goes out

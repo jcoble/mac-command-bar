@@ -331,6 +331,23 @@ fn a_closed_session_drops_its_view_and_child_agents_are_kept_per_turn() {
     assert!(script.views.views[THREAD].children.is_empty());
     script.send(Payload::Connection { state: ConversationConnectionState::Closed, native_session_id: None });
     assert!(!script.views.views.contains_key(THREAD));
+    // A view its user leaves stops projecting; the session goes on.
+    let mut script = Script::open();
+    script.views.close(THREAD);
+    assert!(script.send(turn(TurnState::Started)).is_empty());
+}
+
+#[test]
+fn output_sent_before_a_status_only_completion_is_kept() {
+    let mut script = Script::open();
+    script.send(turn(TurnState::Started));
+    let call = |state: ToolState, output: Option<&str>, diff: Option<&str>| Payload::Tool { item_id: "tool-1".into(), name: "Edit".into(), state,
+        summary: None, output: output.map(str::to_string), path: None, diff: diff.map(str::to_string) };
+    script.send(call(ToolState::Started, None, None));
+    assert!(script.send(call(ToolState::Updated, Some("Edited notes.txt"), Some("+hello"))).is_empty());
+    let done = script.send(call(ToolState::Completed, None, None));
+    assert_eq!(types(&done), ["TOOL_CALL_END", "TOOL_CALL_RESULT"]);
+    assert_eq!((&done[1]["content"], &done[1]["metadata"]["assembly"]["diff"]), (&json!("Edited notes.txt"), &json!("+hello")));
 }
 
 #[test]

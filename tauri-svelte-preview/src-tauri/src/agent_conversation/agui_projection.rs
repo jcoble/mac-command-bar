@@ -49,6 +49,15 @@ pub struct Opened {
     pub live: Vec<(u64, i64, Vec<Value>)>,
 }
 
+/// A call still open: its latest arguments, output and diff, as updates may
+/// carry each one only once.
+#[derive(Default)]
+struct OpenCall {
+    args: Map<String, Value>,
+    output: Option<String>,
+    diff: Option<String>,
+}
+
 #[derive(Default)]
 struct View {
     last_sequence: Option<i64>,
@@ -64,8 +73,7 @@ struct View {
     /// Text sent for each message still open, and what ended this turn.
     texts: HashMap<String, String>,
     ended: HashSet<String>,
-    /// Open tool calls and their latest arguments.
-    tools: HashMap<String, Map<String, Value>>,
+    tools: HashMap<String, OpenCall>,
     /// Child agents seen this turn, and whether each has finished.
     children: HashMap<String, bool>,
     last_text: Option<String>,
@@ -90,9 +98,14 @@ impl AguiProjector {
         }
         let chunks = view.project(event);
         if matches!(event.payload, Payload::Connection { state: ConversationConnectionState::Closed, .. }) {
-            self.views.remove(&event.owned_id);
+            self.close(&event.owned_id);
         }
         chunks
+    }
+
+    /// Stops projecting a session: its view closed, or the session did.
+    pub fn close(&mut self, owned_id: &str) {
+        self.views.remove(owned_id);
     }
 
     /// Holds the session's live events until `finish_open` has its snapshot.
@@ -401,23 +414,26 @@ impl View {
             return;
         }
         let parent = self.last_text.clone();
-        let args = self.tools.entry(id.to_string()).or_insert_with(|| {
+        let call = self.tools.entry(id.to_string()).or_insert_with(|| {
             out.push(agui::tool_start(id, name, parent.as_deref(), json!({ "assembly": { "sequence": sequence } })));
-            Map::new()
+            OpenCall::default()
         });
-        let first = args.is_empty();
+        let first = call.args.is_empty();
         for (key, value) in [("summary", summary), ("path", path)] {
             if let Some(value) = value {
-                args.insert(key.into(), json!(value));
+                call.args.insert(key.into(), json!(value));
             }
         }
-        if first && !args.is_empty() {
-            out.push(agui::tool_args(id, &Value::Object(args.clone())));
+        call.output = output.clone().or(call.output.take());
+        call.diff = diff.clone().or(call.diff.take());
+        if first && !call.args.is_empty() {
+            out.push(agui::tool_args(id, &Value::Object(call.args.clone())));
         }
         if matches!(state, ToolState::Completed | ToolState::Failed) {
-            out.push(agui::tool_end(id, &Value::Object(self.tools.remove(id).unwrap_or_default())));
-            let content = output.as_deref().or(summary.as_deref()).unwrap_or_default();
-            out.push(agui::tool_result(id, content, state == ToolState::Failed, diff.as_deref()));
+            let call = self.tools.remove(id).unwrap_or_default();
+            out.push(agui::tool_end(id, &Value::Object(call.args)));
+            let content = call.output.as_deref().or(summary.as_deref()).unwrap_or_default();
+            out.push(agui::tool_result(id, content, state == ToolState::Failed, call.diff.as_deref()));
             self.ended.insert(id.to_string());
         }
     }
@@ -485,9 +501,9 @@ impl View {
         let mut texts: Vec<String> = self.texts.drain().map(|(id, _)| id).collect();
         texts.sort();
         out.extend(texts.iter().map(|id| agui::text_end(id)));
-        let mut tools: Vec<(String, Map<String, Value>)> = self.tools.drain().collect();
+        let mut tools: Vec<(String, OpenCall)> = self.tools.drain().collect();
         tools.sort_by(|a, b| a.0.cmp(&b.0));
-        out.extend(tools.into_iter().map(|(id, args)| agui::tool_end(&id, &Value::Object(args))));
+        out.extend(tools.into_iter().map(|(id, call)| agui::tool_end(&id, &Value::Object(call.args))));
         let mut children: Vec<String> = self.children.drain().filter(|(_, finished)| !finished).map(|(id, _)| id).collect();
         children.sort();
         out.extend(children.iter().map(|id| agui::subagent_finished(id)));
