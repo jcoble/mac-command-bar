@@ -8,6 +8,8 @@
  * it. Either way the toggle switches the active file at any time.
  */
 
+import { parseRemoteWorkspacePath, remoteWorkspacePath } from '../../../../workspacePaths.ts';
+
 export type MarkdownView = 'rendered' | 'raw';
 
 /** Why the file was opened. */
@@ -166,14 +168,20 @@ export function markdownImageTarget(markdownPath: string, projectRoot: string | 
     // A malformed escape stays as written.
   }
   if (path.startsWith('/') || !projectRoot) return null;
-  const parts = markdownPath.split('/').slice(0, -1);
+  // A remote file and its project must be on the same machine; the folders are
+  // worked out on the machine's own paths, then the machine is put back.
+  const remoteDoc = parseRemoteWorkspacePath(markdownPath);
+  const remoteRoot = parseRemoteWorkspacePath(projectRoot);
+  if (remoteDoc?.profileId !== remoteRoot?.profileId) return null;
+  const parts = (remoteDoc?.path ?? markdownPath).split('/').slice(0, -1);
   for (const part of path.split('/')) {
     if (part === '..') parts.pop();
     else if (part && part !== '.') parts.push(part);
   }
   const file = `/${parts.filter(Boolean).join('/')}`;
-  const rootDir = `${projectRoot.replace(/\/+$/, '')}/`;
-  return file.startsWith(rootDir) ? { kind: 'file', path: file } : null;
+  const rootDir = `${(remoteRoot?.path ?? projectRoot).replace(/\/+$/, '')}/`;
+  if (!file.startsWith(rootDir)) return null;
+  return { kind: 'file', path: remoteDoc ? remoteWorkspacePath(remoteDoc.profileId, file) : file };
 }
 
 /** Raw HTML attributes that make the webview fetch an address on their own:
