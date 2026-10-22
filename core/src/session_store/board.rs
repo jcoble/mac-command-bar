@@ -279,19 +279,31 @@ impl SessionStore {
         serde_json::from_str(&json).map_err(|_|StoreError::message("could not read the board document"))
     }
 
-    /// Cards and questions an agent sent to the owner's phone after `after_ms`, oldest first: each with
-    /// its title, its text (the card's summary or note, or the question) and the name of the session it is from.
+    /// Cards and questions an agent sent to the owner's phone after `after_ms`, oldest first; `at` is when.
     pub fn board_notified_since(&self, after_ms: i64) -> Result<Vec<Value>> {
-        let json: String=self.lock()?.query_row("SELECT json_group_array(json(item) ORDER BY at) FROM (
-            SELECT c.notified_at_ms AS at, json_object('key',c.card_key,'title',c.title,'text',COALESCE(NULLIF(c.summary,''),c.agent_note),
-                'session_name',s.title,'notified_at_ms',c.notified_at_ms) AS item
-            FROM board_cards c LEFT JOIN sessions s ON s.owned_id=c.written_by WHERE c.notified_at_ms>?1
+        self.board_phone_items(("c.notified_at_ms","c.notified_at_ms>?1"), ("q.notified_at_ms","q.notified_at_ms>?1"), &[after_ms])
+    }
+
+    /// Needs-you cards (not snoozed at `now_ms`) and open questions posted after `after_ms` and at or
+    /// before `until_ms`, oldest first; `at` is when they were posted.
+    pub fn board_unanswered(&self, after_ms: i64, until_ms: i64, now_ms: i64) -> Result<Vec<Value>> {
+        self.board_phone_items(("c.updated_at_ms","c.state='needs_you' AND c.dropped_at_ms IS NULL AND c.updated_at_ms>?1
+                AND c.updated_at_ms<=?2 AND (c.snoozed_until_ms IS NULL OR c.snoozed_until_ms<=?3)"),
+            ("q.asked_at_ms","q.answered_at_ms IS NULL AND q.asked_at_ms>?1 AND q.asked_at_ms<=?2"), &[after_ms,until_ms,now_ms])
+    }
+
+    /// Board items for a phone push, each `(time column, filter)`: kind, key, title, text (what the owner must
+    /// do: the card's first step, else its summary or note, or the question), the posting session's name and at.
+    fn board_phone_items(&self, (card_at, cards): (&str, &str), (question_at, questions): (&str, &str), args: &[i64]) -> Result<Vec<Value>> {
+        let json: String=self.lock()?.query_row(&format!("SELECT json_group_array(json(item) ORDER BY at) FROM (
+            SELECT {card_at} AS at, json_object('kind','card','key',c.card_key,'title',c.title,
+                'text',COALESCE(json_extract(c.steps_json,'$[0]'),NULLIF(c.summary,''),c.agent_note),'session_name',s.title,'at',{card_at}) AS item
+            FROM board_cards c LEFT JOIN sessions s ON s.owned_id=c.written_by WHERE {cards}
             UNION ALL
-            SELECT q.notified_at_ms, json_object('key',q.question_key,'title',q.title,'text',q.body,
-                'session_name',s.title,'notified_at_ms',q.notified_at_ms)
-            FROM board_questions q LEFT JOIN sessions s ON s.owned_id=q.session_owned_id WHERE q.notified_at_ms>?1)",[after_ms],|r|r.get(0))
-            .map_err(|e|StoreError::sqlite("could not read the board items to send",e))?;
-        serde_json::from_str(&json).map_err(|_|StoreError::message("could not read the board items to send"))
+            SELECT {question_at}, json_object('kind','question','key',q.question_key,'title',q.title,'text',q.body,'session_name',s.title,'at',{question_at})
+            FROM board_questions q LEFT JOIN sessions s ON s.owned_id=q.session_owned_id WHERE {questions})"),rusqlite::params_from_iter(args),|r|r.get(0))
+            .map_err(|e|StoreError::sqlite("could not read the board items for the phone",e))?;
+        serde_json::from_str(&json).map_err(|_|StoreError::message("could not read the board items for the phone"))
     }
 
     pub fn board_count(&self, now_ms: i64) -> Result<Value> {

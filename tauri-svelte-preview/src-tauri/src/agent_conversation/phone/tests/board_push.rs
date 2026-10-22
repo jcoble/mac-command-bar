@@ -54,3 +54,21 @@ async fn notify_board_card_pushes_to_the_phone_once() {
     assert_eq!(messages.len(), 3, "{messages:?}");
     assert_eq!(messages[2]["message"]["notification"], json!({"title": "From snowy-coral · Merge?", "body": "PR #1 is green."}));
 }
+
+#[tokio::test]
+async fn desktop_notification_sends_no_phone_push() {
+    let (state, base) = phone_server().await;
+    let token = paired(&state, &base).await;
+    let set = client(reqwest::Method::POST, &base, "/push-token", &token).json(&json!({"fcmToken": "fcm-1"})).send().await.unwrap();
+    assert_eq!(set.status(), reqwest::StatusCode::NO_CONTENT);
+    let fake = fake_fcm(200, "{}").await;
+    super::super::spawn_push(state.clone(), test_sender(&fake));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // What the desktop notifies about: a card entering Needs you and a new question, both without notify.
+    let store = state.manager.store();
+    store.board_update("card", "lead", true, &json!({"title": "Merge?", "state": "needs_you", "steps": ["Approve"]}), super::super::now_ms()).unwrap();
+    store.board_question_update("q", "lead", true, &json!({"title": "Ship?", "question": "Ship it?"}), super::super::now_ms()).unwrap();
+    mcb_core::broker::messages_changed();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(fake.messages.lock().unwrap().is_empty(), "a desktop notification reached the phone");
+}

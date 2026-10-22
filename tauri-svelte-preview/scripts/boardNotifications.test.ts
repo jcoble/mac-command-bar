@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { boardNotifications } from '../src/lib/shell/board/boardNotifications.ts';
 import type { BoardCard, BoardQuestion, MachineBoard } from '../src/lib/shell/board/boardSource.ts';
 
-const card = (key: string, state: BoardCard['state'], summary = 'Merge PR #1') => ({ key, title: `Card ${key}`, state, summary }) as BoardCard;
+const card = (key: string, state: BoardCard['state'], summary = 'Merge PR #1', steps: string[] = []) =>
+  ({ key, title: `Card ${key}`, state, summary, steps, note: null }) as BoardCard;
 const question = (id: number, askedAtMs: number, answer: string | null = null) =>
   ({ id, title: `Question ${id}`, body: 'Ship it?', asked_at_ms: askedAtMs, answer, answered_at_ms: answer ? askedAtMs + 1 : null }) as BoardQuestion;
 const board = (cards: BoardCard[], questions: BoardQuestion[] = [], machine = 'mac') =>
@@ -35,7 +36,9 @@ const board = (cards: BoardCard[], questions: BoardQuestion[] = [], machine = 'm
   assert.deepEqual(boardNotifications([board([])], [board([card('a', 'needs_you')], [], 'workbox')]), []);
 }
 
-{ // the_body_is_at_most_180_characters
-  const [sent] = boardNotifications([board([])], [board([card('a', 'needs_you', 'x'.repeat(400))])]);
-  assert.equal(sent.body.length, 180);
+{ // notification_body_is_what_is_needed: the first step, else the question or summary, at most 120 characters
+  const [steps] = boardNotifications([board([])], [board([card('a', 'needs_you', 'Context', ['Approve PR #1', 'Merge'])])]);
+  assert.equal(steps.body, 'Approve PR #1');
+  const [long] = boardNotifications([board([])], [board([card('a', 'needs_you', 'x'.repeat(400))])]);
+  assert.equal(long.body.length, 120);
 }

@@ -5,10 +5,17 @@ use serde_json::{json, Value};
 use std::sync::{Mutex, PoisonError};
 use tokio::sync::broadcast::{error::RecvError, Receiver};
 
-/// When `notify` sent something to the phone since the owner last answered a board question.
+/// When `notify` or the 30-minute reminder sent something to the phone since the owner last answered a board question.
 static NOTIFIED: Mutex<Vec<i64>> = Mutex::new(Vec::new());
 const PHONE_LIMIT: &str = "phone limit reached: the owner hasn't answered; 3 in 30 minutes, 5 in an hour";
 const NOT_ORCHESTRATOR: &str = "only the main orchestrator can message the owner's phone; the board has notified the desktop";
+
+/// Takes one phone push for the 30-minute reminder, unless the limit is reached.
+pub(crate) fn phone_slot(now: i64) -> bool {
+    let free = !phone_limited(now);
+    if free { NOTIFIED.lock().unwrap_or_else(PoisonError::into_inner).push(now); }
+    free
+}
 
 /// The phone gets at most 3 pushes in any 30 minutes and 5 in any hour until the owner answers.
 fn phone_limited(now: i64) -> bool {
@@ -17,7 +24,7 @@ fn phone_limited(now: i64) -> bool {
     sent.len() >= 5 || sent.iter().filter(|at| now - **at < 1_800_000).count() >= 3
 }
 
-pub(super) const DESCRIPTION: &str = "Create or update a card on the owner's Build board. The session the owner gave a task to keeps one card for it; the main orchestrator may update any card. Helpers cannot post, and workflow workers should not: their parent's card or their run already shows. Key: the task key if there is one, otherwise a short name no other session would pick. Post when you start, update when the state changes, and use needs_you only when the owner must act, with steps saying what to do. A needs_you card waits on the board as a small on-hold card, and the board notifies the owner's desktop; only the main orchestrator can pass notify to send a card or question to the owner's phone. Record every question you ask the owner before you ask it, in the same turn: pass question (the explanation, with options, your recommendation and why, and PR, task and proof links), title and recommended. The reply gives its number n: start your chat question with Q<n>, since the owner's answer arrives as 'Q<n>: …'. When it is answered anywhere, call again with the same key and answer. To ask it again, call with the same key and a new question. Approvals and workflow pauses already show.";
+pub(super) const DESCRIPTION: &str = "Create or update a card on the owner's Build board. The session the owner gave a task to keeps one card for it; the main orchestrator may update any card. Helpers cannot post, and workflow workers should not: their parent's card or their run already shows. Key: the task key if there is one, otherwise a short name no other session would pick. Post when you start, update when the state changes, and use needs_you only when the owner must act, with steps saying what to do. A needs_you card waits on the board as a small on-hold card, and the board notifies the owner's desktop; only the main orchestrator can pass notify to send a card or question to the owner's phone. Record every question you ask the owner before you ask it, in the same turn: pass question (the explanation, with options, your recommendation and why, and PR, task and proof links), title and recommended. The reply gives its number n: start your chat question with Q<n>, since the owner's answer arrives as 'Q<n>: …'. When it is answered anywhere, call again with the same key and answer. To ask it again, call with the same key and a new question. steps[0] is what the owner sees in the notification: write it as the one thing needed. Approvals and workflow pauses already show.";
 
 /// `board_update`'s arguments; `update` reads them.
 #[derive(JsonSchema)]
