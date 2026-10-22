@@ -241,7 +241,7 @@ fn check_lines(cwd: &str, field: &str, entries: &[String]) -> Result<(), Workflo
 }
 
 /// The checks against the checkout. A build's commits must be on the branch and new since the step started.
-fn check_evidence(run: &WorkflowRunRecord, node_id: &str, contract: WorkflowOutputContract, value: &Value) -> Result<(), WorkflowError> {
+pub(super) fn check_evidence(run: &WorkflowRunRecord, node_id: &str, contract: WorkflowOutputContract, value: &Value) -> Result<(), WorkflowError> {
     let cwd = run.input_snapshot["cwd"].as_str().unwrap_or_default();
     match contract {
         WorkflowOutputContract::ImplementationReceipt => {

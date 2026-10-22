@@ -21,6 +21,11 @@ fn failure_code(run: &WorkflowRunRecord, id: &str) -> Option<String> {
     step_of(run, id).failure.as_ref().map(|failure| failure.code.clone())
 }
 fn pass() -> Value { json!({"verdict":"pass","findings":[]}) }
+/// A build report naming the commit at HEAD.
+fn built_with(repo: &RunRepo) -> Value {
+    let head = std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&repo.0).output().unwrap();
+    json!({"commits":[String::from_utf8_lossy(&head.stdout).trim()],"tests_added":["a.rs"],"summary":"Built."})
+}
 
 #[test]
 fn a_session_still_calling_tools_after_finish_is_cancelled() {
@@ -111,7 +116,9 @@ fn a_review_step_rewriting_a_file_the_build_left_fails_changed_code() {
     let engine = engine(Arc::new(FakeRuntime::default()));
     let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
     std::fs::write(repo.0.join("draft.txt"), "the build's version").unwrap();
-    end_turn(&engine, &run.id, "build", &[built()]);
+    repo.git(&["add", "draft.txt"]);
+    repo.git(&["-c", "user.name=Test", "-c", "user.email=test@test", "commit", "-m", "the draft"]);
+    end_turn(&engine, &run.id, "build", &[built_with(&repo)]);
     std::fs::write(repo.0.join("draft.txt"), "the reviewer's version").unwrap();
     let ended = end_turn(&engine, &run.id, "review", &[pass()]);
     assert_eq!(failure_code(&ended, "review").as_deref(), Some("changed-code"));
@@ -123,7 +130,7 @@ fn a_build_step_may_commit() {
     let engine = engine(Arc::new(FakeRuntime::default()));
     let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
     repo.git(&["-c", "user.name=Test", "-c", "user.email=test@test", "commit", "--allow-empty", "-m", "the work"]);
-    let reviewing = end_turn(&engine, &run.id, "build", &[built()]);
+    let reviewing = end_turn(&engine, &run.id, "build", &[built_with(&repo)]);
     assert_eq!(step_of(&reviewing, "build").state, WorkflowNodeState::Completed);
     let ended = end_turn(&engine, &run.id, "review", &[pass()]);
     assert_eq!(step_of(&ended, "review").state, WorkflowNodeState::Completed);

@@ -102,6 +102,20 @@ fn a_turn_that_ends_without_a_report_fails_no_report_after_one_reminder() {
 }
 
 #[test]
+fn a_build_that_changes_the_checkout_after_its_report_is_checked_again() {
+    let repo = RunRepo::new();
+    let engine = run_engine(Arc::new(FakeRuntime::default()));
+    let endpoint = reporter(&engine);
+    let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
+    report(&engine, &endpoint, &run.id, "build", built()).unwrap();
+    std::fs::write(repo.0.join("stray.txt"), "left behind").unwrap();
+    let reminded = end_turn(&engine, &run.id, "build", &[]);
+    assert_eq!(step_of(&reminded, "build").state, WorkflowNodeState::Running);
+    let failed = end_turn(&engine, &run.id, "build", &[]);
+    assert_eq!(step_of(&failed, "build").failure.as_ref().unwrap().code, "no-report");
+}
+
+#[test]
 fn a_spec_without_an_edge_item_is_rejected() {
     let repo = RunRepo::new();
     let engine = run_engine(Arc::new(FakeRuntime::default()));

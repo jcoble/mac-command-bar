@@ -1191,9 +1191,12 @@ impl WorkflowEngine {
         if changed_code(&run, &node_id) {
             return self.fail_agent_node(&run_id, &node_id, "changed-code", CHANGED_CODE, &idempotency_key).await.map(Some);
         }
-        // Reports are checked when report_result records them; a later one replaces an earlier one.
+        // Reports are checked when report_result records them. The last one is checked against the checkout again here,
+        // in case it changed since; report_result refuses any report from a step whose starting commit was not recorded.
         let reports = self.store.review_reports(&run.nodes[index].id).map_err(|error| WorkflowError::Ledger(error.to_string()))?;
-        let Some(mut output) = reports.last().and_then(|report| serde_json::from_str::<Value>(report).ok()) else {
+        let Some(mut output) = reports.last().and_then(|report| serde_json::from_str::<Value>(report).ok())
+            .filter(|output| run.input_snapshot["heads"][&node_id].is_null()
+                || receipts::check_evidence(&run, &node_id, run.nodes[index].output_contract, output).is_ok()) else {
             return self.remind_or_fail(&run_id, &node_id, &idempotency_key).await.map(Some);
         };
         if let Some(target) = definition.step["review"]["of"].as_str() {
