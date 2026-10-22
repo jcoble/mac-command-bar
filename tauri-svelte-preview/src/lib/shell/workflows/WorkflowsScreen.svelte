@@ -71,7 +71,7 @@
   let now = $state(Date.now());
   /** Usage rows of every run, for the board's costs; read when the board shows. */
   let boardUsage = $state<WorkflowUsageRow[]>([]);
-  /** The open run's usage rows for its Cost tab; null while reading. */
+  /** The open run's usage rows for its Cost tab and step Evidence; null while reading. */
   let runUsage = $state<WorkflowUsageRow[] | null>(null);
   const openRun = $derived(runs.find((run) => run.id === openRunId) ?? null);
   /** The open run's slices, when it is a project with child runs. */
@@ -142,9 +142,9 @@
     }
   }
 
-  // The Cost tab reads the open run's usage when it opens and whenever a new record of the run arrives.
+  // The open run's usage is read when it opens and whenever a new record of the run arrives.
   $effect(() => {
-    const run = runTab === 'cost' ? openRun : null;
+    const run = openRun;
     if (!run) return;
     const controller = new AbortController();
     void readRunUsage(run.id, controller.signal);
@@ -325,6 +325,7 @@
           {now}
           {busy}
           local={!machine}
+          usage={runUsage}
           timeline={timeline?.runId === run.id ? timeline : { items: [], loading: true, error: '' }}
           onAnswer={(decision) => answer(run, step.nodeId, decision)}
           onApprove={() => void control('Approve', () => approveWorkflowGate({ runId: run.id, nodeId: step.nodeId, approval: { approved: true }, idempotencyKey: key('approve') }, machine))}
@@ -336,7 +337,7 @@
     {:else if runTab === 'project' && openProject}
       <WorkflowProject {run} progress={openProject} {costOf} onOpen={openRunPage} />
     {:else}
-      <WorkflowCost {run} rows={runUsage} {now} />
+      <WorkflowCost {run} rows={runUsage} {now} timeline={timeline?.runId === run.id ? timeline.items : []} />
     {/if}
   {:else if loaded && runs.length === 0 && !error}
     <p class="text-[13px] text-muted-foreground">No workflow runs yet.</p>
