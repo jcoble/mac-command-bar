@@ -490,6 +490,27 @@ impl MessagingEndpoint {
                 let run = engine.cancel(run_id, &format!("agent:{owned_id}:stop")).await.map_err(workflow_error)?;
                 Ok(text_json(json!({"run_id":run.id,"state":run.state})))
             }
+            Some("decide_step") => {
+                // Only the session the owner crowned on this machine; helpers, workers and other sessions are refused.
+                if store.main_orchestrator().map_err(|error| error.to_string())?.map(|(id, _)| id) != Some(owned_id.clone()) {
+                    return Err("only the main orchestrator can decide a paused step".into());
+                }
+                let engine = self.workflow()?;
+                let args = &tool_call["arguments"];
+                let run_id = args["run_id"].as_str().ok_or("run_id must be a run id")?;
+                let step_id = args["step"].as_str().ok_or("step must be a step id")?;
+                let run = engine.get_run(run_id).map_err(workflow_error)?;
+                let step = run.nodes.iter().find(|node| node.node_id == step_id).ok_or("Unknown step")?;
+                // Only a review's own decision points are the orchestrator's; gates, restart recovery and timeouts stay the owner's.
+                let is_review = run.definition.nodes.iter().any(|node| node.id == step_id && node.step.get("review").is_some());
+                if !is_review || !step.failure.as_ref().is_some_and(|failure| matches!(failure.code.as_str(), "loop-stopped" | "review-report")) {
+                    return Err("only a review waiting at its round limit or without a report can be decided here; post anything else (a gate, failed checks, a timeout, a restart check) on the Build Board for the owner".into());
+                }
+                let decision = args["decision"].as_str().unwrap_or_default();
+                let run = engine.answer_pause(run_id, step_id, decision, None, "orchestrator", args["why"].as_str(),
+                    &format!("orchestrator:{step_id}:{}:{decision}", step.attempt), None).await.map_err(workflow_error)?;
+                Ok(text_json(json!({"run_id":run.id,"state":run.state})))
+            }
             _ => Err("Tool not allowed".into()),
         }
     }
@@ -526,6 +547,10 @@ impl MessagingEndpoint {
                  "inputSchema":{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"]}},
                 {"name":"stop_workflow_run","description":"Stop a workflow run you started.",
                  "inputSchema":{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"]}},
+                {"name":"decide_step","description":"Main orchestrator only: decide a review step that is waiting (at its round limit, or because its turn gave no report) when its findings and the task spec give enough to decide. accept completes it as it is, another-round redoes it, stop ends the run. why, one or two sentences, is recorded in the run for the owner. Gates, and anything that needs the owner's judgment (scope, a product choice, risk), stay the owner's: post those on the Build Board and send the owner a phone notification.",
+                 "inputSchema":{"type":"object","properties":{"run_id":{"type":"string"},"step":{"type":"string"},
+                     "decision":{"type":"string","enum":["accept","another-round","stop"]},"why":{"type":"string"}},
+                     "required":["run_id","step","decision","why"]}},
                 {"name":"report_review","description":"Workflow review steps only: a verdict must be recorded once; retry a rejected or failed call. Use pass with no findings, or fail with each finding.",
                  "inputSchema":{"type":"object","properties":{"verdict":{"type":"string","enum":["pass","fail"]},
                      "findings":{"type":"array","items":{"type":"string"}}},"required":["verdict","findings"]}},

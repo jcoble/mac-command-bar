@@ -1714,7 +1714,7 @@ mod tests {
         assert_eq!(again.json::<Value>().await.unwrap(), json!({"error": "stale"}));
         // The engine takes an answer only from the owner, and recorded this one once.
         let run = state.workflow.get_run(&run_id).unwrap();
-        assert_eq!(run.input_snapshot["answers"], json!([{"step": "checks", "decision": "accept", "reply": null}]));
+        assert_eq!(run.input_snapshot["answers"], json!([{"step": "checks", "decision": "accept", "reply": null, "by": "owner", "why": null}]));
         assert_eq!(serde_json::to_value(run.state).unwrap(), "completed");
     }
 

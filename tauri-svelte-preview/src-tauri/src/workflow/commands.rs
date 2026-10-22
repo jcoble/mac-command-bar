@@ -88,7 +88,7 @@ pub(crate) async fn answer_workflow_pause(
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
     let run = engine
-        .answer_pause(&run_id, &node_id, &decision, reply, "owner", &idempotency_key, None)
+        .answer_pause(&run_id, &node_id, &decision, reply, "owner", None, &idempotency_key, None)
         .await
         .map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);
