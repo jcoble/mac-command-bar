@@ -12,11 +12,14 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::Router;
 use super::otel_store::{Lookups, OtelStore, RETENTION_DAYS};
+use crate::agent_conversation::manager::AgentRuntimeManager;
+use crate::agent_conversation::providers::process::SidecarEnvironment;
+use crate::workflow::WorkflowEngine;
 use serde_json::{Map, Value};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Records waiting for the writer. A record is a few hundred bytes to a few
 /// kilobytes, so a full queue holds a few megabytes at most.
@@ -70,6 +73,46 @@ impl Inbox {
             }
         }
     }
+}
+
+/// The receiver's address while it runs; agent launches export to it.
+static ENDPOINT: OnceLock<String> = OnceLock::new();
+
+/// Starts the receiver for the app. Rows are tied to live sessions through the
+/// agent manager and to workflow steps through the engine.
+pub fn start(app: &tauri::AppHandle, runtime: AgentRuntimeManager, workflow: WorkflowEngine) {
+    let lookups = Lookups {
+        owned_for_session: Box::new(move |native_session_id| runtime.owned_id_for_native_session(native_session_id)),
+        step_for_owned: Box::new(move |owned_id| workflow.list_runs().ok()?.into_iter().find_map(|run| {
+            run.nodes.iter().find(|node| node.owned_id == owned_id).map(|node| (run.id.clone(), node.id.clone()))
+        })),
+    };
+    match super::usage_db_path(app).and_then(|path| serve(&path, lookups)) {
+        Ok(endpoint) => {
+            let _ = ENDPOINT.set(endpoint);
+        }
+        Err(error) => crate::debug_log::stderr_log!("Telemetry receiver is off: {error}"),
+    }
+}
+
+/// A Claude Code launch, pointed at the receiver when it runs. Claude Code
+/// exports through `claude-agent-acp` from these variables alone
+/// (spike-otel: same records directly and through the adapter).
+pub fn claude_telemetry(environment: SidecarEnvironment) -> SidecarEnvironment {
+    match ENDPOINT.get() {
+        Some(endpoint) => with_telemetry(environment, endpoint),
+        None => environment,
+    }
+}
+
+fn with_telemetry(environment: SidecarEnvironment, endpoint: &str) -> SidecarEnvironment {
+    environment.set("CLAUDE_CODE_ENABLE_TELEMETRY", "1")
+        .set("OTEL_LOGS_EXPORTER", "otlp")
+        .set("OTEL_METRICS_EXPORTER", "otlp")
+        .set("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json")
+        .set("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
+        .set("OTEL_LOGS_EXPORT_INTERVAL", "2000")
+        .set("OTEL_METRIC_EXPORT_INTERVAL", "10000")
 }
 
 /// Deletes rows past retention, then starts the writer thread and the
@@ -357,6 +400,26 @@ mod tests {
         let (url, records, _) = serve(16).await;
         assert_eq!(post(&url, "/v1/logs", "application/x-protobuf", &claude_logs()).await, 415);
         assert!(records.try_recv().is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_claude_launch_exports_logs_and_metrics_to_the_receiver() {
+        use crate::agent_conversation::protocol::{AgentProviderManifest, ProviderSource, ProviderTransport};
+        use crate::agent_conversation::providers::process::{SidecarEnvironment, SidecarProcess};
+        let names = ["CLAUDE_CODE_ENABLE_TELEMETRY", "OTEL_LOGS_EXPORTER", "OTEL_METRICS_EXPORTER", "OTEL_EXPORTER_OTLP_PROTOCOL",
+            "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_LOGS_EXPORT_INTERVAL", "OTEL_METRIC_EXPORT_INTERVAL"];
+        let script = format!("printf '[%s]\\n' \"{}\"", names.map(|name| format!("\\\"${name}\\\"")).join(","));
+        let manifest = AgentProviderManifest {
+            id: "claude-agent-acp".into(), display_name: "Environment fixture".into(), transport: ProviderTransport::AcpStdio,
+            executable: "/bin/sh".into(), args: vec!["-c".into(), script], version: "1".into(),
+            content_hash: "0".repeat(64), trusted_source: ProviderSource::Bundled,
+        };
+        let environment = with_telemetry(SidecarEnvironment::default(), "http://127.0.0.1:4318");
+        let process = SidecarProcess::spawn_with_environment(&manifest, &std::env::temp_dir(), "owned-otel", &environment).unwrap();
+        let (mut reader, _writer, mut handle) = process.split();
+        let seen = reader.next_json().await.unwrap();
+        handle.stop().await;
+        assert_eq!(seen, json!(["1", "otlp", "otlp", "http/json", "http://127.0.0.1:4318", "2000", "10000"]));
     }
 
     #[test]

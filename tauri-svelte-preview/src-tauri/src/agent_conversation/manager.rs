@@ -1,4 +1,4 @@
-#[path = "session_project.rs"] pub mod session_project; mod helper_close;
+#[path = "session_project.rs"] pub mod session_project; mod helper_close; mod otel_session;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -7892,7 +7892,7 @@ fn session_spawn_environment(provider: AgentConversationProvider) -> SidecarEnvi
     if provider != AgentConversationProvider::Claude {
         return SidecarEnvironment::default();
     }
-    SidecarEnvironment::default().remove(MAX_THINKING_TOKENS_ENV)
+    crate::usage_history::otel::claude_telemetry(SidecarEnvironment::default().remove(MAX_THINKING_TOKENS_ENV))
 }
 
 fn validate_conversation_config_update(

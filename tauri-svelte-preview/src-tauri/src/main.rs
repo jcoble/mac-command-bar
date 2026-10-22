@@ -3407,8 +3407,7 @@ fn main() {
                 agent_conversation::providers::ProviderRegistry::bundled_from_environment_at(Some(
                     &app_data_dir,
                 ))
-                .map_err(|error| { format!("Packaged ACP adapter configuration is invalid: {error}")
-                })?,
+                .map_err(|error| format!("Packaged ACP adapter configuration is invalid: {error}"))?,
                 &session_db_path,
             )?;
             agent_runtime.start_closing_finished_helpers();
@@ -3425,6 +3424,7 @@ fn main() {
             let workflow_store = agent_runtime.store_handle();
             let remote_session_store = Arc::clone(&workflow_store);
             let workflow_engine = WorkflowEngine::managed(agent_runtime.clone(), workflow_store);
+            usage_history::otel::start(app.handle(), agent_runtime.clone(), workflow_engine.clone());
             let recovered_runs = workflow_engine.recover_after_restart().map_err(|error| error.to_string())?;
             let recovery_engine = workflow_engine.clone();
             tauri::async_runtime::spawn(async move {
