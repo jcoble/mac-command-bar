@@ -50,7 +50,7 @@
     "tauri-svelte-preview/src/lib/server/localSourceFs.ts": 2474,
     "tauri-svelte-preview/src/lib/shell/browser/browserModel.ts": 988,
     "tauri-svelte-preview/src/lib/shell/files/components/EditorPanel.svelte": 2162,
-    "tauri-svelte-preview/src/lib/shell/settings/SettingsDialog.svelte": 1197,
+    "tauri-svelte-preview/src/lib/shell/settings/SettingsDialog.svelte": 1193,
     "tauri-svelte-preview/src/lib/shell/components/WorktreeAgentRow.svelte": 660,
     "tauri-svelte-preview/src/lib/shell/git/components/GitHistoryView.svelte": 884,
     "tauri-svelte-preview/src/lib/shell/git/components/MultiFileDiff.svelte": 678,
