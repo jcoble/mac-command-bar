@@ -171,6 +171,26 @@ Assembly exists because similar tools are slow and heavy. Every change is judged
 
 Measure memory in Activity Monitor, because the Web Inspector inflates it. One measured checkpoint is in [the September reliability pass](docs/reports/2026-09-13-assembly-reliability-hardening.html).
 
+### Capture macOS memory footprints
+
+With the app running, capture its physical memory footprint and the running WebKit processes:
+
+```sh
+bash scripts/capture-footprint.sh
+```
+
+The script prints a unique capture folder under `~/Workbox/to-box/`. It saves `app-<pid>.txt` and one `webkit-<pid>.txt` per helper, including standard error. Repeated runs use separate folders. **The WebKit lookup is system-wide:** it includes helpers belonging to other apps, not just Assembly.
+
+To choose the output directory and a different app process pattern:
+
+```sh
+bash scripts/capture-footprint.sh "$HOME/Workbox/to-box/idle14" 'mac-command-bar-webview-preview'
+```
+
+The pattern is a regular expression for the executable name, optionally preceded by its path; the lookup is anchored so the script cannot match its own arguments. The oldest matching app process is selected with `pgrep -of`, without a `head` pipeline. If no app matches, the script exits 1 with a clear message before creating output or calling `footprint`; it never invokes `footprint -p` with a missing argument. No WebKit matches is allowed. Lookup errors and failed captures return nonzero; a process can still exit after lookup, so inspect the saved diagnostic if a capture fails.
+
+Run the focused regression tests with `node --experimental-strip-types scripts/capture-footprint.test.ts`. These use stub processes and do not profile or change a running app.
+
 ## Development
 
 ### Requirements
