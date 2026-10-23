@@ -3,14 +3,16 @@
   one SVG layer under them for the arrows. A step that sends work back (a
   review, or a check with `on_fail`) draws a loop arrow over the boxes with its
   round. Boxes are plain HTML; a state change repaints only its box. Nothing
-  animates: a running step is a static ring with its elapsed time.
+  animates: a running step is a static ring with its elapsed time. The
+  selected step (the current one, unless the owner picked another) is scrolled into view.
 -->
 <script lang="ts">
   import Maximize2 from '@lucide/svelte/icons/maximize-2';
+  import { untrack } from 'svelte';
 
   import { closeupKind } from '../workflowCloseup.ts';
   import { layoutWorkflowMap } from '../workflowMapLayout.ts';
-  import { shortDuration, stepGlyph } from '../workflowBoard.ts';
+  import { blockedBy, loopLabel, shortDuration, stepGlyph } from '../workflowBoard.ts';
   import { workflowErrorText, type WorkflowNodeRunRecord, type WorkflowRunRecord } from '../workflowTypes.ts';
   import StepGlyphIcon from './StepGlyphIcon.svelte';
 
@@ -32,7 +34,19 @@
   }])));
   const width = $derived(Math.max(1, layout.columns * (BOX_W + GAP_X) - GAP_X));
   const height = $derived(TOP + Math.max(1, layout.rows) * (BOX_H + GAP_Y));
-  const maxRounds = $derived(Number(run.definition.limits?.max_rounds ?? 0) || null);
+  let scroller = $state<HTMLDivElement>();
+
+  // When the selected step changes, scroll it to the middle if it is out of view.
+  $effect(() => {
+    const id = selectedId;
+    untrack(() => {
+      const at = id ? place.get(id) : undefined;
+      if (!scroller || !at) return;
+      const fit = (start: number, size: number, view: number, offset: number): number =>
+        start < offset || start + size > offset + view ? start - (view - size) / 2 : offset;
+      scroller.scrollTo(fit(at.x, BOX_W, scroller.clientWidth, scroller.scrollLeft), fit(at.y, BOX_H, scroller.clientHeight, scroller.scrollTop));
+    });
+  });
 
   const nodeOf = (id: string): WorkflowNodeRunRecord | undefined => run.nodes.find((node) => node.nodeId === id);
 
@@ -43,7 +57,10 @@
     return [`M${x1} ${y1} C${x1 + GAP_X / 2} ${y1} ${x2 - GAP_X / 2} ${y2} ${x2} ${y2}`];
   })));
 
-  /** A step that sends work back draws an arc from its top to its target's top, labelled with its round. */
+  /**
+   * A step that sends work back draws an arc to its target, labelled with its round. The arc leaves
+   * and lands at the higher of the two rows' tops, so it never runs behind a box above it.
+   */
   const loops = $derived.by(() => {
     // Loops back to the same step stack their arcs and labels instead of drawing over each other.
     const perTarget = new Map<string, number>();
@@ -53,15 +70,12 @@
     const from = place.get(definition.id), to = target ? place.get(target) : undefined;
     if (!from || !to || !target) return [];
     const x1 = from.x + BOX_W / 2, x2 = to.x + BOX_W / 2, top = Math.min(from.y, to.y);
-    const node = nodeOf(definition.id);
-    const label = node?.startedAtMs
-      ? `round ${node.attempt}${maxRounds && node.attempt <= maxRounds ? ` of ${maxRounds}` : ''}`
-      : `sends back to ${target}`;
+    const label = loopLabel(run, definition.id, target);
     // Wider loops arc higher, so their labels sit at different heights.
     const stacked = perTarget.get(target) ?? 0;
     perTarget.set(target, stacked + 1);
     const rise = Math.min(TOP * 1.7, 40 + Math.abs(x2 - x1) * 0.2 + stacked * 36);
-    return [{ id: definition.id, path: `M${x1} ${from.y} Q${(x1 + x2) / 2} ${top - rise} ${x2} ${to.y}`, label, x: (x1 + x2) / 2, y: top - rise / 2 - 4 }];
+    return [{ id: definition.id, path: `M${x1} ${top} Q${(x1 + x2) / 2} ${top - rise} ${x2} ${top}`, label, x: (x1 + x2) / 2, y: top - rise / 2 - 4 }];
     });
   });
 
@@ -73,8 +87,9 @@
     return [who, attempt].filter(Boolean).join(' · ');
   }
 
-  function detail(node: WorkflowNodeRunRecord | undefined): string {
+  function detail(node: WorkflowNodeRunRecord | undefined, blocker: WorkflowNodeRunRecord | null): string {
     if (!node) return '';
+    if (blocker) return `Blocked by ${run.definition.nodes.find((item) => item.id === blocker.nodeId)?.title || blocker.nodeId}`;
     if (node.failure) return workflowErrorText(node.failure.message);
     if (!node.startedAtMs) return '';
     const end = node.finishedAtMs ?? (node.state === 'running' || node.state === 'starting' ? now : null);
@@ -86,7 +101,7 @@
   };
 </script>
 
-<div class="map-scroll" data-testid="workflow-map">
+<div class="map-scroll" data-testid="workflow-map" bind:this={scroller}>
   <div class="relative" style:width={`${width}px`} style:height={`${height}px`}>
     <svg class="pointer-events-none absolute inset-0 overflow-visible text-muted-foreground" {width} {height} aria-hidden="true">
       <defs>
@@ -105,13 +120,16 @@
     {#each run.definition.nodes as definition (definition.id)}
       {@const at = place.get(definition.id)}
       {@const node = nodeOf(definition.id)}
-      {@const glyph = node ? stepGlyph(node) : 'waiting'}
+      {@const blocker = blockedBy(run, definition.id)}
+      {@const glyph = blocker ? 'blocked' : node ? stepGlyph(node) : 'waiting'}
       {@const closeup = closeupKind(run, definition.id)}
       {#if at}
         <button
           type="button"
-          class="absolute flex flex-col gap-1 overflow-hidden rounded-xl p-3 text-left shadow-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 {selectedId === definition.id ? 'bg-accent' : (FILL[glyph] ?? 'bg-card')} hover:bg-accent/80"
-          class:opacity-60={glyph === 'skipped' || glyph === 'waiting'}
+          class="absolute flex flex-col gap-1 overflow-hidden rounded-xl p-3 text-left shadow-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 {FILL[glyph] ?? (selectedId === definition.id ? 'bg-accent' : 'bg-card')} hover:bg-accent/80"
+          class:opacity-60={glyph === 'skipped' || glyph === 'waiting' || glyph === 'blocked'}
+          class:ring-2={selectedId === definition.id}
+          class:ring-ring={selectedId === definition.id}
           style:left={`${at.x}px`} style:top={`${at.y}px`} style:width={`${BOX_W}px`} style:height={`${BOX_H}px`}
           aria-pressed={selectedId === definition.id}
           onclick={() => onSelect(definition.id)}
@@ -120,7 +138,7 @@
             <StepGlyphIcon {glyph} /><span class="truncate">{definition.title}</span>
           </span>
           <span class="truncate text-[13px] text-muted-foreground">{subtitle(definition.step, node)}</span>
-          <span class="line-clamp-2 text-[13px] text-muted-foreground tabular-nums [overflow-wrap:anywhere]">{detail(node)}</span>
+          <span class="line-clamp-2 text-[13px] text-muted-foreground tabular-nums [overflow-wrap:anywhere]">{detail(node, blocker)}</span>
         </button>
         {#if closeup}
           <!-- A sibling of the box, not inside it: a button cannot hold another button. -->

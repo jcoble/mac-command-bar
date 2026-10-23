@@ -1,5 +1,6 @@
 <!-- One step's state as a glyph, the same on the Board and the Map. Static: a running step is a plain ring. -->
 <script lang="ts">
+  import Ban from '@lucide/svelte/icons/ban';
   import Circle from '@lucide/svelte/icons/circle';
   import CircleCheck from '@lucide/svelte/icons/circle-check';
   import CircleDashed from '@lucide/svelte/icons/circle-dashed';
@@ -21,11 +22,12 @@
     stopped: [CircleStop, 'text-muted-foreground'],
     'needs-you': [CircleHelp, 'text-[var(--color-attention)]'],
     waiting: [CircleDashed, 'text-muted-foreground'],
-    skipped: [CircleMinus, 'text-muted-foreground']
+    skipped: [CircleMinus, 'text-muted-foreground'],
+    blocked: [Ban, 'text-[var(--color-bad)]']
   } as const;
   const LABELS: Record<StepGlyph, string> = {
     passed: 'passed', running: 'running', 'sent-back': 'sent back', failed: 'failed',
-    stopped: 'stopped', 'needs-you': 'needs you', waiting: 'waiting', skipped: 'skipped'
+    stopped: 'stopped', 'needs-you': 'needs you', waiting: 'waiting', skipped: 'skipped', blocked: 'blocked'
   };
   const Icon = $derived(ICONS[glyph][0]);
 </script>
