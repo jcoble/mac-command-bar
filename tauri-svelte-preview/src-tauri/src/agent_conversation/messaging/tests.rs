@@ -195,7 +195,7 @@ async fn tool_text(endpoint: &MessagingEndpoint, token: &str, tool: Value) -> Re
 
 fn check(path: &str) -> Value { json!({"name":"check_workflow","arguments":{"path":path}}) }
 
-const BUILD: &str = "  build: { agent: { provider: codex }, prompt: prompts/build.md }\n";
+const BUILD: &str = "  build: { result: build, agent: { provider: codex }, prompt: prompts/build.md }\n";
 
 #[tokio::test]
 async fn workflow_authoring_format_is_embedded_for_every_session() {
@@ -216,7 +216,7 @@ async fn workflow_authoring_format_is_embedded_for_every_session() {
 
 #[tokio::test]
 async fn workflow_authoring_check_is_read_only() {
-    let root = project("summary", &format!("{BUILD}  checks: {{ needs: [build], run: [\"cargo test\"], on_fail: build }}\n  review:\n    needs: [checks]\n    review: {{ of: build, agent: {{ provider: claude }}, prompt: prompts/build.md }}\n"));
+    let root = project("summary", &format!("{BUILD}  checks: {{ needs: [build], run: [\"cargo test\"], on_fail: build }}\n  review:\n    needs: [checks]\n    result: review\n    review: {{ of: build, agent: {{ provider: claude }}, prompt: prompts/build.md }}\n"));
     let endpoint = MessagingEndpoint::start().unwrap();
     let store = store();
     let a = endpoint.issue("owned-a");
@@ -234,7 +234,7 @@ async fn workflow_authoring_check_is_read_only() {
 
 #[tokio::test]
 async fn check_workflow_warns_when_a_redone_step_cannot_see_why() {
-    let root = project("redo", &format!("{BUILD}  checks: {{ needs: [build], run: [ls], on_fail: build }}\n  review:\n    needs: [checks]\n    review: {{ of: build, agent: {{ provider: claude }}, prompt: prompts/build.md }}\n"));
+    let root = project("redo", &format!("{BUILD}  checks: {{ needs: [build], run: [ls], on_fail: build }}\n  review:\n    needs: [checks]\n    result: review\n    review: {{ of: build, agent: {{ provider: claude }}, prompt: prompts/build.md }}\n"));
     let endpoint = MessagingEndpoint::start().unwrap();
     let store = store();
     let a = endpoint.issue("owned-a");
@@ -271,7 +271,7 @@ async fn workflow_authoring_check_uses_callers_or_named_project() {
     let absolute = first.join(path).display().to_string();
     for bad in [absolute.as_str(), "../flow.yml", ".assembly/workflows/../workflows/flow.yml", ".assembly/flow.yml", ".assembly/workflows/flow.yaml"] { assert!(tool_text(&endpoint, &a.token, named("second", bad)).await.is_err(), "{bad}"); }
     std::os::unix::fs::symlink(second.join(".assembly/workflows/prompts/build.md"), first.join(".assembly/workflows/prompts/linked.md")).unwrap();
-    std::fs::write(first.join(".assembly/workflows/flow.yml"), "name: Flow\nsteps:\n  build: { agent: { provider: codex }, prompt: prompts/linked.md }\n").unwrap();
+    std::fs::write(first.join(".assembly/workflows/flow.yml"), "name: Flow\nsteps:\n  build: { result: build, agent: { provider: codex }, prompt: prompts/linked.md }\n").unwrap();
     assert_eq!(tool_text(&endpoint, &a.token, check(path)).await.unwrap_err(), "File path escapes its directory");
     std::os::unix::fs::symlink(second.join(path), first.join(".assembly/workflows/linked.yml")).unwrap();
     assert_eq!(tool_text(&endpoint, &a.token, check(".assembly/workflows/linked.yml")).await.unwrap_err(), "File path escapes its directory");
@@ -293,9 +293,9 @@ async fn workflow_authoring_check_preserves_loader_errors() {
         "  bad.id: { run: [ls] }\n".to_string(),
         format!("{BUILD}  checks: {{ needs: [missing], run: [ls] }}\n"),
         "  a: { needs: [b], run: [ls] }\n  b: { needs: [a], run: [ls] }\n".to_string(),
-        format!("{BUILD}  review:\n    needs: [build]\n    review: {{ of: missing, agent: {{ provider: codex }}, prompt: prompts/build.md }}\n"),
-        "  build: { agent: { provider: codex }, prompt: prompts/missing.md }\n".to_string(),
-        "  build: { agent: { provider: codex }, prompt: ../../outside.md }\n".to_string(),
+        format!("{BUILD}  review:\n    needs: [build]\n    result: review\n    review: {{ of: missing, agent: {{ provider: codex }}, prompt: prompts/build.md }}\n"),
+        "  build: { result: build, agent: { provider: codex }, prompt: prompts/missing.md }\n".to_string(),
+        "  build: { result: build, agent: { provider: codex }, prompt: ../../outside.md }\n".to_string(),
     ] {
         std::fs::write(root.join(path), format!("name: Flow\nsteps:\n{steps}")).unwrap();
         let Err(crate::workflow::WorkflowError::InvalidDefinition(expected)) = crate::workflow::WorkflowEngine::validate_file(&root, path) else {
@@ -530,11 +530,11 @@ async fn messaging_endpoint_answers_mcp_initialize_and_tools_list() {
     assert_eq!(init["result"]["protocolVersion"], "2024-11-05");
     assert_eq!(init["result"]["capabilities"], json!({"tools":{}}));
     let list: Value = call(&c, Some(&c.token), "tools/list", json!({})).await.json().await.unwrap();
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 13);
+    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 12);
     assert_eq!(list["result"]["tools"][0]["name"], "list_sessions");
     assert_eq!(list["result"]["tools"][1]["name"], "send_message");
     assert_eq!(list["result"]["tools"][2]["name"], "start_session");
-    assert_eq!(list["result"]["tools"][11]["name"], "message_status");
+    assert_eq!(list["result"]["tools"][10]["name"], "message_status");
     assert_eq!(call(&c, Some(&c.token), "notifications/initialized", json!({})).await.status(), 202);
 }
 

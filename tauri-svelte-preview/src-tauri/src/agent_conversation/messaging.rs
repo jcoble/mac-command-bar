@@ -310,6 +310,12 @@ impl MessagingEndpoint {
         self.callers.lock().unwrap().get(token).cloned().ok_or_else(|| "Unauthorized".into())
     }
 
+    /// The output contract of the workflow step the caller is running, which decides its `report_result` schema.
+    fn running_contract(&self, token: &str) -> Option<String> {
+        let (owned_id, store, _) = self.caller(token).ok()?;
+        store.upgrade()?.workflow_running_step(&owned_id).ok()?.map(|(_, _, contract)| contract)
+    }
+
     pub async fn handle(&self, token: &str, tool_call: Value) -> Result<Value, String> {
         let (owned_id, store, manager) = self.caller(token)?;
         let store = store.upgrade().ok_or("Session store unavailable")?;
@@ -411,20 +417,12 @@ impl MessagingEndpoint {
                 Ok(json!({"content":[{"type":"text","text":json!({"handle":handle,"name":name,"owned_id":helper}).to_string()}]}))
             }
             Some("workflow_format") => Ok(text(WORKFLOW_FORMAT)),
-            Some("report_review") => {
-                let args = &tool_call["arguments"];
-                let verdict = args["verdict"].as_str().map(str::to_ascii_lowercase)
-                    .filter(|verdict| verdict == "pass" || verdict == "fail")
-                    .ok_or("verdict must be pass or fail")?;
-                let findings = match &args["findings"] {
-                    Value::Null => json!([]),
-                    findings @ Value::Array(_) => findings.clone(),
-                    _ => return Err("findings must be a list".into()),
-                };
-                let (run_id, attempt_id) = store.workflow_running_review(&owned_id).map_err(|error| error.to_string())?
-                    .ok_or("Only a session running a workflow review step can report a review")?;
-                store.add_review_report(&owned_id, &run_id, &attempt_id, &json!({"verdict":verdict,"findings":findings}).to_string())
-                    .map_err(|error| error.to_string())?;
+            Some("report_result") => {
+                let (run_id, attempt_id, _) = store.workflow_running_step(&owned_id).map_err(|error| error.to_string())?
+                    .ok_or("Only a session running a workflow step can report its result")?;
+                let report = &tool_call["arguments"];
+                self.workflow()?.check_report(&run_id, &attempt_id, report).map_err(workflow_error)?;
+                store.add_review_report(&owned_id, &run_id, &attempt_id, &report.to_string()).map_err(|error| error.to_string())?;
                 Ok(text("recorded"))
             }
             Some("check_workflow") => {
@@ -507,7 +505,7 @@ impl MessagingEndpoint {
                 // Only a review's own decision points are the orchestrator's; gates, restart recovery and timeouts stay the owner's.
                 let is_review = run.definition.nodes.iter().any(|node| node.id == step_id && node.step.get("review").is_some());
                 if !is_review || !step.failure.as_ref().is_some_and(|failure| matches!(failure.code.as_str(), "loop-stopped" | "review-report")) {
-                    return Err("only a review waiting at its round limit or without a report can be decided here; post anything else (a gate, failed checks, a timeout, a restart check) on the Build Board for the owner".into());
+                    return Err("only a review waiting at its round limit or after a turn that did not complete can be decided here; post anything else (a gate, failed checks, a timeout, a restart check) on the Build Board for the owner".into());
                 }
                 let decision = args["decision"].as_str().unwrap_or_default();
                 let run = engine.answer_pause(run_id, step_id, decision, None, "orchestrator", args["why"].as_str(),

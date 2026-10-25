@@ -2928,8 +2928,8 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read workflow lease row", error))
     }
 
-    /// The run and attempt of the workflow review step `owned_id` is running now.
-    pub fn workflow_running_review(&self, owned_id: &str) -> Result<Option<(String, String)>> {
+    /// The run, attempt and output contract of the workflow step `owned_id` is starting or running now.
+    pub fn workflow_running_step(&self, owned_id: &str) -> Result<Option<(String, String, String)>> {
         use rusqlite::OptionalExtension;
         let connection = self.lock()?;
         connection.query_row(
@@ -2941,16 +2941,13 @@ impl SessionStore {
                     WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
                     ORDER BY sequence DESC LIMIT 1)
              )
-             SELECT json_extract(run, '$.id'), json_extract(n.value, '$.id')
+             SELECT json_extract(run, '$.id'), json_extract(n.value, '$.id'), json_extract(n.value, '$.outputContract')
              FROM latest, json_each(run, '$.nodes') n
-             JOIN json_each(run, '$.definition.nodes') d
-               ON json_extract(d.value, '$.id') = json_extract(n.value, '$.nodeId')
              WHERE json_extract(n.value, '$.ownedId') = ?1
-               AND json_extract(n.value, '$.state') = 'running'
-               AND json_type(d.value, '$.step.review') IS NOT NULL
+               AND json_extract(n.value, '$.state') IN ('starting', 'running')
              LIMIT 1",
-            [owned_id], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).optional().map_err(|error| StoreError::sqlite("could not find the running review", error))
+            [owned_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).optional().map_err(|error| StoreError::sqlite("could not find the running step", error))
     }
 
     /// The state in a run's latest snapshot, read before the engine stores the next one.

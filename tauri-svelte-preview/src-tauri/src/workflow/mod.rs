@@ -2,6 +2,7 @@ pub(crate) mod commands;
 pub(crate) mod orchestration;
 pub(crate) mod orchestration_commands;
 pub(crate) mod policy;
+pub(crate) mod receipts;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
@@ -94,7 +95,7 @@ mod run_setup;
 mod step_end;
 use step_end::{changed_code, record_tree, refuse_parallel_agents, CHANGED_CODE};
 
-const STEP_FIELDS: [&str; 10] = ["needs", "agent", "prompt", "run", "review", "gate", "on_fail", "expect_files", "if", "repeat"];
+const STEP_FIELDS: [&str; 11] = ["needs", "agent", "prompt", "run", "review", "gate", "on_fail", "expect_files", "if", "repeat", "result"];
 
 /// Every step `id` depends on, directly or through other steps.
 fn needs_ancestry<'a>(steps: &'a serde_json::Map<String, Value>, id: &str) -> std::collections::HashSet<&'a str> {
@@ -368,9 +369,12 @@ pub(crate) enum WorkflowOutputContract {
     PullRequestMergeReceipt,
     ReviewReceipt,
     SpecReceipt,
+    ReconReceipt,
+    PlanReceipt,
+    ProofReceipt,
+    /// Only in runs stored before typed results; no step reports one, so they stay readable.
     SpecComplianceReceipt,
     VerificationReceipt,
-    PlanReceipt,
 }
 
 impl WorkflowOutputContract {
@@ -381,9 +385,11 @@ impl WorkflowOutputContract {
             Self::PullRequestMergeReceipt => "PullRequestMergeReceipt",
             Self::ReviewReceipt => "ReviewReceipt",
             Self::SpecReceipt => "SpecReceipt",
+            Self::ReconReceipt => "ReconReceipt",
+            Self::PlanReceipt => "PlanReceipt",
+            Self::ProofReceipt => "ProofReceipt",
             Self::SpecComplianceReceipt => "SpecComplianceReceipt",
             Self::VerificationReceipt => "VerificationReceipt",
-            Self::PlanReceipt => "PlanReceipt",
         }
     }
 }
@@ -508,22 +514,6 @@ pub(crate) struct WorkflowFailure {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ImplementationReceipt {
-    pub changed_files: Vec<String>,
-    pub summary: String,
-    pub tests: Vec<Value>,
-    pub known_risks: Vec<String>,
-    #[serde(default)]
-    pub commit: Option<String>,
-    #[serde(default)]
-    pub branch: Option<String>,
-    #[serde(default)]
-    pub worktree: Option<String>,
-    pub artifacts: Vec<WorkflowArtifactRef>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub(crate) struct PullRequestReceipt {
     pub url: String,
     pub branch: String,
@@ -535,57 +525,6 @@ pub(crate) struct PullRequestReceipt {
 pub(crate) struct PullRequestMergeReceipt {
     pub url: String,
     pub merge_commit_sha: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ReviewReceipt {
-    pub severity: String,
-    pub file: String,
-    pub line: u64,
-    pub evidence: String,
-    pub recommendation: String,
-    pub confidence: f64,
-    pub blocking: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SpecReceipt {
-    pub path: String,
-    pub summary: String,
-    pub requirements: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SpecComplianceReceipt {
-    pub requirement_id: String,
-    pub status: String,
-    pub evidence: Value,
-    pub gap: Option<String>,
-    pub recommended_action: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct VerificationReceipt {
-    pub command: String,
-    pub exit: i32,
-    pub duration: f64,
-    pub evidence_artifacts: Vec<WorkflowArtifactRef>,
-    pub cleanup_receipt: Value,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PlanReceipt {
-    pub ordered_steps: Vec<Value>,
-    pub dependencies: Vec<Value>,
-    pub risk: Value,
-    pub estimated_parallel_lanes: u32,
-    #[serde(default)]
-    pub owner_merge: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -621,7 +560,6 @@ pub(crate) struct AgentDispatchRequest {
     pub cwd: String,
     pub title: String,
     pub prompt: String,
-    pub role_id: String,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub permission: Option<String>,
@@ -977,6 +915,29 @@ impl WorkflowScheduler {
 
 pub(crate) struct WorkflowPolicy;
 
+/// Whether the graph of `ids` and `(from, to)` edges has no cycle; duplicate edges count once.
+fn acyclic<'a>(ids: impl Iterator<Item = &'a str>, edges: impl Iterator<Item = (&'a str, &'a str)>) -> bool {
+    let mut incoming: HashMap<&str, usize> = ids.map(|id| (id, 0)).collect();
+    let mut children: HashMap<&str, BTreeSet<&str>> = HashMap::new();
+    for (from, to) in edges {
+        if children.entry(from).or_default().insert(to) {
+            *incoming.entry(to).or_default() += 1;
+        }
+    }
+    let total = incoming.len();
+    let mut queue: BTreeSet<&str> = incoming.iter().filter(|(_, count)| **count == 0).map(|(id, _)| *id).collect();
+    let mut visited = 0;
+    while let Some(id) = queue.pop_first() {
+        visited += 1;
+        for child in children.get(id).into_iter().flatten() {
+            let count = incoming.get_mut(child).unwrap();
+            *count -= 1;
+            if *count == 0 { queue.insert(child); }
+        }
+    }
+    visited == total
+}
+
 fn review_redo_target(node: &WorkflowNodeDefinition) -> Option<&str> {
     node.condition.as_ref()?.get("redoNodeId")?.as_str()
 }
@@ -1051,21 +1012,6 @@ impl WorkflowPolicy {
                     )));
                 }
             }
-            if let Some(plan_id) = node.condition.as_ref()
-                .and_then(|condition| condition.get("ownerMergeNodeId"))
-                .and_then(Value::as_str)
-            {
-                let plan = definition.nodes.iter().find(|candidate| candidate.id == plan_id);
-                let plan_role = plan.and_then(|candidate| definition.roles.iter().find(|role| role.id == candidate.role_id));
-                if !node.depends_on.iter().any(|dependency| dependency == plan_id)
-                    || plan_role.is_none_or(|role| role.output_contract != WorkflowOutputContract::PlanReceipt)
-                {
-                    return Err(WorkflowError::InvalidDefinition(format!(
-                        "Node {} must depend on a PlanReceipt for owner merge",
-                        node.id
-                    )));
-                }
-            }
         }
         for edge in &definition.edges {
             if !nodes.contains(edge.from.as_str()) || !nodes.contains(edge.to.as_str()) {
@@ -1074,43 +1020,10 @@ impl WorkflowPolicy {
                 ));
             }
         }
-        let mut incoming: HashMap<&str, usize> = definition
-            .nodes
-            .iter()
-            .map(|node| (node.id.as_str(), 0))
-            .collect();
-        let mut children: HashMap<&str, BTreeSet<&str>> = HashMap::new();
-        for node in &definition.nodes {
-            for dependency in &node.depends_on {
-                if children.entry(dependency).or_default().insert(&node.id) {
-                    *incoming.get_mut(node.id.as_str()).unwrap() += 1;
-                }
-            }
-        }
-        for edge in &definition.edges {
-            if children.entry(&edge.from).or_default().insert(&edge.to) {
-                *incoming.get_mut(edge.to.as_str()).unwrap() += 1;
-            }
-        }
-        let mut queue: BTreeSet<&str> = incoming
-            .iter()
-            .filter(|(_, count)| **count == 0)
-            .map(|(id, _)| *id)
-            .collect();
-        let mut visited = 0;
-        while let Some(id) = queue.pop_first() {
-            visited += 1;
-            if let Some(next) = children.get(id) {
-                for child in next {
-                    let count = incoming.get_mut(child).unwrap();
-                    *count -= 1;
-                    if *count == 0 {
-                        queue.insert(child);
-                    }
-                }
-            }
-        }
-        if visited != definition.nodes.len() {
+        let edges = definition.nodes.iter()
+            .flat_map(|node| node.depends_on.iter().map(|dependency| (dependency.as_str(), node.id.as_str())))
+            .chain(definition.edges.iter().map(|edge| (edge.from.as_str(), edge.to.as_str())));
+        if !acyclic(definition.nodes.iter().map(|node| node.id.as_str()), edges) {
             return Err(WorkflowError::InvalidDefinition(
                 "Workflow graph contains a cycle".into(),
             ));
@@ -1128,51 +1041,7 @@ impl WorkflowPolicy {
                 contract.name()
             ))
         })?;
-        let parsed = match contract {
-            WorkflowOutputContract::ImplementationReceipt => {
-                serde_json::from_value::<ImplementationReceipt>(value.clone()).map(|_| ())
-            }
-            WorkflowOutputContract::PullRequestReceipt => {
-                serde_json::from_value::<PullRequestReceipt>(value.clone()).map(|_| ())
-            }
-            WorkflowOutputContract::PullRequestMergeReceipt => {
-                serde_json::from_value::<PullRequestMergeReceipt>(value.clone()).map(|_| ())
-            }
-            WorkflowOutputContract::ReviewReceipt => {
-                serde_json::from_value::<ReviewReceipt>(value.clone()).map(|_| ())
-            }
-            WorkflowOutputContract::SpecReceipt => {
-                serde_json::from_value::<SpecReceipt>(value.clone()).map(|_| ())
-            }
-            WorkflowOutputContract::SpecComplianceReceipt => {
-                serde_json::from_value::<SpecComplianceReceipt>(value.clone()).map(|_| ())
-            }
-            WorkflowOutputContract::VerificationReceipt => {
-                serde_json::from_value::<VerificationReceipt>(value.clone()).map(|_| ())
-            }
-            WorkflowOutputContract::PlanReceipt => {
-                serde_json::from_value::<PlanReceipt>(value.clone()).map(|_| ())
-            }
-        };
-        parsed.map_err(|error| {
-            WorkflowError::OutputContract(format!(
-                "{} is invalid structured data: {error}",
-                contract.name()
-            ))
-        })?;
-        if contract == WorkflowOutputContract::SpecReceipt
-            && (value["path"].as_str().is_none_or(|path| path.trim().is_empty())
-                || value["requirements"].as_array().is_none_or(Vec::is_empty))
-        {
-            return Err(WorkflowError::OutputContract(
-                "SpecReceipt requires a path and requirements".into(),
-            ));
-        }
-        if contract == WorkflowOutputContract::VerificationReceipt && value["exit"] != 0 {
-            return Err(WorkflowError::OutputContract(
-                "VerificationReceipt reports a failed command".into(),
-            ));
-        }
+        receipts::check_shape(contract, value)?;
         if contract == WorkflowOutputContract::PullRequestReceipt
             && (value["url"].as_str().is_none_or(|url| url.trim().is_empty())
                 || value["branch"].as_str().is_none_or(|branch| branch.trim().is_empty()))
@@ -1267,9 +1136,8 @@ impl WorkflowEngine {
         )
     }
 
-    /// Advance the one workflow node owned by a completed provider turn. The
-    /// YAML agents hand off final text and checked files; template stages use typed
-    /// receipts. Transcript history remains owned by the provider session.
+    /// Advance the one workflow node owned by a completed provider turn, with the
+    /// report its session recorded through `report_result`.
     pub async fn accept_agent_event(
         &self,
         event: &AgentConversationEvent,
@@ -1318,95 +1186,46 @@ impl WorkflowEngine {
                 .await
                 .map(Some);
         }
-        let text = self
-            .store
-            .latest_assistant_text_for_turn(&event.owned_id, turn_id)
-            .map_err(|error| WorkflowError::Ledger(error.to_string()))?;
-        let Some(text) = text else {
-            return self
-                .fail_agent_node(
-                    &run_id,
-                    &node_id,
-                    "output-contract",
-                    "The provider completed without assistant text",
-                    &idempotency_key,
-                )
-                .await
-                .map(Some);
-        };
         let run = self.require_run(&run_id)?;
-        if !run.definition.nodes.iter().find(|node| node.id == node_id).unwrap().step.is_null() {
-            let definition = run.definition.nodes.iter().find(|node| node.id == node_id).unwrap();
-            if let Some(target) = definition.step["review"]["of"].as_str() {
-                if changed_code(&run, &node_id) {
-                    return self.fail_agent_node(&run_id, &node_id, "changed-code", CHANGED_CODE, &idempotency_key).await.map(Some);
-                }
-                let attempt_id = &run.nodes[index].id;
-                let reports = self.store.review_reports(attempt_id).map_err(|error| WorkflowError::Ledger(error.to_string()))?;
-                let report = match reports.as_slice() {
-                    [report] => serde_json::from_str::<Value>(report).ok(),
-                    _ => None,
-                };
-                let Some(report) = report else {
-                    let message = format!("The reviewer must call report_review once; it called it {} time(s)", reports.len());
-                    return self.wait_for_owner(&run_id, &node_id, "review-report", &message, None, &idempotency_key).await.map(Some);
-                };
-                let findings = report["findings"].as_array().cloned().unwrap_or_default();
-                let output = json!({"verdict":report["verdict"],"findings":findings,"findingCount":findings.len(),"summary":text,"files":[]});
-                if report["verdict"] == "pass" && findings.is_empty() {
-                    self.finish_step(&run_id, &node_id, output, true, &idempotency_key).await?;
-                } else {
-                    self.finish_with_findings(&run_id, &node_id, target, output, findings.len().max(1), &idempotency_key).await?;
-                }
-                drop(dispatch);
-                return self.dispatch_ready(&run_id).await.map(Some);
-            }
-            if definition.step.get("agent").is_some() {
-                let mut files = Vec::new();
-                for pattern in definition.step["expect_files"].as_array().into_iter().flatten() {
-                    let pattern = render_step_template(pattern.as_str().ok_or_else(|| invalid_yaml("Expected file must be a string"))?, &run)?;
-                    let output = crate::bounded_process::output(std::process::Command::new("bash")
-                        .args(["-c", r#"compgen -G "$1""#, "--", &pattern]).current_dir(run.input_snapshot["cwd"].as_str().unwrap()),
-                        "Expected files", crate::bounded_process::LOCAL_COMMAND_TIMEOUT).map_err(|error| WorkflowError::Runtime(error.to_string()))?;
-                    let matches: Vec<_> = String::from_utf8_lossy(&output.stdout).lines().filter(|file|
-                        Path::new(run.input_snapshot["cwd"].as_str().unwrap()).join(file).is_file()).map(str::to_string).collect();
-                    if matches.is_empty() {
-                        return self.fail_agent_node(&run_id, &node_id, "expect-files", &format!("Missing expected file: {pattern}"), &idempotency_key).await.map(Some);
-                    }
-                    files.extend(matches);
-                }
-                self.finish_step(&run_id, &node_id, json!({"summary":text,"files":files}), true, &idempotency_key).await?;
-                drop(dispatch);
-                return self.dispatch_ready(&run_id).await.map(Some);
-            }
+        let definition = run.definition.nodes.iter().find(|node| node.id == node_id).unwrap();
+        if changed_code(&run, &node_id) {
+            return self.fail_agent_node(&run_id, &node_id, "changed-code", CHANGED_CODE, &idempotency_key).await.map(Some);
         }
+        // Reports are checked when report_result records them. The last one is checked against the checkout again here,
+        // in case it changed since; report_result refuses any report from a step whose starting commit was not recorded.
+        let reports = self.store.review_reports(&run.nodes[index].id).map_err(|error| WorkflowError::Ledger(error.to_string()))?;
+        let Some(mut output) = reports.last().and_then(|report| serde_json::from_str::<Value>(report).ok())
+            .filter(|output| run.input_snapshot["heads"][&node_id].is_null()
+                || receipts::check_evidence(&run, &node_id, run.nodes[index].output_contract, output).is_ok()) else {
+            return self.remind_or_fail(&run_id, &node_id, &idempotency_key).await.map(Some);
+        };
+        if let Some(target) = definition.step["review"]["of"].as_str() {
+            let findings = output["findings"].as_array().map_or(0, Vec::len);
+            if output["verdict"] == "pass" && findings == 0 {
+                self.finish_step(&run_id, &node_id, output, true, &idempotency_key).await?;
+            } else {
+                self.finish_with_findings(&run_id, &node_id, target, output, findings.max(1), &idempotency_key).await?;
+            }
+            drop(dispatch);
+            return self.dispatch_ready(&run_id).await.map(Some);
+        }
+        let mut files = Vec::new();
+        for pattern in definition.step["expect_files"].as_array().into_iter().flatten() {
+            let pattern = render_step_template(pattern.as_str().ok_or_else(|| invalid_yaml("Expected file must be a string"))?, &run)?;
+            let found = crate::bounded_process::output(std::process::Command::new("bash")
+                .args(["-c", r#"compgen -G "$1""#, "--", &pattern]).current_dir(run.input_snapshot["cwd"].as_str().unwrap()),
+                "Expected files", crate::bounded_process::LOCAL_COMMAND_TIMEOUT).map_err(|error| WorkflowError::Runtime(error.to_string()))?;
+            let matches: Vec<_> = String::from_utf8_lossy(&found.stdout).lines().filter(|file|
+                Path::new(run.input_snapshot["cwd"].as_str().unwrap()).join(file).is_file()).map(str::to_string).collect();
+            if matches.is_empty() {
+                return self.fail_agent_node(&run_id, &node_id, "expect-files", &format!("Missing expected file: {pattern}"), &idempotency_key).await.map(Some);
+            }
+            files.extend(matches);
+        }
+        if !files.is_empty() { output["files"] = json!(files); }
+        self.finish_step(&run_id, &node_id, output, true, &idempotency_key).await?;
         drop(dispatch);
-        let receipt = decode_agent_receipt(&text).and_then(|value| {
-            let run = self.require_run(&run_id)?;
-            let node = run
-                .nodes
-                .iter()
-                .find(|node| node.node_id == node_id)
-                .ok_or_else(|| WorkflowError::NotFound(node_id.clone()))?;
-            WorkflowPolicy::validate_output(node.output_contract, &value)?;
-            Ok(value)
-        });
-        match receipt {
-            Ok(receipt) => self
-                .submit_result(&run_id, &node_id, receipt, &idempotency_key)
-                .await
-                .map(Some),
-            Err(error) => self
-                .fail_agent_node(
-                    &run_id,
-                    &node_id,
-                    "output-contract",
-                    &error.to_string(),
-                    &idempotency_key,
-                )
-                .await
-                .map(Some),
-        }
+        self.dispatch_ready(&run_id).await.map(Some)
     }
 
     pub fn create_run_from_file(
@@ -1481,6 +1300,14 @@ impl WorkflowEngine {
             if review && step["review"].get("of").is_none() {
                 return Err(invalid_yaml(format!("Review step `{id}` needs review.of")));
             }
+            let contract = match (step.get("agent").is_some() || review, step["result"].as_str()) {
+                (false, None) => WorkflowOutputContract::ImplementationReceipt,
+                (false, Some(_)) => return Err(invalid_yaml(format!("Step `{id}`: result is only for agent and review steps"))),
+                (true, Some(result)) if (result == "review") == review => receipts::contract_for(result)
+                    .ok_or_else(|| invalid_yaml(format!("Step `{id}`: result must be build, spec, plan, recon, review or proof")))?,
+                (true, Some(_)) => return Err(invalid_yaml(format!("Step `{id}`: a review step's result is review, and only a review step's"))),
+                (true, None) => return Err(invalid_yaml(format!("Step `{id}` needs a result"))),
+            };
             if let Some(run) = step.get("run") {
                 if !run.as_array().is_some_and(|commands| !commands.is_empty() && commands.iter().all(Value::is_string)) {
                     return Err(invalid_yaml(format!("Step `{id}`: run must be a non-empty list of commands")));
@@ -1509,7 +1336,7 @@ impl WorkflowEngine {
             }
             roles.push(json!({"id":id,"name":id,"providerPolicy":{"provider":provider},
                 "modelPolicy":{"value":model},"permissionPolicy":{"value":permission},"promptTemplateId":if review { step["review"]["prompt"].as_str().unwrap_or_default() } else { step["prompt"].as_str().unwrap_or_default() },
-                "outputContract":if review {"ReviewReceipt"} else {"ImplementationReceipt"}}));
+                "outputContract":contract.name()}));
             nodes.push(json!({"id":id,"title":id,"roleId":id,"dependsOn":step.get("needs").cloned().unwrap_or(json!([])),
                 "condition":step["if"],"timeoutSeconds":timeout,"step":step}));
         }
@@ -1868,11 +1695,8 @@ impl WorkflowEngine {
         }
         // A gate answer is not a resume: a paused run records the answer and stays paused.
         let paused = run.state == WorkflowRunState::Paused;
-        if approved {
-            materialize_plan_steps(&mut run, node_id, self.ids.as_ref())?;
-            if !paused {
-                run.state = WorkflowRunState::Running;
-            }
+        if approved && !paused {
+            run.state = WorkflowRunState::Running;
         }
         refresh_ready_and_phase(&mut run);
         self.append(
@@ -1931,200 +1755,6 @@ impl WorkflowEngine {
         )?;
         self.end_agent_turn(&run, node_id, &owned_id).await;
         Ok(run)
-    }
-
-    pub async fn submit_result(
-        &self,
-        run_id: &str,
-        node_id: &str,
-        result: Value,
-        idempotency_key: &str,
-    ) -> Result<WorkflowRunRecord, WorkflowError> {
-        if let Some(existing) = self.idempotent_run(run_id, idempotency_key)? {
-            return Ok(existing);
-        }
-        let mut run = self.require_run(run_id)?;
-        let index = run
-            .nodes
-            .iter()
-            .position(|node| node.node_id == node_id)
-            .ok_or_else(|| WorkflowError::NotFound(node_id.into()))?;
-        if run.nodes[index].state == WorkflowNodeState::Completed {
-            return Ok(run);
-        }
-        if run.nodes[index].state != WorkflowNodeState::Running {
-            return Err(WorkflowError::InvalidTransition(
-                "Only a running node accepts a result".into(),
-            ));
-        }
-        if run.definition.nodes.iter().find(|node| node.id == node_id).is_some_and(|node| node.step.get("agent").is_some() || node.step.get("run").is_some() || node.step.get("gate").is_some()) {
-            return Err(WorkflowError::PolicyDenied("Step results are recorded by the engine".into()));
-        }
-        enforce_node_timeout(&run, index, self.clock.now_ms())?;
-        WorkflowPolicy::validate_output(run.nodes[index].output_contract, &result)?;
-        if run.workflow_id == "task-plan-implement-review"
-            && node_id == "plan"
-            && result["orderedSteps"].as_array().is_none_or(Vec::is_empty)
-        {
-            return Err(WorkflowError::OutputContract(
-                "The overall plan needs at least one ordered step".into(),
-            ));
-        }
-        run.tokens_used = run.tokens_used.saturating_add(
-            result
-                .get("tokensUsed")
-                .and_then(Value::as_u64)
-                .unwrap_or_default(),
-        );
-        run.tool_terminals_used = run.tool_terminals_used.saturating_add(
-            result
-                .get("toolTerminalsUsed")
-                .and_then(Value::as_u64)
-                .unwrap_or_default() as u32,
-        );
-        if let Err(error) = enforce_budgets(&run, self.clock.now_ms()) {
-            if let WorkflowError::BudgetExhausted(failure) = &error {
-                run.nodes[index].state = WorkflowNodeState::Failed;
-                run.nodes[index].failure = Some(failure.clone());
-                run.nodes[index].finished_at_ms = Some(self.clock.now_ms());
-                if run.definition.completion.cancel_descendants_on_failure {
-                    cancel_descendants(&mut run, node_id);
-                }
-                run.state = WorkflowRunState::Failed;
-                run.phase = WorkflowLoopPhase::Failed;
-                let budget_key = format!(
-                    "budget:{}:{}",
-                    run.nodes[index].id,
-                    failure.budget.as_deref().unwrap_or("unknown")
-                );
-                self.append(
-                    &mut run,
-                    "workflow.node.budget-exhausted",
-                    &budget_key,
-                    Some(node_id),
-                )?;
-            }
-            return Err(error);
-        }
-        let artifacts = result
-            .get("artifacts")
-            .or_else(|| result.get("evidenceArtifacts"))
-            .cloned()
-            .unwrap_or_else(|| json!([]));
-        let blocking_review = run.nodes[index].output_contract == WorkflowOutputContract::ReviewReceipt
-            && result.get("blocking").and_then(Value::as_bool) == Some(true);
-        run.nodes[index].artifacts = serde_json::from_value(artifacts).unwrap_or_default();
-        run.nodes[index].structured_output = Some(result);
-        if blocking_review {
-            let redo_index = run
-                .definition
-                .nodes
-                .iter()
-                .find(|node| node.id == node_id)
-                .and_then(review_redo_target)
-                .and_then(|target| run.nodes.iter().position(|node| node.node_id == target));
-            if let Some(redo_index) = redo_index {
-                // A late review must repeat every completed stage that relied
-                // on the corrected work, including verification and PR update.
-                let redo_ids = step_and_dependents(&run.definition, &run.nodes[redo_index].node_id);
-                let rerun_indices: Vec<_> = run
-                    .nodes
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(candidate, node)| {
-                        (redo_ids.contains(&node.node_id)
-                            && !matches!(
-                                node.state,
-                                WorkflowNodeState::Blocked
-                                    | WorkflowNodeState::Ready
-                                    | WorkflowNodeState::Queued
-                                    | WorkflowNodeState::Skipped
-                            ))
-                        .then_some(candidate)
-                    })
-                    .collect();
-                let can_retry = rerun_indices.iter().all(|&candidate| {
-                    let node = &run.nodes[candidate];
-                    let definition = run.definition.nodes.iter().find(|item| item.id == node.node_id).unwrap();
-                    let role = run.definition.roles.iter().find(|item| item.id == node.role_id).unwrap();
-                    let limit = definition.max_attempts
-                        .min(run.definition.budgets.maximum_attempts_per_node)
-                        .min(role.retry_policy.max_attempts)
-                        .max(1);
-                    node.attempt < limit
-                });
-                if can_retry {
-                    for candidate in rerun_indices {
-                        if let Some(lease_id) = run.nodes[candidate].lease_id.take() {
-                            self.leases.release(&lease_id)?;
-                        }
-                        let node = &mut run.nodes[candidate];
-                        node.attempt += 1;
-                        node.id = format!("{}:{}:{}", run.id, node.node_id, node.attempt);
-                        node.owned_id = self.ids.next_id("workflow-agent");
-                        node.provider_instance_id = None;
-                        node.state = WorkflowNodeState::Blocked;
-                        node.started_at_ms = None;
-                        node.finished_at_ms = None;
-                        node.gate = None;
-                        node.failure = None;
-                        if candidate != index {
-                            node.structured_output = None;
-                            node.artifacts.clear();
-                        }
-                    }
-                    refresh_ready_and_phase(&mut run);
-                    self.append(&mut run, "workflow.node.review-redo", idempotency_key, Some(node_id))?;
-                    return self.dispatch_ready(run_id).await;
-                }
-            }
-            if let Some(lease_id) = run.nodes[index].lease_id.take() {
-                self.leases.release(&lease_id)?;
-            }
-            run.nodes[index].state = WorkflowNodeState::Failed;
-            run.nodes[index].finished_at_ms = Some(self.clock.now_ms());
-            run.nodes[index].failure = Some(WorkflowFailure {
-                code: "review-blocking".into(),
-                message: "Reviewer reported a blocking finding".into(),
-                budget: None,
-            });
-            if run.definition.completion.cancel_descendants_on_failure {
-                cancel_descendants(&mut run, node_id);
-            }
-            refresh_ready_and_phase(&mut run);
-            self.append(&mut run, "workflow.node.review-blocked", idempotency_key, Some(node_id))?;
-            return Ok(run);
-        }
-        if let Some(gate_definition) = run
-            .definition
-            .nodes
-            .iter()
-            .find(|node| node.id == node_id)
-            .and_then(|node| node.approval_gate.clone())
-        {
-            run.nodes[index].state = WorkflowNodeState::WaitingApproval;
-            run.nodes[index].gate = Some(WorkflowGateRecord {
-                id: gate_definition.id,
-                node_run_id: run.nodes[index].id.clone(),
-                approved: None,
-                structured_input: None,
-            });
-            if run.state != WorkflowRunState::Paused { run.state = WorkflowRunState::WaitingApproval; }
-        } else {
-            run.nodes[index].state = WorkflowNodeState::Completed;
-            run.nodes[index].finished_at_ms = Some(self.clock.now_ms());
-            if let Some(lease_id) = run.nodes[index].lease_id.take() {
-                self.leases.release(&lease_id)?;
-            }
-        }
-        refresh_ready_and_phase(&mut run);
-        self.append(
-            &mut run,
-            "workflow.node.result-submitted",
-            idempotency_key,
-            Some(node_id),
-        )?;
-        self.dispatch_ready(run_id).await
     }
 
     /// Dispatches this run, then any other run left waiting for agent capacity.
@@ -2378,9 +2008,8 @@ impl WorkflowEngine {
                 "assignedStep": node_definition.fan_out,
                 "priorStageReceipts": prior_results,
                 "responseRequirements": {
-                    "format": "Return only one JSON object. Do not wrap it in commentary.",
+                    "tool": "report_result",
                     "outputContract": role.output_contract.name(),
-                    "requiredShape": output_contract_shape(role.output_contract),
                 }
             })
             .to_string();
@@ -2394,7 +2023,6 @@ impl WorkflowEngine {
                     cwd: lease.cwd,
                     title: format!("{} · {}", node_definition.title, role.name),
                     prompt,
-                    role_id: role.id,
                     model: role.model_policy.value,
                     effort: role.effort_policy.value,
                     permission: role.permission_policy.value,
@@ -2486,9 +2114,10 @@ impl WorkflowEngine {
         let max_rounds = run.definition.limits["max_rounds"].as_u64().unwrap_or(5) as usize;
         let findings = output["findings"].as_array().cloned().unwrap_or_default();
         let previous = rounds.last().and_then(Value::as_array);
-        let repeated = findings.iter().filter_map(Value::as_str).filter(|finding| {
-            finding.starts_with("REPEAT:") || previous.is_some_and(|previous| previous.iter()
-                .filter_map(Value::as_str).any(|text| text.trim() == finding.trim()))
+        // A failed command is its text; a review finding has its text in `text`.
+        let text = |finding: &Value| finding.as_str().or(finding["text"].as_str()).unwrap_or_default().trim().to_owned();
+        let repeated = findings.iter().map(text).filter(|finding| {
+            finding.starts_with("REPEAT:") || previous.is_some_and(|previous| previous.iter().any(|earlier| text(earlier) == *finding))
         }).count();
         let stop = if rounds.len() >= max_rounds {
             Some(format!("Stopped after {max_rounds} rounds with {count} still found"))
@@ -2622,12 +2251,15 @@ impl WorkflowEngine {
         let mut run = self.require_run(run_id)?;
         let node = run.nodes.iter_mut().find(|node| node.node_id == node_id).unwrap();
         if node.state != WorkflowNodeState::Running { return Ok(run); }
+        // The run's acceptance list is the spec step's; no other step writes it.
+        let acceptance = (node.output_contract == WorkflowOutputContract::SpecReceipt).then(|| output["acceptance"].clone());
         node.structured_output = Some(output);
         node.state = if passed { WorkflowNodeState::Completed } else { WorkflowNodeState::Failed };
         node.finished_at_ms = Some(self.clock.now_ms());
         if let Some(lease) = node.lease_id.take() { self.leases.release(&lease)?; }
         if !passed { node.failure = Some(WorkflowFailure { code:"commands-failed".into(), message:"One or more commands failed".into(), budget:None }); }
         let owned_id = node.owned_id.clone();
+        if let Some(acceptance) = acceptance { run.input_snapshot["acceptance"] = acceptance; }
         refresh_ready_and_phase(&mut run);
         let kind = if run.definition.nodes.iter().find(|node| node.id == node_id).unwrap().step.get("run").is_some() { "workflow.node.commands-finished" } else { "workflow.node.agent-finished" };
         self.append(&mut run, kind, key, Some(node_id))?;
@@ -3064,55 +2696,6 @@ fn retain_run_worktree(run: &mut WorkflowRunRecord, merged_head: Option<&str>) -
     Ok(())
 }
 
-fn decode_agent_receipt(text: &str) -> Result<Value, WorkflowError> {
-    let trimmed = text.trim();
-    if let Ok(value) = serde_json::from_str(trimmed) {
-        return Ok(value);
-    }
-    let fenced = trimmed
-        .strip_prefix("```json")
-        .or_else(|| trimmed.strip_prefix("```"))
-        .and_then(|value| value.strip_suffix("```"))
-        .map(str::trim)
-        .ok_or_else(|| {
-            WorkflowError::OutputContract(
-                "The agent must return one JSON object matching its output contract".into(),
-            )
-        })?;
-    serde_json::from_str(fenced).map_err(|error| {
-        WorkflowError::OutputContract(format!("The agent receipt is not valid JSON: {error}"))
-    })
-}
-
-fn output_contract_shape(contract: WorkflowOutputContract) -> &'static str {
-    match contract {
-        WorkflowOutputContract::ImplementationReceipt => {
-            r#"{"changedFiles":[],"summary":"","tests":[],"knownRisks":[],"commit":null,"branch":null,"worktree":null,"artifacts":[]}"#
-        }
-        WorkflowOutputContract::PullRequestReceipt => {
-            r#"{"url":"","branch":"","artifacts":[]}"#
-        }
-        WorkflowOutputContract::PullRequestMergeReceipt => {
-            r#"{"url":"","mergeCommitSha":""}"#
-        }
-        WorkflowOutputContract::ReviewReceipt => {
-            r#"{"severity":"none","file":"","line":0,"evidence":"","recommendation":"","confidence":1,"blocking":false}"#
-        }
-        WorkflowOutputContract::SpecReceipt => {
-            r#"{"path":"docs/superpowers/specs/YYYY-MM-DD-topic-design.md","summary":"","requirements":[]}"#
-        }
-        WorkflowOutputContract::SpecComplianceReceipt => {
-            r#"{"requirementId":"","status":"","evidence":{},"gap":null,"recommendedAction":null}"#
-        }
-        WorkflowOutputContract::VerificationReceipt => {
-            r#"{"command":"","exit":0,"duration":0,"evidenceArtifacts":[],"cleanupReceipt":{}}"#
-        }
-        WorkflowOutputContract::PlanReceipt => {
-            r#"{"orderedSteps":[],"dependencies":[],"risk":{},"estimatedParallelLanes":1,"ownerMerge":false}"#
-        }
-    }
-}
-
 fn enforce_budgets(run: &WorkflowRunRecord, now_ms: u64) -> Result<(), WorkflowError> {
     if now_ms.saturating_sub(run.created_at_ms)
         > run
@@ -3183,153 +2766,6 @@ fn budget_failure(budget: &str, message: &str) -> WorkflowFailure {
     }
 }
 
-fn materialize_plan_steps(
-    run: &mut WorkflowRunRecord,
-    node_id: &str,
-    ids: &dyn IdGenerator,
-) -> Result<(), WorkflowError> {
-    if run.workflow_id != "task-plan-implement-review" || node_id != "plan-review" {
-        return Ok(());
-    }
-    let steps = run
-        .nodes
-        .iter()
-        .find(|node| node.node_id == "plan")
-        .and_then(|node| node.structured_output.as_ref())
-        .and_then(|output| output.get("orderedSteps"))
-        .and_then(Value::as_array)
-        .ok_or_else(|| WorkflowError::OutputContract("Plan has no orderedSteps".into()))?;
-    if steps.is_empty() {
-        return Err(WorkflowError::OutputContract(
-            "Plan needs at least one ordered step".into(),
-        ));
-    }
-    let template = |id: &str| {
-        run.definition
-            .nodes
-            .iter()
-            .find(|node| node.id == id)
-            .cloned()
-            .ok_or_else(|| WorkflowError::InvalidDefinition(format!("Missing {id} stage")))
-    };
-    let plan = template("plan")?;
-    let plan_review = template("plan-review")?;
-    let implement = template("implement")?;
-    let review = template("review")?;
-    let has_spec = run.definition.nodes.iter().any(|node| node.id == "spec");
-    let mut generated = Vec::new();
-    let mut previous_review = "plan-review".to_string();
-    let mut first_plan = String::new();
-    let mut last_implement = String::new();
-    for (index, step) in steps.iter().enumerate() {
-        let prefix = format!("step-{:02}", index + 1);
-        let plan_id = format!("{prefix}-plan");
-        let plan_review_id = format!("{prefix}-plan-review");
-        let implement_id = format!("{prefix}-implement");
-        let review_id = format!("{prefix}-review");
-        if index == 0 {
-            first_plan = plan_id.clone();
-        }
-        let mut step_plan = plan.clone();
-        step_plan.id = plan_id.clone();
-        step_plan.title = format!("Step {} plan", index + 1);
-        step_plan.depends_on = vec![previous_review.clone()];
-        if has_spec {
-            step_plan.depends_on.push("spec".into());
-        }
-        step_plan.fan_out = Some(step.clone());
-        generated.push(step_plan);
-
-        let mut step_plan_review = plan_review.clone();
-        step_plan_review.id = plan_review_id.clone();
-        step_plan_review.title = format!("Step {} plan review", index + 1);
-        step_plan_review.depends_on = vec![plan_id.clone()];
-        if has_spec {
-            step_plan_review.depends_on.push("spec".into());
-        }
-        step_plan_review.condition = Some(json!({"redoNodeId": plan_id}));
-        step_plan_review.fan_out = Some(step.clone());
-        step_plan_review.approval_gate = None;
-        generated.push(step_plan_review);
-
-        let mut step_implement = implement.clone();
-        step_implement.id = implement_id.clone();
-        step_implement.title = format!("Step {} implement", index + 1);
-        step_implement.depends_on = vec![plan_id.clone(), plan_review_id];
-        if has_spec {
-            step_implement.depends_on.push("spec".into());
-        }
-        step_implement.fan_out = Some(step.clone());
-        step_implement.approval_gate = None;
-        generated.push(step_implement);
-
-        let mut step_review = review.clone();
-        step_review.id = review_id.clone();
-        step_review.title = format!("Step {} code and spec review", index + 1);
-        step_review.depends_on = vec![plan_id.clone(), implement_id.clone()];
-        if has_spec {
-            step_review.depends_on.push("spec".into());
-        }
-        step_review.condition = Some(json!({"redoNodeId": plan_id}));
-        step_review.fan_out = Some(step.clone());
-        generated.push(step_review);
-        previous_review = review_id;
-        last_implement = implement_id;
-    }
-
-    let mut definition = run.definition.clone();
-    definition.nodes.retain(|node| node.id != "implement" && node.id != "review");
-    for node in &mut definition.nodes {
-        match node.id.as_str() {
-            "verify" => {
-                node.depends_on = vec![previous_review.clone()];
-                if has_spec {
-                    node.depends_on.push("spec".into());
-                }
-            }
-            "open-pr" => node.depends_on = vec![last_implement.clone(), "verify".into()],
-            "pr-review" => {
-                node.depends_on = vec![first_plan.clone(), last_implement.clone(), "verify".into(), "open-pr".into()];
-                if has_spec {
-                    node.depends_on.push("spec".into());
-                }
-                node.condition = Some(json!({"redoNodeId": first_plan}));
-            }
-            _ => {}
-        }
-    }
-    definition.nodes.extend(generated.iter().cloned());
-    WorkflowPolicy::validate_definition(&definition)?;
-    run.definition = definition;
-    run.nodes.retain(|node| node.node_id != "implement" && node.node_id != "review");
-    for node in generated {
-        let role = run.definition.roles.iter().find(|role| role.id == node.role_id).unwrap();
-        run.nodes.push(WorkflowNodeRunRecord {
-            id: format!("{}:{}:1", run.id, node.id),
-            node_id: node.id,
-            role_id: node.role_id,
-            state: WorkflowNodeState::Blocked,
-            attempt: 1,
-            depth: 0,
-            owned_id: ids.next_id("workflow-agent"),
-            provider: role.provider_policy.provider.to_ascii_lowercase(),
-            provider_instance_id: None,
-            started_at_ms: None,
-            finished_at_ms: None,
-            output_contract: role.output_contract,
-            structured_output: None,
-            artifacts: Vec::new(),
-            gate: None,
-            lease_id: None,
-            failure: None,
-            usage: None,
-        });
-    }
-    run.nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
-    Ok(())
-}
-
-/// A run waiting for the owner goes back to running once no step waits for them.
 fn resume_if_nothing_waits(run: &mut WorkflowRunRecord) {
     if run.state == WorkflowRunState::WaitingInput && !run.nodes.iter().any(|node|
         matches!(node.state, WorkflowNodeState::WaitingInput | WorkflowNodeState::WaitingApproval)) {
@@ -3339,26 +2775,8 @@ fn resume_if_nothing_waits(run: &mut WorkflowRunRecord) {
 
 fn refresh_ready_and_phase(run: &mut WorkflowRunRecord) {
     for node_id in WorkflowScheduler::ready_nodes(run) {
-        let owner_merge_plan = run
-            .definition
-            .nodes
-            .iter()
-            .find(|node| node.id == node_id)
-            .and_then(|node| node.condition.as_ref())
-            .and_then(|condition| condition.get("ownerMergeNodeId"))
-            .and_then(Value::as_str);
-        let owner_merges = owner_merge_plan
-            .and_then(|plan_id| run.nodes.iter().find(|node| node.node_id == plan_id))
-            .and_then(|node| node.structured_output.as_ref())
-            .and_then(|receipt| receipt.get("ownerMerge"))
-            .and_then(Value::as_bool)
-            == Some(true);
         if let Some(node) = run.nodes.iter_mut().find(|node| node.node_id == node_id) {
-            node.state = if owner_merges {
-                WorkflowNodeState::Skipped
-            } else {
-                WorkflowNodeState::Ready
-            };
+            node.state = WorkflowNodeState::Ready;
         }
     }
     if run.state == WorkflowRunState::Paused {
@@ -3593,7 +3011,7 @@ fn pr_body(task_key: &str, outputs: &[(String, String)], artifacts: &[String]) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    mod permissions; mod agent_tools; mod review_rounds; mod agent_inputs; mod orchestrator_decisions; mod step_end; mod run_setup;
+    mod permissions; mod agent_tools; mod review_rounds; mod agent_inputs; mod orchestrator_decisions; mod step_end; mod receipts; mod run_setup;
     #[test]
     fn pr_body_stays_under_the_github_limit_and_names_every_step() {
         let outputs: Vec<(String, String)> = (0..14).map(|n| (format!("step-{n}"), "x".repeat(20_000))).collect();
@@ -3754,6 +3172,8 @@ mod tests {
     }
     fn complete_step(engine: &WorkflowEngine, run: &WorkflowRunRecord, text: &str) -> WorkflowRunRecord {
         let first = &run.nodes[0];
+        engine.store.add_review_report(&first.owned_id, &run.id, &first.id,
+            &json!({"commits":[],"tests_added":[],"summary":text}).to_string()).unwrap();
         engine.store.upsert_session(&SessionRow { owned_id:first.owned_id.clone(), native_session_id:None,
             provider:"codex".into(), model:None, effort:None, cwd:"/repo".into(), worktree:None,
             branch:None, title:None, title_source:None, project:None, project_id:None, state:"ready".into(),
@@ -3766,12 +3186,14 @@ mod tests {
         let terminal = AgentConversationEvent { payload:AgentConversationPayload::Turn { turn_id:"turn".into(), state:TurnState::Completed }, ..event };
         tauri::async_runtime::block_on(engine.accept_agent_event(&terminal)).unwrap().unwrap()
     }
-    const LOOP_REVIEW: &str = "  build: { agent: { provider: codex }, prompt: prompts/p.md }\n  review:\n    needs: [build]\n    review: { of: build, agent: { provider: claude }, prompt: prompts/p.md }\n";
+    const LOOP_REVIEW: &str = "  build: { result: build, agent: { provider: codex }, prompt: prompts/p.md }\n  review:\n    needs: [build]\n    result: review\n    review: { of: build, agent: { provider: claude }, prompt: prompts/p.md }\n";
 
     /// A run of the repository workflow `steps`, ready to start.
     fn loop_run(engine: &WorkflowEngine, root: &Path, steps: &str) -> WorkflowRunRecord {
         std::fs::create_dir_all(root.join(".assembly/workflows/prompts")).unwrap();
         std::fs::write(root.join(".assembly/workflows/prompts/p.md"), "Do the work").unwrap();
+        // The workflow files are not the build's work, so a build report still finds the tree clean.
+        std::fs::write(root.join(".git/info/exclude"), ".assembly/\n").unwrap();
         let path = Path::new(".assembly/workflows/loop.yml");
         std::fs::write(root.join(path), format!("name: Loop\nsteps:\n{steps}")).unwrap();
         let definition = WorkflowEngine::validate_file(root, path).unwrap();
@@ -3812,8 +3234,15 @@ mod tests {
     }
 
     fn findings(count: usize) -> Value {
-        json!({"verdict":"fail","findings":(0..count).map(|number| format!("finding {number}")).collect::<Vec<_>>()})
+        failed(&(0..count).map(|number| format!("finding {number}")).collect::<Vec<_>>())
     }
+    /// A failing review report with one blocking finding per text.
+    fn failed(texts: &[impl AsRef<str>]) -> Value {
+        json!({"verdict":"fail","head":"","findings":texts.iter().map(|text| json!({"severity":"blocking","late":false,
+            "path_line":"a.rs:1","text":text.as_ref(),"fix":"Fix it","grades_of_earlier":[]})).collect::<Vec<_>>()})
+    }
+    /// A build report with no commits, as a build on a fake runtime makes.
+    fn built() -> Value { json!({"commits":[],"tests_added":[],"summary":"Built."}) }
 
     use crate::agent_conversation::messaging::MessagingEndpoint;
     const AGENT_FLOW: &str = ".assembly/workflows/loop.yml";
@@ -3848,7 +3277,7 @@ mod tests {
     fn stop_the_loop(engine: &WorkflowEngine, run_id: &str) -> WorkflowRunRecord {
         let mut run = engine.get_run(run_id).unwrap();
         for _ in 0..2 {
-            end_turn(engine, run_id, "build", &[]);
+            end_turn(engine, run_id, "build", &[built()]);
             run = end_turn(engine, run_id, "review", &[findings(2)]);
         }
         assert_eq!(run.state, WorkflowRunState::WaitingInput);
@@ -3990,7 +3419,8 @@ mod tests {
             (json!("TSK-1"), json!("waiting-input"), json!("starter")));
         let steps = facts["steps"].as_array().unwrap();
         let review = steps.iter().find(|step| step["id"] == "review").unwrap();
-        assert_eq!((review["verdict"].clone(), review["findings"].clone()), (json!("fail"), json!(["finding 0", "finding 1"])));
+        let texts: Vec<_> = review["findings"].as_array().unwrap().iter().map(|finding| finding["text"].clone()).collect();
+        assert_eq!((review["verdict"].clone(), json!(texts)), (json!("fail"), json!(["finding 0", "finding 1"])));
         assert!(review["failure"].as_str().is_some() && review["worker"].as_str().is_some(), "{review}");
         assert_eq!(steps.iter().find(|step| step["id"] == "build").unwrap()["attempt"], 2);
         let text = facts.to_string();
@@ -4010,33 +3440,29 @@ mod tests {
     }
 
     #[test]
-    fn review_requires_exactly_one_report() {
-        for (reports, passes) in [(vec![], false), (vec![json!({"verdict":"pass","findings":[]}); 2], false),
-            (vec![json!({"verdict":"pass","findings":[]})], true)] {
-            let repo = RunRepo::new();
-            let engine = run_engine(Arc::new(FakeRuntime::default()));
-            let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
-            end_turn(&engine, &run.id, "build", &[]);
-            let run = end_turn(&engine, &run.id, "review", &reports);
-            if passes {
-                assert_eq!(step_of(&run, "review").state, WorkflowNodeState::Completed);
-                assert_eq!(run.state, WorkflowRunState::Completed);
-            } else {
-                assert_eq!(step_of(&run, "review").state, WorkflowNodeState::WaitingInput);
-                assert_eq!(step_of(&run, "review").failure.as_ref().unwrap().code, "review-report");
-                assert_eq!(run.state, WorkflowRunState::WaitingInput);
-                assert_eq!(step_of(&run, "build").attempt, 1);
-            }
-        }
+    fn a_review_counts_its_last_report_and_one_without_a_report_fails() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
+        end_turn(&engine, &run.id, "build", &[built()]);
+        let run = end_turn(&engine, &run.id, "review", &[findings(1), json!({"verdict":"pass","findings":[],"head":""})]);
+        assert_eq!((step_of(&run, "review").state, run.state), (WorkflowNodeState::Completed, WorkflowRunState::Completed));
+        let repo = RunRepo::new();
+        let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
+        end_turn(&engine, &run.id, "build", &[built()]);
+        assert_eq!(step_of(&end_turn(&engine, &run.id, "review", &[]), "review").state, WorkflowNodeState::Running);
+        let run = end_turn(&engine, &run.id, "review", &[]);
+        assert_eq!(step_of(&run, "review").failure.as_ref().unwrap().code, "no-report");
+        assert_eq!(step_of(&run, "build").attempt, 1);
     }
 
     #[test]
     fn redo_invalidates_all_transitive_dependents() {
         let repo = RunRepo::new();
         let engine = run_engine(Arc::new(FakeRuntime::default()));
-        let steps = "  build: { agent: { provider: codex }, prompt: prompts/p.md }\n  checks: { needs: [build], run: [\"true\"] }\n  review:\n    needs: [checks]\n    review: { of: build, agent: { provider: claude }, prompt: prompts/p.md }\n  proof: { needs: [review], agent: { provider: claude }, prompt: prompts/p.md }\n";
+        let steps = "  build: { result: build, agent: { provider: codex }, prompt: prompts/p.md }\n  checks: { needs: [build], run: [\"true\"] }\n  review:\n    needs: [checks]\n    result: review\n    review: { of: build, agent: { provider: claude }, prompt: prompts/p.md }\n  proof: { result: proof, needs: [review], agent: { provider: claude }, prompt: prompts/p.md }\n";
         let run = loop_run(&engine, &repo.0, steps);
-        end_turn(&engine, &run.id, "build", &[]);
+        end_turn(&engine, &run.id, "build", &[built()]);
         let checked = settle(&engine, &run.id);
         assert_eq!(step_of(&checked, "checks").state, WorkflowNodeState::Completed);
         let run = end_turn(&engine, &run.id, "review", &[findings(2)]);
@@ -4049,7 +3475,7 @@ mod tests {
             assert!(step_of(&run, id).artifacts.is_empty(), "{id}");
         }
         assert_eq!((step_of(&run, "proof").attempt, step_of(&run, "proof").state), (1, WorkflowNodeState::Blocked));
-        assert_eq!(run.input_snapshot["redo"]["findings"], json!(["finding 0", "finding 1"]));
+        assert_eq!(run.input_snapshot["redo"]["findings"], json!(failed(&["finding 0", "finding 1"])["findings"]));
         // The earlier attempts stay in the history.
         let events = crate::workflow::orchestration::read_workflow_event_values(&engine.store).unwrap();
         assert!(events.iter().any(|event| event["workflowPayload"]["run"]["nodes"].as_array().unwrap().iter()
@@ -4069,7 +3495,7 @@ mod tests {
             let engine = run_engine(Arc::new(FakeRuntime::default()));
             let mut run = loop_run(&engine, &repo.0, LOOP_REVIEW);
             for texts in &reports {
-                end_turn(&engine, &run.id, "build", &[]);
+                end_turn(&engine, &run.id, "build", &[built()]);
                 run = end_turn(&engine, &run.id, "review", &[json!({"verdict":"fail","findings":texts})]);
             }
             assert_eq!(step_of(&run, "build").attempt, rounds + 1);
@@ -4090,34 +3516,35 @@ mod tests {
         // A failing check sends its on_fail step back, then stops if the same command fails again.
         let repo = RunRepo::new();
         let engine = run_engine(Arc::new(FakeRuntime::default()));
-        let run = loop_run(&engine, &repo.0, "  build: { agent: { provider: codex }, prompt: prompts/p.md }\n  checks: { needs: [build], run: [\"exit 1\", \"true\"], on_fail: build }\n");
-        end_turn(&engine, &run.id, "build", &[]);
+        let run = loop_run(&engine, &repo.0, "  build: { result: build, agent: { provider: codex }, prompt: prompts/p.md }\n  checks: { needs: [build], run: [\"exit 1\", \"true\"], on_fail: build }\n");
+        end_turn(&engine, &run.id, "build", &[built()]);
         settle(&engine, &run.id);
         let run = engine.require_run(&run.id).unwrap();
         assert_eq!(step_of(&run, "build").attempt, 2);
         assert_eq!(run.input_snapshot["rounds"]["checks"], json!([["exit 1"]]));
-        end_turn(&engine, &run.id, "build", &[]);
+        end_turn(&engine, &run.id, "build", &[built()]);
         let run = settle(&engine, &run.id);
         assert_eq!(step_of(&run, "checks").state, WorkflowNodeState::WaitingInput);
         assert_eq!(step_of(&run, "checks").failure.as_ref().unwrap().code, "loop-stopped");
     }
 
     #[test]
-    fn report_review_is_only_for_the_running_reviewer() {
+    fn report_result_is_only_for_the_running_step() {
         let repo = RunRepo::new();
         let engine = run_engine(Arc::new(FakeRuntime::default()));
         let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
-        let run = end_turn(&engine, &run.id, "build", &[]);
+        let run = end_turn(&engine, &run.id, "build", &[built()]);
         let endpoint = crate::agent_conversation::messaging::MessagingEndpoint::start().unwrap();
+        endpoint.set_workflow(engine.clone());
         let (reviewer, worker) = (endpoint.issue(&step_of(&run, "review").owned_id), endpoint.issue(&step_of(&run, "build").owned_id));
         for caller in [&reviewer, &worker] { endpoint.bind_store(&caller.token, &engine.store, None); }
-        let report = |verdict: &str| json!({"name":"report_review","arguments":{"verdict":verdict,"findings":[]}});
+        let report = |verdict: &str| json!({"name":"report_result","arguments":{"verdict":verdict,"findings":[],"head":"abc"}});
         let error = tauri::async_runtime::block_on(endpoint.handle(&worker.token, report("pass"))).unwrap_err();
-        assert_eq!(error, "Only a session running a workflow review step can report a review");
+        assert_eq!(error, "Only a session running a workflow step can report its result");
         let error = tauri::async_runtime::block_on(endpoint.handle(&reviewer.token, report("maybe"))).unwrap_err();
-        assert_eq!(error, "verdict must be pass or fail");
-        tauri::async_runtime::block_on(endpoint.handle(&reviewer.token, report("PASS"))).unwrap();
-        assert_eq!(engine.store.review_reports(&step_of(&run, "review").id).unwrap(), vec![r#"{"verdict":"pass","findings":[]}"#]);
+        assert!(error.contains("verdict") || error.contains("variant"), "{error}");
+        tauri::async_runtime::block_on(endpoint.handle(&reviewer.token, report("pass"))).unwrap();
+        assert_eq!(engine.store.review_reports(&step_of(&run, "review").id).unwrap(), vec![r#"{"verdict":"pass","findings":[],"head":"abc"}"#]);
     }
 
     #[test]
@@ -4126,11 +3553,11 @@ mod tests {
         let runtime = Arc::new(FakeRuntime::default());
         let engine = run_engine(runtime.clone());
         let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
-        end_turn(&engine, &run.id, "build", &[]);
+        end_turn(&engine, &run.id, "build", &[built()]);
         let first = engine.require_run(&run.id).unwrap();
         let redone = end_turn(&engine, &run.id, "review", &[findings(1)]);
         assert_eq!(step_of(&redone, "build").owned_id, step_of(&first, "build").owned_id);
-        let redone = end_turn(&engine, &run.id, "build", &[]);
+        let redone = end_turn(&engine, &run.id, "build", &[built()]);
         assert_ne!(step_of(&redone, "review").owned_id, step_of(&first, "review").owned_id);
         let workers: Vec<_> = runtime.dispatched.lock().unwrap().iter().map(|request| request.owned_id.clone()).collect();
         assert_eq!(workers.iter().filter(|id| **id == step_of(&first, "build").owned_id).count(), 2);
@@ -4140,10 +3567,10 @@ mod tests {
     fn redo_resumes_a_run_paused_by_the_other_reviewer() {
         let repo = RunRepo::new();
         let engine = run_engine(Arc::new(FakeRuntime::default()));
-        let steps = format!("{LOOP_REVIEW}  second:\n    needs: [build]\n    review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/p.md }}\n");
+        let steps = format!("{LOOP_REVIEW}  second:\n    needs: [build]\n    result: review\n    review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/p.md }}\n");
         let run = loop_run(&engine, &repo.0, &steps);
-        end_turn(&engine, &run.id, "build", &[]);
-        let paused = end_turn(&engine, &run.id, "second", &[]);
+        end_turn(&engine, &run.id, "build", &[built()]);
+        let paused = end_turn(&engine, &run.id, "second", &[failed(&["REPEAT: same problem"])]);
         assert_eq!(paused.state, WorkflowRunState::WaitingInput);
         let run = end_turn(&engine, &run.id, "review", &[findings(1)]);
         assert_eq!(step_of(&run, "second").state, WorkflowNodeState::Blocked);
@@ -4155,7 +3582,7 @@ mod tests {
     fn loop_stopped_run(engine: &WorkflowEngine, root: &Path) -> WorkflowRunRecord {
         let mut run = loop_run(engine, root, LOOP_REVIEW);
         for count in [2, 2] {
-            end_turn(engine, &run.id, "build", &[]);
+            end_turn(engine, &run.id, "build", &[built()]);
             run = end_turn(engine, &run.id, "review", &[findings(count)]);
         }
         assert_eq!(step_of(&run, "review").failure.as_ref().unwrap().code, "loop-stopped");
@@ -4195,7 +3622,7 @@ mod tests {
         let engine = run_engine(Arc::new(FakeRuntime::default()));
         let mut run = loop_run(&engine, &repo.0, LOOP_REVIEW);
         for texts in [vec!["a"], vec!["a", "b"]] {
-            end_turn(&engine, &run.id, "build", &[]);
+            end_turn(&engine, &run.id, "build", &[built()]);
             run = end_turn(&engine, &run.id, "review", &[json!({"verdict":"fail","findings":texts})]);
         }
         assert_eq!(step_of(&run, "review").failure.as_ref().unwrap().code, "loop-stopped");
@@ -4324,7 +3751,6 @@ mod tests {
         assert_eq!(started.nodes[0].state, WorkflowNodeState::Skipped);
         let dispatches = runtime.dispatched.lock().unwrap();
         assert_eq!(dispatches.len(), 1);
-        assert_eq!(dispatches[0].role_id, "reviewer");
     }
     #[test]
     fn step_timeout_pauses_for_owner() {
@@ -4357,7 +3783,6 @@ mod tests {
         engine.append(&mut run, "workflow.test.template", "template", None).unwrap();
         let started = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
         assert_eq!(runtime.dispatched.lock().unwrap()[0].prompt, "TSK-1416|Task title|Task body|false|[\"fix\"]|failed");
-        assert!(tauri::async_runtime::block_on(engine.submit_result(&run.id, "a", json!({"summary":"spoof"}), "spoof")).is_err());
         let finished = complete_step(&engine, &started, "Final reply.");
         assert_eq!(finished.nodes[0].structured_output.as_ref().unwrap()["summary"], "Final reply.");
         assert_eq!(finished.nodes[0].structured_output.as_ref().unwrap()["files"], json!(["proof.txt"]));
@@ -4400,7 +3825,7 @@ mod tests {
         let runtime = Arc::new(FakeRuntime::default());
         let engine = run_engine(runtime.clone());
         std::fs::create_dir_all(repo.0.join(".assembly/workflows")).unwrap();
-        std::fs::write(repo.0.join(".assembly/workflows/demo.yml"), "name: Demo\nsteps:\n  build:\n    agent: { provider: codex }\n    prompt: build.md\n").unwrap();
+        std::fs::write(repo.0.join(".assembly/workflows/demo.yml"), "name: Demo\nsteps:\n  build:\n    result: build\n    agent: { provider: codex }\n    prompt: build.md\n").unwrap();
         std::fs::write(repo.0.join(".assembly/workflows/build.md"), "Build").unwrap();
         let run = engine.create_run_from_file(&repo.0, Path::new(".assembly/workflows/demo.yml"),
             TaskSnapshot { key: "TSK-1416".into(), title: "Engine".into(), body: "Body".into() }, json!({}), "new".into()).unwrap();
@@ -4446,47 +3871,32 @@ mod tests {
         let owned = runtime.dispatched.lock().unwrap()[0].owned_id.clone();
         let (started, waiting) = if engine.require_run(&first.id).unwrap().nodes[0].owned_id == owned { (&first.id, &second.id) } else { (&second.id, &first.id) };
         assert_eq!(engine.require_run(waiting).unwrap().nodes[0].state, WorkflowNodeState::Ready);
-        tauri::async_runtime::block_on(engine.submit_result(started, "a",
-            json!({"changedFiles":[],"summary":"done","tests":[],"knownRisks":[],"commit":null,"branch":null,"worktree":null,"artifacts":[]}), "finish")).unwrap();
+        end_turn(&engine, started, "a", &[built()]);
         assert_eq!(runtime.dispatched.lock().unwrap().len(), 2);
         assert_eq!(engine.require_run(waiting).unwrap().nodes[0].state, WorkflowNodeState::Running);
     }
     #[test]
     fn pause_does_not_cancel_active_turn() {
-        for gated in [false, true] {
-            let repo = RunRepo::new();
-            let runtime = Arc::new(FakeRuntime::default());
-            let engine = run_engine(runtime.clone());
-            let mut run = limit_run(&engine, &repo.0, "paused", 1);
-            if gated {
-                run.definition.nodes[0].approval_gate = Some(WorkflowApprovalGate { id: "approve".into(), prompt: "Approve".into() });
-                engine.append(&mut run, "workflow.test.gated", "gate", None).unwrap();
-            }
-            let active = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
-            let paused = engine.pause(&run.id, "pause").unwrap();
-            assert_eq!(paused.nodes[0].state, WorkflowNodeState::Running);
-            assert_eq!(runtime.cancelled.load(Ordering::SeqCst), 0);
-            let finished = tauri::async_runtime::block_on(engine.submit_result(&run.id, "a",
-                json!({"changedFiles":[],"summary":"done","tests":[],"knownRisks":[],"commit":null,"branch":null,"worktree":null,"artifacts":[]}), "finish")).unwrap();
-            assert_eq!(finished.nodes[0].owned_id, active.nodes[0].owned_id);
-            assert_eq!(finished.nodes[0].state, if gated { WorkflowNodeState::WaitingApproval } else { WorkflowNodeState::Completed });
-            assert_eq!(finished.state, WorkflowRunState::Paused);
-            if gated {
-                let approved = tauri::async_runtime::block_on(engine.approve_gate(&run.id, "a", json!({"approved": true}), "owner", "approve", None)).unwrap();
-                assert_eq!(approved.state, WorkflowRunState::Paused);
-                assert_eq!(approved.nodes[0].state, WorkflowNodeState::Completed);
-                assert_eq!(runtime.dispatched.lock().unwrap().len(), 1);
-            }
-            let resumed = tauri::async_runtime::block_on(engine.resume(&run.id, "resume")).unwrap();
-            assert_eq!(resumed.state, WorkflowRunState::Completed);
-        }
+        let repo = RunRepo::new();
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = run_engine(runtime.clone());
+        let run = limit_run(&engine, &repo.0, "paused", 1);
+        let active = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+        let paused = engine.pause(&run.id, "pause").unwrap();
+        assert_eq!(paused.nodes[0].state, WorkflowNodeState::Running);
+        assert_eq!(runtime.cancelled.load(Ordering::SeqCst), 0);
+        let finished = end_turn(&engine, &run.id, "a", &[built()]);
+        assert_eq!(finished.nodes[0].owned_id, active.nodes[0].owned_id);
+        assert_eq!(finished.nodes[0].state, WorkflowNodeState::Completed);
+        assert_eq!(finished.state, WorkflowRunState::Paused);
+        let resumed = tauri::async_runtime::block_on(engine.resume(&run.id, "resume")).unwrap();
+        assert_eq!(resumed.state, WorkflowRunState::Completed);
     }
-
     fn yaml_fixture(label: &str) -> (std::path::PathBuf, WorkflowEngine) {
         let root = std::path::PathBuf::from("/var/tmp").join(format!("task7-{label}-{}", std::process::id()));
         std::fs::create_dir_all(root.join(".assembly/workflows/prompts")).unwrap();
         std::fs::write(root.join(".assembly/workflows/prompts/build.md"), "Build ${{ task.body }}").unwrap();
-        std::fs::write(root.join(".assembly/workflows/demo.yml"), "name: Demo\ninputs: { flag: { default: false } }\nlimits: { max_sessions: 2, max_rounds: 5, step_timeout_minutes: 60 }\nsteps:\n  build:\n    agent: { provider: codex, model: test-model }\n    prompt: prompts/build.md\n  checks:\n    needs: [build]\n    run: [cargo test]\n    repeat: true\n    on_fail: build\n").unwrap();
+        std::fs::write(root.join(".assembly/workflows/demo.yml"), "name: Demo\ninputs: { flag: { default: false } }\nlimits: { max_sessions: 2, max_rounds: 5, step_timeout_minutes: 60 }\nsteps:\n  build:\n    result: build\n    agent: { provider: codex, model: test-model }\n    prompt: prompts/build.md\n  checks:\n    needs: [build]\n    run: [cargo test]\n    repeat: true\n    on_fail: build\n").unwrap();
         let engine = WorkflowEngine::new(Arc::new(FakeRuntime::default()),
             Arc::new(InMemoryWorktreeLeasePort::default()), Arc::new(FakeClock(AtomicU64::new(1))),
             Arc::new(FakeIds(AtomicU64::new(1))), Arc::new(SessionStore::open_in_memory().unwrap()));
@@ -4534,7 +3944,7 @@ mod tests {
         assert_eq!(saved.input_snapshot["flag"], true);
         assert!(engine.create_run_from_file(&root, std::path::Path::new("../escape.yml"), task.clone(), json!({}), "escape".into()).is_err());
         std::fs::write(root.join(".assembly/escape.md"), "Existing file").unwrap();
-        std::fs::write(root.join(path), "name: Escape\nsteps:\n  build:\n    agent: { provider: codex }\n    prompt: ../escape.md\n").unwrap();
+        std::fs::write(root.join(path), "name: Escape\nsteps:\n  build:\n    result: build\n    agent: { provider: codex }\n    prompt: ../escape.md\n").unwrap();
         assert!(engine.create_run_from_file(&root, path, task.clone(), json!({}), "prompt-escape".into()).is_err());
         std::fs::write(root.join(path), "name: Duplicate\nsteps:\n  build: { run: [first] }\n  build: { run: [second] }\n").unwrap();
         assert!(engine.create_run_from_file(&root, path, task, json!({}), "duplicate".into()).is_err());
@@ -4581,17 +3991,17 @@ mod tests {
         let (root, engine) = yaml_fixture("strict");
         let path = std::path::Path::new(".assembly/workflows/demo.yml");
         let task = TaskSnapshot { key: "TSK-1416".into(), title: "Title".into(), body: "Body".into() };
-        let head = "name: Strict\nsteps:\n  build: { agent: { provider: codex }, prompt: prompts/build.md }\n";
-        let reviewer = |extra: &str| format!("{head}  review:\n    needs: [build]\n    review: {{ {extra}prompt: prompts/build.md }}\n");
+        let head = "name: Strict\nsteps:\n  build: { result: build, agent: { provider: codex }, prompt: prompts/build.md }\n";
+        let reviewer = |extra: &str| format!("{head}  review:\n    needs: [build]\n    result: review\n    review: {{ {extra}prompt: prompts/build.md }}\n");
         let cases = [
             ("name: Strict\nowner: me\nsteps:\n  build: { run: [ls] }\n".to_string(), "Unknown workflow field `owner`"),
             (format!("{head}  checks: {{ needs: [build], run: [ls], retries: 2 }}\n"), "Unknown field `retries` in step `checks`"),
-            ("name: S\nsteps:\n  build: { agent: { model: x }, prompt: prompts/build.md }\n".to_string(), "Step `build` needs a string agent.provider"),
-            ("name: S\nsteps:\n  build: { agent: { provider: 3 }, prompt: prompts/build.md }\n".to_string(), "Step `build` needs a string agent.provider"),
+            ("name: S\nsteps:\n  build: { result: build, agent: { model: x }, prompt: prompts/build.md }\n".to_string(), "Step `build` needs a string agent.provider"),
+            ("name: S\nsteps:\n  build: { result: build, agent: { provider: 3 }, prompt: prompts/build.md }\n".to_string(), "Step `build` needs a string agent.provider"),
             (reviewer("of: build, agent: { model: x }, "), "Review step `review` needs a string review.agent.provider"),
             (reviewer("of: build, agent: { provider: [codex] }, "), "Review step `review` needs a string review.agent.provider"),
             (reviewer("agent: { provider: codex }, "), "Review step `review` needs review.of"),
-            (format!("{head}  review: {{ review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/build.md }} }}\n"), "Step `review`: of must name a step it needs"),
+            (format!("{head}  review: {{ result: review, review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/build.md }} }}\n"), "Step `review`: of must name a step it needs"),
             (format!("{head}  checks: {{ needs: [build], run: [ls], on_fail: checks }}\n"), "Step `checks`: on_fail must name a step it needs"),
             (format!("{head}  checks: {{ needs: [build], run: [ls], on_fail: later }}\n  later: {{ needs: [checks], run: [ls] }}\n"), "Step `checks`: on_fail must name a step it needs"),
             (format!("{head}  checks: {{ needs: [build], run: [ls], on_fail: missing }}\n"), "Unknown step target"),
@@ -4609,7 +4019,7 @@ mod tests {
         }
         assert!(engine.list_runs().unwrap().is_empty());
         // Two reviewers of the same step, reached through another step's needs.
-        std::fs::write(root.join(path), format!("{head}  checks: {{ needs: [build], run: [\"cargo test\", ls], on_fail: build }}\n  review-a:\n    needs: [checks]\n    review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/build.md }}\n  review-b:\n    needs: [checks]\n    review: {{ of: build, agent: {{ provider: claude }}, prompt: prompts/build.md }}\n")).unwrap();
+        std::fs::write(root.join(path), format!("{head}  checks: {{ needs: [build], run: [\"cargo test\", ls], on_fail: build }}\n  review-a:\n    needs: [checks]\n    result: review\n    review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/build.md }}\n  review-b:\n    needs: [checks]\n    result: review\n    review: {{ of: build, agent: {{ provider: claude }}, prompt: prompts/build.md }}\n")).unwrap();
         WorkflowEngine::validate_file(&root, path).unwrap();
         engine.create_run_from_file(&root, path, task, json!({}), "valid".into()).unwrap();
         std::fs::remove_dir_all(root).unwrap();
@@ -4722,227 +4132,6 @@ mod tests {
         assert_eq!(WorkflowScheduler::ready_nodes(&run), vec!["a"]);
     }
     #[test]
-    fn approved_plan_creates_durable_reviewed_steps() {
-        let mut run = sample_run();
-        run.definition.roles = vec![
-            role("specifier", WorkflowOutputContract::SpecReceipt),
-            role("planner", WorkflowOutputContract::PlanReceipt),
-            role("implementer", WorkflowOutputContract::ImplementationReceipt),
-            role("reviewer", WorkflowOutputContract::ReviewReceipt),
-            role("verifier", WorkflowOutputContract::VerificationReceipt),
-            role("pr-author", WorkflowOutputContract::PullRequestReceipt),
-            role("pr-reviewer", WorkflowOutputContract::ReviewReceipt),
-            role("pr-merger", WorkflowOutputContract::PullRequestMergeReceipt),
-        ];
-        let mut nodes = vec![
-            node("spec", "specifier", &[]),
-            node("spec-review", "reviewer", &["spec"]),
-            node("plan", "planner", &["spec", "spec-review"]),
-            node("plan-review", "reviewer", &["plan"]),
-            node("implement", "implementer", &["plan", "plan-review"]),
-            node("review", "reviewer", &["plan", "implement"]),
-            node("verify", "verifier", &["review"]),
-            node("open-pr", "pr-author", &["implement", "verify"]),
-            node("pr-review", "pr-reviewer", &["implement", "open-pr"]),
-            node("merge-pr", "pr-merger", &["plan", "open-pr", "pr-review"]),
-        ];
-        run.workflow_id = "task-plan-implement-review".into();
-        for (id, condition) in [
-            ("spec-review", json!({"redoNodeId":"spec"})),
-            ("plan-review", json!({"redoNodeId":"plan"})),
-            ("review", json!({"redoNodeId":"implement"})),
-            ("pr-review", json!({"redoNodeId":"implement"})),
-            ("merge-pr", json!({"ownerMergeNodeId":"plan"})),
-        ] {
-            nodes.iter_mut().find(|node| node.id == id).unwrap().condition = Some(condition);
-        }
-        run.definition.nodes = nodes;
-        run.nodes = run.definition.nodes.iter().map(|definition| {
-            let role = run.definition.roles.iter().find(|role| role.id == definition.role_id).unwrap();
-            WorkflowNodeRunRecord {
-                id: format!("r:{}:1", definition.id),
-                node_id: definition.id.clone(),
-                role_id: definition.role_id.clone(),
-                state: WorkflowNodeState::Blocked,
-                attempt: 1,
-                depth: 0,
-                owned_id: "old".into(),
-                provider: "codex".into(),
-                provider_instance_id: None,
-                started_at_ms: None,
-                finished_at_ms: None,
-                output_contract: role.output_contract,
-                structured_output: None,
-                artifacts: vec![],
-                gate: None,
-                lease_id: None,
-                failure: None,
-                usage: None,
-            }
-        }).collect();
-        run.nodes.iter_mut().find(|node| node.node_id == "plan").unwrap().structured_output =
-            Some(json!({"orderedSteps":[{"task":"first"},{"task":"second"}]}));
-        run.nodes.iter_mut().find(|node| node.node_id == "spec").unwrap().structured_output =
-            Some(json!({"path":"docs/superpowers/specs/design.md","summary":"reviewed","requirements":["one"]}));
-        materialize_plan_steps(&mut run, "plan-review", &FakeIds(AtomicU64::new(1))).unwrap();
-        WorkflowPolicy::validate_definition(&run.definition).unwrap();
-        assert_eq!(run.nodes.len(), 16);
-        assert_eq!(run.definition.nodes.iter().find(|node| node.id == "step-02-plan").unwrap().depends_on, ["step-01-review", "spec"]);
-        assert_eq!(run.definition.nodes.iter().find(|node| node.id == "step-01-review").unwrap().depends_on, ["step-01-plan", "step-01-implement", "spec"]);
-        assert_eq!(run.definition.nodes.iter().find(|node| node.id == "verify").unwrap().depends_on, ["step-02-review", "spec"]);
-        assert_eq!(run.definition.nodes.iter().find(|node| node.id == "pr-review").unwrap().condition, Some(json!({"redoNodeId":"step-01-plan"})));
-        assert!(run.definition.nodes.iter().find(|node| node.id == "pr-review").unwrap().depends_on.contains(&"verify".into()));
-        assert_eq!(run.definition.nodes.iter().find(|node| node.id == "step-01-implement").unwrap().fan_out, Some(json!({"task":"first"})));
-        for id in ["spec", "spec-review", "plan", "plan-review"] {
-            run.nodes.iter_mut().find(|node| node.node_id == id).unwrap().state = WorkflowNodeState::Completed;
-        }
-        assert_eq!(WorkflowScheduler::ready_nodes(&run), ["step-01-plan"]);
-        let restored: WorkflowRunRecord = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
-        assert_eq!(restored.definition, run.definition);
-    }
-    #[test]
-    fn reviewed_spec_reworks_once_then_reaches_owner_approval_and_plan() {
-        let runtime = Arc::new(FakeRuntime::default());
-        let engine = WorkflowEngine::new(
-            runtime.clone(),
-            Arc::new(InMemoryWorktreeLeasePort::default()),
-            Arc::new(FakeClock(AtomicU64::new(100))),
-            Arc::new(FakeIds(AtomicU64::new(1))),
-            Arc::new(SessionStore::open_in_memory().unwrap()),
-        );
-        let mut workflow = definition();
-        workflow.roles = vec![
-            role("specifier", WorkflowOutputContract::SpecReceipt),
-            role("reviewer", WorkflowOutputContract::ReviewReceipt),
-            role("planner", WorkflowOutputContract::PlanReceipt),
-        ];
-        let mut review = node("spec-review", "reviewer", &["spec"]);
-        review.condition = Some(json!({"redoNodeId":"spec"}));
-        review.approval_gate = Some(WorkflowApprovalGate {
-            id: "approve-spec".into(), prompt: String::new(),
-        });
-        workflow.nodes = vec![
-            node("spec", "specifier", &[]),
-            review,
-            node("plan", "planner", &["spec", "spec-review"]),
-        ];
-        let spec = json!({
-            "path":"docs/superpowers/specs/design.md",
-            "summary":"One bounded change",
-            "requirements":["Keep the result visible"]
-        });
-        let finding = |blocking| json!({
-            "severity":"high", "file":"docs/superpowers/specs/design.md", "line":1,
-            "evidence":"Check the requirement", "recommendation":"Revise the spec",
-            "confidence":1.0, "blocking":blocking
-        });
-        assert!(WorkflowPolicy::validate_output(
-            WorkflowOutputContract::SpecReceipt,
-            &json!({"path":"", "summary":"empty", "requirements":[]})
-        ).is_err());
-        let created = engine.create_run(workflow, json!({"cwd":"/repo"}), "create".into()).unwrap();
-        let started = tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
-        assert_eq!(started.phase, WorkflowLoopPhase::Planning);
-        tauri::async_runtime::block_on(engine.submit_result(&created.id, "spec", spec.clone(), "spec-1")).unwrap();
-        let redo = tauri::async_runtime::block_on(engine.submit_result(
-            &created.id, "spec-review", finding(true), "review-1"
-        )).unwrap();
-        assert_eq!(redo.nodes.iter().find(|node| node.node_id == "spec").unwrap().attempt, 2);
-        let correction: Value = serde_json::from_str(&runtime.dispatched.lock().unwrap().last().unwrap().prompt).unwrap();
-        assert_eq!(correction["priorStageReceipts"]["spec-review"]["blocking"], true);
-        tauri::async_runtime::block_on(engine.submit_result(&created.id, "spec", spec.clone(), "spec-2")).unwrap();
-        let waiting = tauri::async_runtime::block_on(engine.submit_result(
-            &created.id, "spec-review", finding(false), "review-2"
-        )).unwrap();
-        assert_eq!(waiting.state, WorkflowRunState::WaitingApproval);
-        let approved = tauri::async_runtime::block_on(engine.approve_gate(
-            &created.id, "spec-review", json!({"approved":true}), "owner", "approve-spec", None
-        )).unwrap();
-        assert_eq!(approved.nodes.iter().find(|node| node.node_id == "plan").unwrap().state, WorkflowNodeState::Running);
-        let plan_prompt: Value = serde_json::from_str(&runtime.dispatched.lock().unwrap().last().unwrap().prompt).unwrap();
-        assert_eq!(plan_prompt["priorStageReceipts"]["spec"]["requirements"], spec["requirements"]);
-    }
-
-    #[test]
-    fn task_workflow_runs_a_reviewed_step_through_correction_and_merge() {
-        let runtime = Arc::new(FakeRuntime::default());
-        let engine = WorkflowEngine::new(
-            runtime.clone(),
-            Arc::new(InMemoryWorktreeLeasePort::default()),
-            Arc::new(FakeClock(AtomicU64::new(100))),
-            Arc::new(FakeIds(AtomicU64::new(1))),
-            Arc::new(SessionStore::open_in_memory().unwrap()),
-        );
-        let mut workflow = definition();
-        workflow.id = "task-plan-implement-review".into();
-        workflow.roles = vec![
-            role("planner", WorkflowOutputContract::PlanReceipt),
-            role("reviewer", WorkflowOutputContract::ReviewReceipt),
-            role("implementer", WorkflowOutputContract::ImplementationReceipt),
-            role("verifier", WorkflowOutputContract::VerificationReceipt),
-            role("pr-author", WorkflowOutputContract::PullRequestReceipt),
-            role("pr-reviewer", WorkflowOutputContract::ReviewReceipt),
-            role("pr-merger", WorkflowOutputContract::PullRequestMergeReceipt),
-        ];
-        let mut plan_review = node("plan-review", "reviewer", &["plan"]);
-        plan_review.condition = Some(json!({"redoNodeId":"plan"}));
-        plan_review.approval_gate = Some(WorkflowApprovalGate { id: "approve-plan".into(), prompt: String::new() });
-        let mut review = node("review", "reviewer", &["plan", "implement"]);
-        review.condition = Some(json!({"redoNodeId":"implement"}));
-        let mut pr_review = node("pr-review", "pr-reviewer", &["implement", "open-pr"]);
-        pr_review.condition = Some(json!({"redoNodeId":"implement"}));
-        let mut merge = node("merge-pr", "pr-merger", &["plan", "open-pr", "pr-review"]);
-        merge.condition = Some(json!({"ownerMergeNodeId":"plan"}));
-        workflow.nodes = vec![
-            node("plan", "planner", &[]), plan_review,
-            node("implement", "implementer", &["plan", "plan-review"]), review,
-            node("verify", "verifier", &["review"]),
-            node("open-pr", "pr-author", &["implement", "verify"]), pr_review, merge,
-        ];
-        let plan = json!({"orderedSteps":[{"task":"one bounded change"}],"dependencies":[],"risk":{},"estimatedParallelLanes":1,"ownerMerge":false});
-        let step_plan = json!({"orderedSteps":[{"task":"edit one file"}],"dependencies":[],"risk":{},"estimatedParallelLanes":1});
-        let review = |blocking: bool| json!({"severity":"high","file":"src/app.ts","line":1,"evidence":"correct this","recommendation":"revise the plan","confidence":1.0,"blocking":blocking});
-        let implementation = json!({"changedFiles":["src/app.ts"],"summary":"done","tests":[],"knownRisks":[],"artifacts":[]});
-        let verification = json!({"command":"cargo test","exit":0,"duration":1,"evidenceArtifacts":[],"cleanupReceipt":{}});
-        let pull_request = json!({"url":"https://github.com/owner/repo/pull/1","branch":"tsk-1169-workflow-handoff","artifacts":[]});
-        let created = engine.create_run(workflow, json!({"cwd":"/repo"}), "create".into()).unwrap();
-        tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
-        let submit = |id: &str, receipt: Value, key: &str| {
-            tauri::async_runtime::block_on(engine.submit_result(&created.id, id, receipt, key)).unwrap()
-        };
-        submit("plan", plan, "overall-plan");
-        let waiting = submit("plan-review", review(false), "overall-review");
-        assert_eq!(waiting.state, WorkflowRunState::WaitingApproval);
-        let approved = tauri::async_runtime::block_on(engine.approve_gate(
-            &created.id, "plan-review", json!({"approved":true}), "owner", "approve", None
-        )).unwrap();
-        assert_eq!(approved.nodes.iter().find(|node| node.node_id == "step-01-plan").unwrap().state, WorkflowNodeState::Running);
-        submit("step-01-plan", step_plan.clone(), "step-plan-1");
-        submit("step-01-plan-review", review(false), "step-plan-review-1");
-        submit("step-01-implement", implementation.clone(), "step-implement-1");
-        let redo = submit("step-01-review", review(true), "step-review-1");
-        assert_eq!(redo.nodes.iter().find(|node| node.node_id == "step-01-plan").unwrap().state, WorkflowNodeState::Running);
-        let dispatched = runtime.dispatched.lock().unwrap();
-        let correction: Value = serde_json::from_str(&dispatched.last().unwrap().prompt).unwrap();
-        assert_eq!(correction["assignedStep"]["task"], "one bounded change");
-        assert_eq!(correction["priorStageReceipts"]["step-01-review"]["blocking"], true);
-        drop(dispatched);
-        submit("step-01-plan", step_plan, "step-plan-2");
-        submit("step-01-plan-review", review(false), "step-plan-review-2");
-        submit("step-01-implement", implementation, "step-implement-2");
-        submit("step-01-review", review(false), "step-review-2");
-        submit("verify", verification, "verify");
-        submit("open-pr", pull_request, "open-pr");
-        let dispatched = runtime.dispatched.lock().unwrap();
-        let reviewer_prompt: Value = serde_json::from_str(&dispatched.last().unwrap().prompt).unwrap();
-        assert_eq!(reviewer_prompt["priorStageReceipts"]["verify"]["command"], "cargo test");
-        drop(dispatched);
-        let reviewed = submit("pr-review", review(false), "pr-review");
-        assert_eq!(reviewed.nodes.iter().find(|node| node.node_id == "merge-pr").unwrap().state, WorkflowNodeState::Running);
-        let merged = submit("merge-pr", json!({"url":"https://github.com/owner/repo/pull/1","mergeCommitSha":"abc123"}), "merge");
-        assert_eq!(merged.state, WorkflowRunState::Completed);
-    }
-    #[test]
     fn workflow_structured_output_refuses_hostile_prose() {
         assert!(matches!(
             WorkflowPolicy::validate_output(
@@ -4951,14 +4140,10 @@ mod tests {
             ),
             Err(WorkflowError::OutputContract(_))
         ));
+        assert!(WorkflowPolicy::validate_output(WorkflowOutputContract::ImplementationReceipt, &built()).is_ok());
         assert!(WorkflowPolicy::validate_output(
             WorkflowOutputContract::ImplementationReceipt,
-            &json!({"changedFiles":[],"summary":"ok","tests":[],"knownRisks":[],"artifacts":[]})
-        )
-        .is_ok());
-        assert!(WorkflowPolicy::validate_output(
-            WorkflowOutputContract::ImplementationReceipt,
-            &json!({"changedFiles":"all files","summary":"ok","tests":[],"knownRisks":[],"artifacts":[]})
+            &json!({"commits":"all of them","tests_added":[],"summary":"ok"})
         )
         .is_err());
     }
@@ -4976,27 +4161,20 @@ mod tests {
         ).is_err());
     }
     #[test]
-    fn workflow_verification_requires_a_successful_command() {
-        let receipt = json!({
-            "command":"cargo test", "exit":1, "duration":5,
-            "evidenceArtifacts":[], "cleanupReceipt":{}
-        });
-        assert!(matches!(
-            WorkflowPolicy::validate_output(WorkflowOutputContract::VerificationReceipt, &receipt),
-            Err(WorkflowError::OutputContract(_))
-        ));
-        let mut passed = receipt;
-        passed["exit"] = json!(0);
-        assert!(WorkflowPolicy::validate_output(WorkflowOutputContract::VerificationReceipt, &passed).is_ok());
-        passed["duration"] = json!(0.1);
-        assert!(WorkflowPolicy::validate_output(WorkflowOutputContract::VerificationReceipt, &passed).is_ok());
-    }
-    #[test]
-    fn workflow_receipt_decoder_accepts_plain_and_fenced_json() {
-        let receipt = r#"{"orderedSteps":[],"dependencies":[],"risk":{},"estimatedParallelLanes":1}"#;
-        assert_eq!(decode_agent_receipt(receipt).unwrap()["estimatedParallelLanes"], 1);
-        let decoded = decode_agent_receipt(&format!("```json\n{receipt}\n```")).unwrap();
-        assert_eq!(decoded["estimatedParallelLanes"], 1);
+    fn workflow_review_findings_need_a_location_and_a_reason_when_late() {
+        let review = |finding: Value| json!({"verdict":"fail","head":"abc","findings":[finding]});
+        let finding = json!({"severity":"blocking","late":false,"path_line":"src/a.rs:3","text":"Broken","fix":"Fix it"});
+        assert!(WorkflowPolicy::validate_output(WorkflowOutputContract::ReviewReceipt, &review(finding.clone())).is_ok());
+        let mut nowhere = finding.clone();
+        nowhere["path_line"] = json!(" ");
+        assert!(matches!(WorkflowPolicy::validate_output(WorkflowOutputContract::ReviewReceipt, &review(nowhere)),
+            Err(WorkflowError::OutputContract(message)) if message.contains("path_line")));
+        let mut late = finding;
+        late["late"] = json!(true);
+        assert!(matches!(WorkflowPolicy::validate_output(WorkflowOutputContract::ReviewReceipt, &review(late.clone())),
+            Err(WorkflowError::OutputContract(message)) if message.contains("why_late")));
+        late["why_late"] = json!("The line moved in round 2");
+        assert!(WorkflowPolicy::validate_output(WorkflowOutputContract::ReviewReceipt, &review(late)).is_ok());
     }
     #[test]
     fn workflow_phase_is_derived_from_node_state_and_role_not_prose() {
@@ -5256,68 +4434,9 @@ mod tests {
 
         let retried = tauri::async_runtime::block_on(engine.retry_node(&created.id, "a", "retry")).unwrap();
         assert_eq!(retried.nodes.iter().find(|node| node.node_id == "b").unwrap().state, WorkflowNodeState::Blocked);
-        let advanced = tauri::async_runtime::block_on(engine.submit_result(
-            &created.id,
-            "a",
-            json!({"changedFiles":[],"summary":"done","tests":[],"knownRisks":[],"artifacts":[]}),
-            "result",
-        )).unwrap();
+        let advanced = end_turn(&engine, &created.id, "a", &[built()]);
         assert_eq!(advanced.nodes.iter().find(|node| node.node_id == "b").unwrap().state, WorkflowNodeState::Running);
         assert_eq!(runtime.dispatched.lock().unwrap().len(), 3);
-    }
-    #[test]
-    fn approved_gate_releases_its_workspace_lease() {
-        let leases = Arc::new(InMemoryWorktreeLeasePort::default());
-        let engine = WorkflowEngine::new(
-            Arc::new(FakeRuntime::default()),
-            leases.clone(),
-            Arc::new(FakeClock(AtomicU64::new(100))),
-            Arc::new(FakeIds(AtomicU64::new(1))),
-            Arc::new(SessionStore::open_in_memory().unwrap()),
-        );
-        let mut workflow = definition();
-        workflow.nodes = vec![node("a", "implementer", &[])];
-        workflow.nodes[0].approval_gate = Some(WorkflowApprovalGate {
-            id: "approve".into(),
-            prompt: String::new(),
-        });
-        let created = engine.create_run(workflow, json!({"cwd":"/repo"}), "create".into()).unwrap();
-        tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
-        let waiting = tauri::async_runtime::block_on(engine.submit_result(
-            &created.id, "a",
-            json!({"changedFiles":[],"summary":"done","tests":[],"knownRisks":[],"artifacts":[]}),
-            "result",
-        )).unwrap();
-        assert_eq!(waiting.nodes[0].state, WorkflowNodeState::WaitingApproval);
-        assert_eq!(leases.leases.lock().unwrap().len(), 1);
-        let approved = tauri::async_runtime::block_on(engine.approve_gate(
-            &created.id, "a", json!({"approved":true}), "owner", "approve", None
-        )).unwrap();
-        assert_eq!(approved.state, WorkflowRunState::Completed);
-        assert!(approved.nodes[0].lease_id.is_none());
-        assert!(leases.leases.lock().unwrap().is_empty());
-    }
-    #[test]
-    fn task_workflow_rejects_an_empty_overall_plan_before_approval() {
-        let engine = WorkflowEngine::new(
-            Arc::new(FakeRuntime::default()),
-            Arc::new(InMemoryWorktreeLeasePort::default()),
-            Arc::new(FakeClock(AtomicU64::new(100))),
-            Arc::new(FakeIds(AtomicU64::new(1))),
-            Arc::new(SessionStore::open_in_memory().unwrap()),
-        );
-        let mut workflow = definition();
-        workflow.id = "task-plan-implement-review".into();
-        workflow.roles = vec![role("planner", WorkflowOutputContract::PlanReceipt)];
-        workflow.nodes = vec![node("plan", "planner", &[])];
-        let created = engine.create_run(workflow, json!({"cwd":"/repo"}), "create".into()).unwrap();
-        tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
-        let result = tauri::async_runtime::block_on(engine.submit_result(
-            &created.id, "plan",
-            json!({"orderedSteps":[],"dependencies":[],"risk":{},"estimatedParallelLanes":1}),
-            "result",
-        ));
-        assert!(matches!(result, Err(WorkflowError::OutputContract(message)) if message.contains("at least one")));
     }
     #[test]
     fn workflow_concurrency_provider_depth_and_attempt_policy_are_bounded() {
@@ -5417,168 +4536,67 @@ mod tests {
 
     #[test]
     fn workflow_review_redo_carries_feedback_and_stops_at_attempt_limit() {
+        let steps = format!("{LOOP_REVIEW}limits: {{ max_rounds: 1 }}\n");
+        let repo = RunRepo::new();
         let runtime = Arc::new(FakeRuntime::default());
-        let engine = WorkflowEngine::new(
-            runtime.clone(),
-            Arc::new(InMemoryWorktreeLeasePort::default()),
-            Arc::new(FakeClock(AtomicU64::new(100))),
-            Arc::new(FakeIds(AtomicU64::new(1))),
-            Arc::new(SessionStore::open_in_memory().unwrap()),
-        );
-        let mut workflow = definition();
-        workflow.nodes.iter_mut().find(|node| node.id == "b").unwrap().condition =
-            Some(json!({"redoNodeId":"a"}));
-        let implementation = json!({
-            "changedFiles":["src/app.ts"], "summary":"done", "tests":[],
-            "knownRisks":[], "artifacts":[]
-        });
-        let review = |blocking: bool| json!({
-            "severity": if blocking { "high" } else { "none" },
-            "file":"src/app.ts", "line":1, "evidence":"Fix the broken case",
-            "recommendation":"Correct the case", "confidence":1.0, "blocking":blocking
-        });
-
-        let created = engine.create_run(workflow.clone(), json!({"cwd":"/repo"}), "create-pass".into()).unwrap();
-        tauri::async_runtime::block_on(engine.start(&created.id, "start-pass")).unwrap();
-        tauri::async_runtime::block_on(engine.submit_result(&created.id, "a", implementation.clone(), "implement-1")).unwrap();
-        let redo = tauri::async_runtime::block_on(engine.submit_result(&created.id, "b", review(true), "review-1")).unwrap();
-        let implementer = redo.nodes.iter().find(|node| node.node_id == "a").unwrap();
-        let reviewer = redo.nodes.iter().find(|node| node.node_id == "b").unwrap();
-        assert_eq!((implementer.state, implementer.attempt), (WorkflowNodeState::Running, 2));
-        assert_eq!((reviewer.state, reviewer.attempt), (WorkflowNodeState::Blocked, 2));
-        let dispatches = runtime.dispatched.lock().unwrap();
-        let correction_prompt: Value = serde_json::from_str(&dispatches[2].prompt).unwrap();
-        assert_eq!(correction_prompt["priorStageReceipts"]["b"]["evidence"], "Fix the broken case");
-        drop(dispatches);
-        let rereview = tauri::async_runtime::block_on(engine.submit_result(&created.id, "a", implementation.clone(), "implement-2")).unwrap();
-        assert_eq!(rereview.nodes.iter().find(|node| node.node_id == "b").unwrap().state, WorkflowNodeState::Running);
-        let passed = tauri::async_runtime::block_on(engine.submit_result(&created.id, "b", review(false), "review-2")).unwrap();
+        let engine = run_engine(runtime.clone());
+        let run = loop_run(&engine, &repo.0, &steps);
+        end_turn(&engine, &run.id, "build", &[built()]);
+        let redo = end_turn(&engine, &run.id, "review", &[failed(&["Fix the broken case"])]);
+        assert_eq!((step_of(&redo, "build").state, step_of(&redo, "build").attempt), (WorkflowNodeState::Running, 2));
+        assert_eq!((step_of(&redo, "review").state, step_of(&redo, "review").attempt), (WorkflowNodeState::Blocked, 2));
+        assert_eq!(redo.input_snapshot["redo"]["findings"][0]["text"], "Fix the broken case");
+        end_turn(&engine, &run.id, "build", &[built()]);
+        let passed = end_turn(&engine, &run.id, "review", &[json!({"verdict":"pass","findings":[],"head":""})]);
         assert_eq!(passed.state, WorkflowRunState::Completed);
 
-        let created = engine.create_run(workflow, json!({"cwd":"/repo"}), "create-fail".into()).unwrap();
-        tauri::async_runtime::block_on(engine.start(&created.id, "start-fail")).unwrap();
-        tauri::async_runtime::block_on(engine.submit_result(&created.id, "a", implementation.clone(), "implement-3")).unwrap();
-        tauri::async_runtime::block_on(engine.submit_result(&created.id, "b", review(true), "review-3")).unwrap();
-        tauri::async_runtime::block_on(engine.submit_result(&created.id, "a", implementation, "implement-4")).unwrap();
-        let failed = tauri::async_runtime::block_on(engine.submit_result(&created.id, "b", review(true), "review-4")).unwrap();
-        assert_eq!(failed.state, WorkflowRunState::Failed);
-        assert_eq!(failed.nodes.iter().find(|node| node.node_id == "b").unwrap().failure.as_ref().unwrap().code, "review-blocking");
+        let repo = RunRepo::new();
+        let run = loop_run(&engine, &repo.0, &steps);
+        end_turn(&engine, &run.id, "build", &[built()]);
+        end_turn(&engine, &run.id, "review", &[failed(&["first"])]);
+        end_turn(&engine, &run.id, "build", &[built()]);
+        let stopped = end_turn(&engine, &run.id, "review", &[failed(&["second"])]);
+        assert_eq!(stopped.state, WorkflowRunState::WaitingInput);
+        assert_eq!(step_of(&stopped, "review").failure.as_ref().unwrap().code, "loop-stopped");
     }
-
     #[test]
     fn final_review_redo_repeats_code_review_verification_and_pr() {
-        let runtime = Arc::new(FakeRuntime::default());
-        let engine = WorkflowEngine::new(
-            runtime.clone(),
-            Arc::new(InMemoryWorktreeLeasePort::default()),
-            Arc::new(FakeClock(AtomicU64::new(100))),
-            Arc::new(FakeIds(AtomicU64::new(1))),
-            Arc::new(SessionStore::open_in_memory().unwrap()),
-        );
-        let mut workflow = definition();
-        workflow.roles.extend([
-            role("verifier", WorkflowOutputContract::VerificationReceipt),
-            role("pr-author", WorkflowOutputContract::PullRequestReceipt),
-        ]);
-        let mut code_review = node("b", "reviewer", &["a"]);
-        code_review.condition = Some(json!({"redoNodeId":"a"}));
-        let mut final_review = node("e", "reviewer", &["a", "d"]);
-        final_review.condition = Some(json!({"redoNodeId":"a"}));
-        workflow.nodes = vec![
-            node("a", "implementer", &[]),
-            code_review,
-            node("c", "verifier", &["b"]),
-            node("d", "pr-author", &["a", "c"]),
-            final_review,
-        ];
-        let implementation = json!({"changedFiles":["src/app.ts"],"summary":"done","tests":[],"knownRisks":[],"artifacts":[]});
-        let review = |blocking: bool| json!({
-            "severity": if blocking { "high" } else { "none" },
-            "file":"src/app.ts","line":1,"evidence":"Check the correction",
-            "recommendation":"Correct the case","confidence":1.0,"blocking":blocking
-        });
-        let verification = json!({"command":"true","exit":0,"duration":1,"evidenceArtifacts":[],"cleanupReceipt":{}});
-        let pr = json!({"url":"https://github.com/owner/repo/pull/1","branch":"tsk-1169-workflow-handoff","artifacts":[]});
-
-        let created = engine.create_run(workflow, json!({"cwd":"/repo"}), "create".into()).unwrap();
-        tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
-        for (id, receipt) in [("a", implementation.clone()), ("b", review(false)),
-            ("c", verification.clone()), ("d", pr.clone())] {
-            let key = format!("first-{id}");
-            tauri::async_runtime::block_on(engine.submit_result(&created.id, id, receipt, &key)).unwrap();
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let review = |id: &str, needs: &str| format!("  {id}:\n    needs: [{needs}]\n    result: review\n    review: {{ of: build, agent: {{ provider: claude }}, prompt: prompts/p.md }}\n");
+        let steps = format!("  build: {{ result: build, agent: {{ provider: codex }}, prompt: prompts/p.md }}\n{}  checks: {{ needs: [code-review], run: [\"true\"] }}\n  pr: {{ needs: [checks], run: [\"true\"] }}\n{}",
+            review("code-review", "build"), review("final-review", "pr"));
+        let run = loop_run(&engine, &repo.0, &steps);
+        let pass = json!({"verdict":"pass","findings":[],"head":""});
+        end_turn(&engine, &run.id, "build", &[built()]);
+        end_turn(&engine, &run.id, "code-review", &[pass.clone()]);
+        settle(&engine, &run.id);
+        let redo = end_turn(&engine, &run.id, "final-review", &[failed(&["Check the correction"])]);
+        for id in ["build", "code-review", "checks", "pr", "final-review"] {
+            assert_eq!(step_of(&redo, id).attempt, 2, "{id} must rerun after the final finding");
+            assert!(step_of(&redo, id).structured_output.is_none(), "{id} has a stale result");
         }
-        let redo = tauri::async_runtime::block_on(
-            engine.submit_result(&created.id, "e", review(true), "final-block".into())
-        ).unwrap();
-        for id in ["a", "b", "c", "d", "e"] {
-            let node = redo.nodes.iter().find(|node| node.node_id == id).unwrap();
-            assert_eq!(node.attempt, 2, "{id} must rerun after the final finding");
-            if id != "e" { assert!(node.structured_output.is_none(), "{id} has a stale receipt"); }
-        }
-        assert!(redo.nodes.iter().find(|node| node.node_id == "e").unwrap().structured_output.is_some());
-        let dispatches = runtime.dispatched.lock().unwrap();
-        let correction_prompt: Value = serde_json::from_str(&dispatches.last().unwrap().prompt).unwrap();
-        assert_eq!(correction_prompt["priorStageReceipts"]["e"]["blocking"], true);
-        drop(dispatches);
-        for (id, receipt) in [("a", implementation), ("b", review(false)),
-            ("c", verification), ("d", pr), ("e", review(false))] {
-            let key = format!("second-{id}");
-            let run = tauri::async_runtime::block_on(
-                engine.submit_result(&created.id, id, receipt, &key)
-            ).unwrap();
-            if id == "e" { assert_eq!(run.state, WorkflowRunState::Completed); }
-        }
+        assert_eq!(step_of(&redo, "build").state, WorkflowNodeState::Running);
+        end_turn(&engine, &run.id, "build", &[built()]);
+        end_turn(&engine, &run.id, "code-review", &[pass.clone()]);
+        settle(&engine, &run.id);
+        let done = end_turn(&engine, &run.id, "final-review", &[pass]);
+        assert_eq!(done.state, WorkflowRunState::Completed);
     }
-
     #[test]
     fn owner_merge_decision_skips_merge_and_default_merges() {
-        let engine = WorkflowEngine::new(
-            Arc::new(FakeRuntime::default()),
-            Arc::new(InMemoryWorktreeLeasePort::default()),
-            Arc::new(FakeClock(AtomicU64::new(100))),
-            Arc::new(FakeIds(AtomicU64::new(1))),
-            Arc::new(SessionStore::open_in_memory().unwrap()),
-        );
-        let mut workflow = definition();
-        workflow.roles = vec![
-            role("controller", WorkflowOutputContract::PlanReceipt),
-            role("merger", WorkflowOutputContract::PullRequestMergeReceipt),
-        ];
-        let mut merge = node("merge", "merger", &["plan"]);
-        merge.condition = Some(json!({"ownerMergeNodeId":"plan"}));
-        workflow.nodes = vec![node("plan", "controller", &[]), merge];
-        let plan = |owner_merge: bool| json!({
-            "orderedSteps":[],"dependencies":[],"risk":{},
-            "estimatedParallelLanes":1,"ownerMerge":owner_merge
-        });
-
-        let owner_run = engine.create_run(workflow.clone(), json!({"cwd":"/repo"}), "owner-create".into()).unwrap();
-        tauri::async_runtime::block_on(engine.start(&owner_run.id, "owner-start")).unwrap();
-        let handed_off = tauri::async_runtime::block_on(
-            engine.submit_result(&owner_run.id, "plan", plan(true), "owner-plan")
-        ).unwrap();
-        assert_eq!(handed_off.state, WorkflowRunState::Completed);
-        assert_eq!(handed_off.nodes.iter().find(|node| node.node_id == "merge").unwrap().state, WorkflowNodeState::Skipped);
-
-        let merge_run = engine.create_run(workflow, json!({"cwd":"/repo"}), "merge-create".into()).unwrap();
-        tauri::async_runtime::block_on(engine.start(&merge_run.id, "merge-start")).unwrap();
-        let ready = tauri::async_runtime::block_on(
-            engine.submit_result(&merge_run.id, "plan", plan(false), "merge-plan")
-        ).unwrap();
-        assert_eq!(ready.nodes.iter().find(|node| node.node_id == "merge").unwrap().state, WorkflowNodeState::Running);
-        let merged = tauri::async_runtime::block_on(engine.submit_result(
-            &merge_run.id,
-            "merge",
-            json!({"url":"https://github.com/owner/repo/pull/1","mergeCommitSha":"abc123"}),
-            "merge-result",
-        )).unwrap();
-        assert_eq!(merged.state, WorkflowRunState::Completed);
-        assert!(WorkflowPolicy::validate_output(
-            WorkflowOutputContract::PullRequestMergeReceipt,
-            &json!({"url":"https://github.com/owner/repo/pull/1","mergeCommitSha":""})
-        ).is_err());
+        let steps = "  build: { result: build, agent: { provider: codex }, prompt: prompts/p.md }\n  merge: { needs: [build], if: \"${{ !inputs.i_merge }}\", run: [\"true\"] }\ninputs: { i_merge: { default: false } }\n";
+        for (i_merge, merge) in [(true, WorkflowNodeState::Skipped), (false, WorkflowNodeState::Completed)] {
+            let repo = RunRepo::new();
+            let engine = run_engine(Arc::new(FakeRuntime::default()));
+            let mut run = loop_run(&engine, &repo.0, steps);
+            run.input_snapshot["inputs"]["i_merge"] = json!(i_merge);
+            engine.append(&mut run, "workflow.test.inputs", "inputs", None).unwrap();
+            end_turn(&engine, &run.id, "build", &[built()]);
+            let run = settle(&engine, &run.id);
+            assert_eq!((step_of(&run, "merge").state, run.state), (merge, WorkflowRunState::Completed), "i_merge {i_merge}");
+        }
     }
-
     #[test]
     fn completed_agent_receipt_advances_to_the_next_provider_stage() {
         let runtime = Arc::new(FakeRuntime::default());
@@ -5667,6 +4685,8 @@ mod tests {
                 created_at_ms: 100,
             })
             .unwrap();
+        store.add_review_report(&first.owned_id, &created.id, &first.id,
+            &json!({"commits":[],"tests_added":[],"summary":"implemented"}).to_string()).unwrap();
         let usage = AgentConversationEvent {
             sequence: 2,
             payload: AgentConversationPayload::Usage {
@@ -5767,7 +4787,7 @@ mod tests {
         let manager = AgentRuntimeManager::new(providers);
         manager.dispatch(AgentDispatchRequest {
             owned_id: "worker".into(), provider: "claude".into(), cwd: root.to_string_lossy().into(), title: "Review".into(),
-            prompt: "Review it".into(), role_id: "review".into(), model: None, effort: None, permission: None, starter: None, policy: Default::default(),
+            prompt: "Review it".into(), model: None, effort: None, permission: None, starter: None, policy: Default::default(),
         }).await.unwrap();
         let frames = std::fs::read_to_string(&log).unwrap();
         let set_mode = frames.lines().position(|line| line.contains(r#""method":"session/set_mode""#) && line.contains(r#""modeId":"auto""#));

@@ -145,23 +145,24 @@ fn a_helper_can_start_a_workflow_of_its_own() {
     assert_eq!(engine.get_run(started["run_id"].as_str().unwrap()).unwrap().input_snapshot["started_by"], "helper");
 }
 
-/// f1147d499: report_review takes findings only as a list, and a missing list is stored as none.
+/// f1147d499: report_result takes findings only as a list; a rejected call records nothing.
 #[test]
-fn report_review_findings_must_be_a_list() {
+fn report_result_findings_must_be_a_list() {
     let repo = RunRepo::new();
     let engine = run_engine(Arc::new(FakeRuntime::default()));
     let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
-    let run = end_turn(&engine, &run.id, "build", &[]);
+    let run = end_turn(&engine, &run.id, "build", &[built()]);
     let review = step_of(&run, "review");
     let endpoint = MessagingEndpoint::start().unwrap();
+    endpoint.set_workflow(engine.clone());
     let reviewer = endpoint.issue(&review.owned_id);
     endpoint.bind_store(&reviewer.token, &engine.store, None);
-    let report = |findings: Value| json!({"name":"report_review","arguments":{"verdict":"fail","findings":findings}});
+    let report = |findings: Value| json!({"name":"report_result","arguments":{"verdict":"fail","findings":findings,"head":"abc"}});
     let error = tauri::async_runtime::block_on(endpoint.handle(&reviewer.token, report(json!("one problem")))).unwrap_err();
-    assert_eq!(error, "findings must be a list");
+    assert!(error.contains("ReviewReceipt is invalid"), "{error}");
     assert!(engine.store.review_reports(&review.id).unwrap().is_empty());
-    tauri::async_runtime::block_on(endpoint.handle(&reviewer.token, report(Value::Null))).unwrap();
-    assert_eq!(engine.store.review_reports(&review.id).unwrap(), vec![r#"{"verdict":"fail","findings":[]}"#]);
+    tauri::async_runtime::block_on(endpoint.handle(&reviewer.token, report(json!([])))).unwrap();
+    assert_eq!(engine.store.review_reports(&review.id).unwrap().len(), 1);
 }
 
 /// f1147d499: a review passes only as `pass` with no findings. A pass that still lists findings,
@@ -172,7 +173,7 @@ fn only_a_clean_pass_lets_a_review_through() {
         let repo = RunRepo::new();
         let engine = run_engine(Arc::new(FakeRuntime::default()));
         let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
-        end_turn(&engine, &run.id, "build", &[]);
+        end_turn(&engine, &run.id, "build", &[built()]);
         let run = end_turn(&engine, &run.id, "review", &[report.clone()]);
         assert_eq!((step_of(&run, "build").attempt, step_of(&run, "build").state), (2, WorkflowNodeState::Running), "{report}");
         assert_ne!(run.state, WorkflowRunState::Completed, "{report}");

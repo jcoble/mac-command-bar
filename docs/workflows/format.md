@@ -76,7 +76,8 @@ Each step has exactly one of `agent`, `run`, `review`, `gate`.
 | `agent` | mapping | Required for an agent step | Starts a worker with the provider/model below. |
 | `prompt` | relative file path string | Required for an agent step; no default | Reads and snapshots the prompt text; fills template values at execution. |
 | `run` | non-empty list of shell command strings | Required for a command step; no default | Runs every command separately from the run worktree root; all must exit 0. Saves exit codes/output. |
-| `review` | mapping | Required for a review step | Starts a fresh reviewer; requires exactly one valid `report_review` tool call. |
+| `review` | mapping | Required for a review step | Starts a fresh reviewer. |
+| `result` | `build`, `spec`, `plan`, `recon`, `review` or `proof` | Required for agent and review steps; a review step's is `review` | Names what the step reports through the `report_result` tool, and the checks the engine runs on it. Only a `build` step may change the checkout; any other agent, review or command step that changes it fails `changed-code`. |
 | `gate` | YAML value | Required for a gate step; no default | Pauses for an owner answer. The value is kept as written; its nested format is not defined yet, so do not invent gate fields. |
 | `on_fail` | step ID string | Optional; no redo target | Must name a direct/transitive dependency; a failed command step sends it back to redo with output. |
 | `expect_files` | list of file pattern strings | Optional; no expected files | Checks agent output files; missing files fail the step. |
@@ -93,8 +94,12 @@ Each step has exactly one of `agent`, `run`, `review`, `gate`.
 | `review.prompt` | relative file path string | Required; no default | Reads the review prompt beside the YAML and snapshots its contents. |
 
 In a review, put `agent` and `prompt` inside `review`, not at step level.
-`report_review` carries PASS with zero findings, or findings that the engine
-counts. A final reply saying “looks good” is not a verdict. The shared loader enforces the validation rules above and prompt containment.
+Every agent and review step reports through `report_result`, whose fields come
+from its `result`: a review reports `verdict` pass with zero findings, or fail
+with each finding; a build reports its new commits, the tests they add and a
+summary, with the tree clean. A rejected call names the failing field and the
+agent calls again. A turn that ends without a recorded report is reminded once,
+then fails `no-report`. A final reply saying “looks good” is not a result. The shared loader enforces the validation rules above and prompt containment.
 It does not validate gate contents, file patterns, conditions or repeat flags,
 or nested unknown keys. No schema framework or installed-provider/model check
 is part of format validation.
@@ -108,8 +113,8 @@ These values come from the engine; do not invent values or evaluate arbitrary co
 |---|---|
 | `${{ inputs.<name> }}` | A run input value. |
 | `${{ task.key }}`, `${{ task.title }}`, `${{ task.body }}` | The exact starting task snapshot. |
-| `${{ steps.<id>.summary }}` | Final agent reply, or last 200 lines of command output. |
-| `${{ steps.<id>.files }}` | Files recorded for that step. |
+| `${{ steps.<id>.<field> }}` | A field of that step's report, such as `summary` or `path`; for a command step, `summary` is the last 200 lines of output. |
+| `${{ steps.<id>.files }}` | Files that matched an agent step's `expect_files`. |
 | `${{ redo.findings }}`, `${{ redo.output }}` | Findings or failing output provided on redo. |
 | `${{ run.proof_dir }}` | Engine-owned proof folder outside the repository, linked in history. |
 | `${{ run.pr_body }}` | Engine-written PR body file containing task, summaries, final review and proof links. |
@@ -118,7 +123,7 @@ These values come from the engine; do not invent values or evaluate arbitrary co
 ## Loop rules
 
 New findings allow another round. A finding pauses the run for the owner if its
-trimmed text exactly equals a finding from the previous round of the same step,
+trimmed `text` exactly equals a finding from the previous round of the same step,
 or it starts with `REPEAT:`. The five-round ceiling still pauses after at most
 five redo rounds. Failed commands use their command text as findings; reviews
 use their reported findings. The stopping round's findings are saved so an
@@ -149,7 +154,7 @@ Write `.assembly/workflows/worker-checks.yml`:
 name: Worker and checks
 limits: { max_sessions: 1, step_timeout_minutes: 60, max_rounds: 5 }
 steps:
-  build: { agent: { provider: codex }, prompt: prompts/build.md }
+  build: { result: build, agent: { provider: codex }, prompt: prompts/build.md }
   checks:
     needs: [build]
     run: ["git diff --check"]
@@ -173,19 +178,22 @@ inputs:
   i_merge: { description: "I'll merge", default: false }
 limits: { max_sessions: 3, step_timeout_minutes: 60, max_rounds: 5 }
 steps:
-  recon: { agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/recon.md }
-  spec: { needs: [recon], agent: { provider: claude, model: opus }, prompt: prompts/spec.md }
+  recon: { result: recon, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/recon.md }
+  spec: { needs: [recon], result: spec, agent: { provider: claude, model: opus }, prompt: prompts/spec.md }
   # Three reviewers check the spec at once; findings from any of them send it back.
   spec-review:
     needs: [spec]
+    result: review
     review: { of: spec, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/spec-review.md }
   spec-ui-review:
     needs: [spec]
+    result: review
     review: { of: spec, agent: { provider: claude, model: opus }, prompt: prompts/spec-ui-review.md }
   spec-adversarial-review:
     needs: [spec]
+    result: review
     review: { of: spec, agent: { provider: claude, model: sonnet }, prompt: prompts/spec-adversarial-review.md }
-  build: { needs: [spec-review, spec-ui-review, spec-adversarial-review], agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
+  build: { needs: [spec-review, spec-ui-review, spec-adversarial-review], result: build, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
   checks:
     needs: [build]
     run:
@@ -196,9 +204,11 @@ steps:
     on_fail: build
   code-review:
     needs: [checks]
+    result: review
     review: { of: build, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/code-review.md }
   proof:
     needs: [code-review]
+    result: proof
     agent: { provider: claude, model: opus }
     prompt: prompts/proof.md
     expect_files: ["${{ run.proof_dir }}/*.png"]
@@ -209,6 +219,7 @@ steps:
       - gh pr create --fill --body-file "${{ run.pr_body }}"
   final-review:
     needs: [pr]
+    result: review
     review: { of: build, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/final-review.md }
   merge:
     needs: [final-review]
@@ -245,19 +256,22 @@ inputs:
   i_merge: { description: "I'll merge", default: false }
 limits: { max_sessions: 3, step_timeout_minutes: 60, max_rounds: 5 }
 steps:
-  recon: { agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/recon.md }
-  spec: { needs: [recon], agent: { provider: claude, model: opus }, prompt: prompts/spec.md }
+  recon: { result: recon, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/recon.md }
+  spec: { needs: [recon], result: spec, agent: { provider: claude, model: opus }, prompt: prompts/spec.md }
   # Three reviewers check the spec at once; findings from any of them send it back.
   spec-review:
     needs: [spec]
+    result: review
     review: { of: spec, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/spec-review.md }
   spec-ui-review:
     needs: [spec]
+    result: review
     review: { of: spec, agent: { provider: claude, model: opus }, prompt: prompts/spec-ui-review.md }
   spec-adversarial-review:
     needs: [spec]
+    result: review
     review: { of: spec, agent: { provider: claude, model: sonnet }, prompt: prompts/spec-adversarial-review.md }
-  build: { needs: [spec-review, spec-ui-review, spec-adversarial-review], agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
+  build: { needs: [spec-review, spec-ui-review, spec-adversarial-review], result: build, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
   checks:
     needs: [build]
     run:
@@ -268,12 +282,15 @@ steps:
     on_fail: build
   code-review:
     needs: [checks]
+    result: review
     review: { of: build, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/code-review.md }
   code-review-2:
     needs: [code-review]
+    result: review
     review: { of: build, agent: { provider: claude, model: opus }, prompt: prompts/code-review-2.md }
   proof:
     needs: [code-review-2]
+    result: proof
     agent: { provider: claude, model: opus }
     prompt: prompts/proof.md
     expect_files: ["${{ run.proof_dir }}/*.png"]
@@ -284,6 +301,7 @@ steps:
       - gh pr create --fill --body-file "${{ run.pr_body }}"
   final-review:
     needs: [pr]
+    result: review
     review: { of: build, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/final-review.md }
   merge:
     needs: [final-review]

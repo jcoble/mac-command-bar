@@ -6,7 +6,7 @@ inputs:
   i_merge: { description: "I'll merge", default: false }
 limits: { max_sessions: 2, step_timeout_minutes: 90, max_rounds: 4 }
 steps:
-  build: { agent: { provider: claude, model: opus }, prompt: prompts/spec-build.md }
+  build: { result: build, agent: { provider: claude, model: opus }, prompt: prompts/spec-build.md }
   checks:
     needs: [build]
     run:
@@ -29,9 +29,11 @@ steps:
     on_fail: build
   code-review:
     needs: [checks]
+    result: review
     review: { of: build, agent: { provider: claude, model: sonnet }, prompt: prompts/spec-code-review.md }
   proof:
     needs: [code-review]
+    result: proof
     agent: { provider: claude, model: opus }
     prompt: prompts/proof.md
   pr:
@@ -43,10 +45,13 @@ steps:
   # The repository's review bot reviews the PR; its findings are fixed or answered here.
   pr-feedback:
     needs: [pr]
+    # It commits the bot's fixes, so it reports as a build.
+    result: build
     agent: { provider: claude, model: opus }
     prompt: prompts/pr-feedback.md
   final-review:
     needs: [pr-feedback]
+    result: review
     review: { of: build, agent: { provider: claude, model: sonnet }, prompt: prompts/final-review.md }
   # The body is rewritten when a command step starts, so this one carries the final review.
   pr-body:

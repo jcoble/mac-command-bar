@@ -21,6 +21,11 @@ fn failure_code(run: &WorkflowRunRecord, id: &str) -> Option<String> {
     step_of(run, id).failure.as_ref().map(|failure| failure.code.clone())
 }
 fn pass() -> Value { json!({"verdict":"pass","findings":[]}) }
+/// A build report naming the commit at HEAD.
+fn built_with(repo: &RunRepo) -> Value {
+    let head = std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&repo.0).output().unwrap();
+    json!({"commits":[String::from_utf8_lossy(&head.stdout).trim()],"tests_added":["a.rs"],"summary":"Built."})
+}
 
 #[test]
 fn a_session_still_calling_tools_after_finish_is_cancelled() {
@@ -31,7 +36,7 @@ fn a_session_still_calling_tools_after_finish_is_cancelled() {
     let build = step_of(&run, "build").owned_id.clone();
     let token = agent(&engine, shared_endpoint(), &build, &repo.0);
     assert!(calls_tools(&token).is_ok());
-    let reviewing = end_turn(&engine, &run.id, "build", &[]);
+    let reviewing = end_turn(&engine, &run.id, "build", &[built()]);
     assert_eq!(step_of(&reviewing, "build").state, WorkflowNodeState::Completed);
     assert_eq!(cancelled(&runtime, &build), 1);
     assert_eq!(calls_tools(&token).unwrap_err(), "Unauthorized");
@@ -43,11 +48,11 @@ fn waiting_failing_and_accepted_steps_cancel_their_session() {
     let runtime = Arc::new(FakeRuntime::default());
     let engine = engine(runtime.clone());
     let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
-    end_turn(&engine, &run.id, "build", &[]);
-    // A reviewer that never reports waits for the owner.
+    end_turn(&engine, &run.id, "build", &[built()]);
+    // A reviewer whose finding repeats stops the loop and waits for the owner.
     let review = step_of(&engine.require_run(&run.id).unwrap(), "review").owned_id.clone();
     let token = agent(&engine, shared_endpoint(), &review, &repo.0);
-    let waiting = end_turn(&engine, &run.id, "review", &[]);
+    let waiting = end_turn(&engine, &run.id, "review", &[failed(&["REPEAT: same problem"])]);
     assert_eq!(step_of(&waiting, "review").state, WorkflowNodeState::WaitingInput);
     assert_eq!(cancelled(&runtime, &review), 1);
     assert_eq!(calls_tools(&token).unwrap_err(), "Unauthorized");
@@ -57,9 +62,9 @@ fn waiting_failing_and_accepted_steps_cancel_their_session() {
 
     // A step that fails its expected files fails and stops.
     let repo = RunRepo::new();
-    let run = loop_run(&engine, &repo.0, "  build: { agent: { provider: codex }, prompt: prompts/p.md, expect_files: [missing.md] }\n");
+    let run = loop_run(&engine, &repo.0, "  build: { result: build, agent: { provider: codex }, prompt: prompts/p.md, expect_files: [missing.md] }\n");
     let build = step_of(&run, "build").owned_id.clone();
-    let failed = end_turn(&engine, &run.id, "build", &[]);
+    let failed = end_turn(&engine, &run.id, "build", &[built()]);
     assert_eq!(failure_code(&failed, "build").as_deref(), Some("expect-files"));
     assert_eq!(cancelled(&runtime, &build), 1);
 }
@@ -72,7 +77,7 @@ fn a_redone_build_gets_a_new_token_and_the_old_one_is_refused() {
     let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
     let build = step_of(&run, "build").owned_id.clone();
     let old = agent(&engine, shared_endpoint(), &build, &repo.0);
-    end_turn(&engine, &run.id, "build", &[]);
+    end_turn(&engine, &run.id, "build", &[built()]);
     let redone = end_turn(&engine, &run.id, "review", &[findings(1)]);
     // The build keeps its session; stopping an idle session suspends it, and resuming it issues a token again.
     assert_eq!((step_of(&redone, "build").attempt, step_of(&redone, "build").owned_id.as_str()), (2, build.as_str()));
@@ -87,7 +92,7 @@ fn a_review_step_that_commits_fails_changed_code() {
     let repo = RunRepo::new();
     let engine = engine(Arc::new(FakeRuntime::default()));
     let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
-    end_turn(&engine, &run.id, "build", &[]);
+    end_turn(&engine, &run.id, "build", &[built()]);
     repo.git(&["-c", "user.name=Test", "-c", "user.email=test@test", "commit", "--allow-empty", "-m", "review fix"]);
     let ended = end_turn(&engine, &run.id, "review", &[pass()]);
     assert_eq!(step_of(&ended, "review").state, WorkflowNodeState::Failed);
@@ -99,7 +104,7 @@ fn a_review_step_leaving_an_untracked_file_fails_changed_code() {
     let repo = RunRepo::new();
     let engine = engine(Arc::new(FakeRuntime::default()));
     let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
-    end_turn(&engine, &run.id, "build", &[]);
+    end_turn(&engine, &run.id, "build", &[built()]);
     std::fs::write(repo.0.join("stray.txt"), "left behind").unwrap();
     let ended = end_turn(&engine, &run.id, "review", &[pass()]);
     assert_eq!(failure_code(&ended, "review").as_deref(), Some("changed-code"));
@@ -111,7 +116,9 @@ fn a_review_step_rewriting_a_file_the_build_left_fails_changed_code() {
     let engine = engine(Arc::new(FakeRuntime::default()));
     let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
     std::fs::write(repo.0.join("draft.txt"), "the build's version").unwrap();
-    end_turn(&engine, &run.id, "build", &[]);
+    repo.git(&["add", "draft.txt"]);
+    repo.git(&["-c", "user.name=Test", "-c", "user.email=test@test", "commit", "-m", "the draft"]);
+    end_turn(&engine, &run.id, "build", &[built_with(&repo)]);
     std::fs::write(repo.0.join("draft.txt"), "the reviewer's version").unwrap();
     let ended = end_turn(&engine, &run.id, "review", &[pass()]);
     assert_eq!(failure_code(&ended, "review").as_deref(), Some("changed-code"));
@@ -123,7 +130,7 @@ fn a_build_step_may_commit() {
     let engine = engine(Arc::new(FakeRuntime::default()));
     let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
     repo.git(&["-c", "user.name=Test", "-c", "user.email=test@test", "commit", "--allow-empty", "-m", "the work"]);
-    let reviewing = end_turn(&engine, &run.id, "build", &[]);
+    let reviewing = end_turn(&engine, &run.id, "build", &[built_with(&repo)]);
     assert_eq!(step_of(&reviewing, "build").state, WorkflowNodeState::Completed);
     let ended = end_turn(&engine, &run.id, "review", &[pass()]);
     assert_eq!(step_of(&ended, "review").state, WorkflowNodeState::Completed);
@@ -133,8 +140,8 @@ fn a_build_step_may_commit() {
 fn changed_code_is_permanent_and_not_retried_by_redo() {
     let repo = RunRepo::new();
     let engine = engine(Arc::new(FakeRuntime::default()));
-    let run = loop_run(&engine, &repo.0, "  build: { agent: { provider: codex }, prompt: prompts/p.md }\n  checks: { needs: [build], run: [\"touch stray.txt && exit 1\"], on_fail: build }\n");
-    end_turn(&engine, &run.id, "build", &[]);
+    let run = loop_run(&engine, &repo.0, "  build: { result: build, agent: { provider: codex }, prompt: prompts/p.md }\n  checks: { needs: [build], run: [\"touch stray.txt && exit 1\"], on_fail: build }\n");
+    end_turn(&engine, &run.id, "build", &[built()]);
     let run = settle(&engine, &run.id);
     assert_eq!(failure_code(&run, "checks").as_deref(), Some("changed-code"));
     assert_eq!(step_of(&run, "checks").state, WorkflowNodeState::Failed);
@@ -151,13 +158,13 @@ fn load(steps: &str) -> Result<WorkflowDefinitionV1, WorkflowError> {
 
 #[test]
 fn two_unordered_agent_steps_are_refused_at_load() {
-    let error = load("  build: { agent: { provider: codex }, prompt: prompts/p.md }\n  docs: { agent: { provider: claude }, prompt: prompts/p.md }\n").unwrap_err();
+    let error = load("  build: { result: build, agent: { provider: codex }, prompt: prompts/p.md }\n  docs: { result: build, agent: { provider: claude }, prompt: prompts/p.md }\n").unwrap_err();
     assert!(error.to_string().contains("steps build and docs can run at the same time; agent steps must be ordered"), "{error}");
 }
 
 #[test]
 fn parallel_reviews_of_one_step_still_load() {
-    let second = "  second:\n    needs: [build]\n    review: { of: build, agent: { provider: codex }, prompt: prompts/p.md }\n";
+    let second = "  second:\n    needs: [build]\n    result: review\n    review: { of: build, agent: { provider: codex }, prompt: prompts/p.md }\n";
     assert!(load(&format!("{LOOP_REVIEW}{second}")).is_ok());
 }
 
@@ -166,9 +173,9 @@ fn redo_stops_a_parallel_reviewer_and_its_timer() {
     let repo = RunRepo::new();
     let runtime = Arc::new(FakeRuntime::default());
     let engine = run_engine(runtime.clone());
-    let steps = format!("{LOOP_REVIEW}  second:\n    needs: [build]\n    review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/p.md }}\n");
+    let steps = format!("{LOOP_REVIEW}  second:\n    needs: [build]\n    result: review\n    review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/p.md }}\n");
     let run = loop_run(&engine, &repo.0, &steps);
-    let both = end_turn(&engine, &run.id, "build", &[]);
+    let both = end_turn(&engine, &run.id, "build", &[built()]);
     let old_second = step_of(&both, "second").clone();
     assert_eq!(old_second.state, WorkflowNodeState::Running);
     assert!(engine.deadlines.lock().unwrap().contains_key(&old_second.id));

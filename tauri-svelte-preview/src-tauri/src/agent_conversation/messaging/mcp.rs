@@ -38,8 +38,10 @@ impl ServerHandler for Server {
             .with_instructions(format!("{OWNER_AUTHORITY} Report work with receipts: commit hashes, run ids, step results from get_workflow_run, test output."))
     }
 
-    async fn list_tools(&self, _: Option<PaginatedRequestParams>, _: RequestContext<RoleServer>) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(tools()))
+    async fn list_tools(&self, _: Option<PaginatedRequestParams>, context: RequestContext<RoleServer>) -> Result<ListToolsResult, ErrorData> {
+        let token = context.extensions.get::<Parts>().map(|parts| bearer(&parts.headers)).unwrap_or("");
+        let contract = self.0.upgrade().and_then(|endpoint| endpoint.running_contract(token));
+        Ok(ListToolsResult::with_all_items(tools(contract.as_deref())))
     }
 
     async fn call_tool(&self, request: CallToolRequestParams, context: RequestContext<RoleServer>) -> Result<CallToolResponse, ErrorData> {
@@ -68,8 +70,8 @@ fn no_arguments(name: &'static str, description: &'static str) -> Tool {
     Tool::new(name, description, schema_for_empty_input())
 }
 
-fn tools() -> Vec<Tool> {
-    vec![
+fn tools(contract: Option<&str>) -> Vec<Tool> {
+    let mut tools = vec![
         no_arguments("list_sessions", "List Assembly sessions on this machine and on the other machines connected to the desktop. Each has a handle, a name and the machine it runs on; send to handle@machine."),
         tool::<SendMessage>("send_message", OWNER_AUTHORITY.to_string() + " Send a message to an Assembly session you may reach (see list_sessions), addressed by its handle (such as brisk-heron), its name, or its owned id; add @machine (brisk-heron@workbox-test) for a session on another machine. A handle never changes when the session is renamed."),
         tool::<StartSession>("start_session", "Start a Codex, Claude or Antigravity helper session. It works in folder (an absolute path on your machine, such as a worktree) or, without one, in your folder. It is listed with your agents, and its final reply is sent to you as a message when it finishes."),
@@ -79,11 +81,27 @@ fn tools() -> Vec<Tool> {
         no_arguments("list_workflow_runs", "List the workflow runs on this machine."),
         tool::<RunId>("get_workflow_run", "Read what happened in a workflow run, step by step: state, attempt, worker, failure, command exit codes, review verdict and findings, pull request."),
         tool::<RunId>("stop_workflow_run", "Stop a workflow run you started."),
-        tool::<DecideStep>("decide_step", "Main orchestrator only: decide a review step that is waiting (at its round limit, or because its turn gave no report) when its findings and the task spec give enough to decide. accept completes it as it is, another-round redoes it, stop ends the run. why, one or two sentences, is recorded in the run for the owner. Gates, and anything that needs the owner's judgment (scope, a product choice, risk), stay the owner's: post those on the Build Board and send the owner a phone notification."),
-        tool::<ReportReview>("report_review", "Workflow review steps only: a verdict must be recorded once; retry a rejected or failed call. Use pass with no findings, or fail with each finding."),
+        tool::<DecideStep>("decide_step", "Main orchestrator only: decide a review step that is waiting (at its round limit, or because its turn did not complete) when its findings and the task spec give enough to decide. accept completes it as it is, another-round redoes it, stop ends the run. why, one or two sentences, is recorded in the run for the owner. Gates, and anything that needs the owner's judgment (scope, a product choice, risk), stay the owner's: post those on the Build Board and send the owner a phone notification."),
         tool::<MessageId>("message_status", "Read whether a message you sent is queued, delivered or failed."),
         tool::<board::BoardUpdate>("board_update", board::DESCRIPTION),
-    ]
+    ];
+    tools.extend(contract.and_then(report_tool));
+    tools
+}
+
+/// `report_result`, with the schema of the caller's running step; the engine checks a call against the same type.
+fn report_tool(contract: &str) -> Option<Tool> {
+    use crate::workflow::receipts::*;
+    const REPORT: &str = "Record this workflow step's result. A rejected call names the failing field: fix it and call again. The step does not finish without a recorded result.";
+    Some(match contract {
+        "ImplementationReceipt" => tool::<ImplementationReceipt>("report_result", REPORT),
+        "SpecReceipt" => tool::<SpecReceipt>("report_result", REPORT),
+        "ReconReceipt" => tool::<ReconReceipt>("report_result", REPORT),
+        "PlanReceipt" => tool::<PlanReceipt>("report_result", REPORT),
+        "ReviewReceipt" => tool::<ReviewReceipt>("report_result", REPORT),
+        "ProofReceipt" => tool::<ProofReceipt>("report_result", REPORT),
+        _ => return None,
+    })
 }
 
 #[derive(JsonSchema)]
@@ -127,14 +145,6 @@ enum Decision { Accept, AnotherRound, Stop }
 
 #[derive(JsonSchema)]
 struct DecideStep { run_id: String, step: String, decision: Decision, why: String }
-
-#[derive(JsonSchema)]
-#[serde(rename_all = "lowercase")]
-#[schemars(inline)]
-enum Verdict { Pass, Fail }
-
-#[derive(JsonSchema)]
-struct ReportReview { verdict: Verdict, findings: Vec<String> }
 
 #[derive(JsonSchema)]
 struct MessageId { id: String }
