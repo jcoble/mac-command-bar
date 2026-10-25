@@ -83,15 +83,11 @@
 
   onMount(() => {
     void refreshResourceTotals();
-    const refreshInterval = window.setInterval(() => {
-      void refreshResourceTotals();
-    }, 5_000);
     const refreshWhenVisible = (): void => {
       if (document.visibilityState === 'visible') void refreshResourceTotals();
     };
     document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
-      window.clearInterval(refreshInterval);
       document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
   });
