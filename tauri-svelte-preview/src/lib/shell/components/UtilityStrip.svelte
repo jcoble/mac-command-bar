@@ -14,8 +14,7 @@
    * for and hands over the rectangle of the button that was pressed.
    *
    * The one piece of IO here is the lightweight resource totals read: it runs
-   * on mount, every five seconds, and whenever the window comes back to the
-   * front.
+   * on mount and whenever the window becomes visible during this experiment.
    */
   import { onMount } from 'svelte';
   import Cpu from '@lucide/svelte/icons/cpu';
@@ -83,15 +82,19 @@
 
   onMount(() => {
     void refreshResourceTotals();
+    /* Timer experiment: disabled for the performance comparison.
     const refreshInterval = window.setInterval(() => {
       void refreshResourceTotals();
     }, 5_000);
+    */
     const refreshWhenVisible = (): void => {
       if (document.visibilityState === 'visible') void refreshResourceTotals();
     };
     document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
+      /* Timer experiment: disabled for the performance comparison.
       window.clearInterval(refreshInterval);
+      */
       document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
   });
