@@ -472,7 +472,9 @@
       const run = onScreen && document.visibilityState === 'visible';
       if (run && !timer) {
         backgroundNow = Date.now();
+        /* Timer experiment: disabled for the performance comparison.
         timer = setInterval(() => { backgroundNow = Date.now(); }, 1000);
+        */
       } else if (!run && timer) {
         clearInterval(timer);
         timer = null;
@@ -489,7 +491,6 @@
       }
     };
   }
-
   let disclosureWindow = '';
   let previousLiveTail: string | undefined;
   let previousActiveTurn: string | null = null;
@@ -516,7 +517,6 @@
     previousLiveTail = tail;
     previousActiveTurn = turn;
   });
-
   function requestPage(older: boolean): void {
     if (!host || restoring || jumping || pageRequest) return;
     if (older ? !hasOlder || loadingOlder || host.scrollTop > 80 : !hasNewer || loadingNewer || !atEnd()) return;
