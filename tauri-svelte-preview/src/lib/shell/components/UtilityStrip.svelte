@@ -82,19 +82,11 @@
 
   onMount(() => {
     void refreshResourceTotals();
-    /* Timer experiment: disabled for the performance comparison.
-    const refreshInterval = window.setInterval(() => {
-      void refreshResourceTotals();
-    }, 5_000);
-    */
     const refreshWhenVisible = (): void => {
       if (document.visibilityState === 'visible') void refreshResourceTotals();
     };
     document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
-      /* Timer experiment: disabled for the performance comparison.
-      window.clearInterval(refreshInterval);
-      */
       document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
   });
