@@ -5,8 +5,7 @@
   At rest the row shows one pill per group. Pressing a group opens it: the row
   shows a Back button, which closes the group without changing its selection,
   then the group's options, which toggle on and off. Deselecting every option
-  clears the group. Escape, a press anywhere outside the row, or ten
-  seconds with no press, closes the group and keeps its selection. When the
+  clears the group. Escape or a press anywhere outside the row closes the group and keeps its selection. When the
   keyboard is in the row, opening a group moves focus to its first option and
   closing it moves focus back to the group's pill. A closed
   group with a selection shows the chosen labels joined ("Claude/Codex") as a
@@ -72,7 +71,9 @@
 
   function restartTimer(): void {
     clearTimeout(timer);
+    /* Timer experiment: disabled for the performance comparison.
     timer = window.setTimeout(close, AUTO_CLOSE_MS);
+    */
   }
 
   // The pressed button disappears when the row swaps between pills and

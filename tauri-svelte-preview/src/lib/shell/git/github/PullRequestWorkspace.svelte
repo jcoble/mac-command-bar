@@ -291,13 +291,13 @@
     clearTimeout(searchTimer);
     void load(true);
   }
-
   /** The list follows the box once typing pauses; Enter searches at once. */
   function onSearchInput(): void {
     clearTimeout(searchTimer);
+    /* Timer experiment: disabled for the performance comparison.
     if (searchInput.trim() !== searchedText) searchTimer = setTimeout(() => void load(true), 350);
+    */
   }
-
   /** A link names a repository; find the project that has it as its remote.
    * The link stays stored while it resolves, so a newer link replaces it and
    * this one gives up once its await returns. */
@@ -766,7 +766,7 @@
         <IconButton label="Refresh pull requests" disabled={loading} onclick={() => void load(true)}><RefreshCw /></IconButton>
       </div>
       <div class="list-filters">
-        <Input type="search" class="search" aria-label="Search pull requests" placeholder="Search title, branch, author or #number" maxlength={150} bind:value={searchInput} onkeydown={onSearchKey} oninput={onSearchInput} />
+        <Input type="search" class="search" aria-label="Search pull requests" placeholder="Search title, branch, author or #number; press Enter" maxlength={150} bind:value={searchInput} onkeydown={onSearchKey} oninput={onSearchInput} />
         <SegmentedControl size="sm" items={STATE_ITEMS} value={stateFilter} aria-label="Pull request state" onValueChange={(value) => { stateFilter = value as PullRequestState; void load(true); }} />
         <Select.Root type="single" value={scope} onValueChange={(value) => { scope = value as PullRequestScope; void load(true); }}>
           <Select.Trigger size="sm" aria-label="Whose pull requests">{SCOPE_LABELS[scope]}</Select.Trigger>

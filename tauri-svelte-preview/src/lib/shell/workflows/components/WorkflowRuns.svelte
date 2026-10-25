@@ -156,7 +156,6 @@
       resetWorkflowStore();
     };
   });
-
   async function loadWorkflowFiles(repoRoot: string, owner: string | null, signal: AbortSignal): Promise<void> {
     if (!repoRoot) return;
     try {
@@ -168,7 +167,6 @@
       if (!signal.aborted) workflowState.error = `Could not list workflows: ${workflowErrorText(error)}`;
     }
   }
-
   $effect(() => {
     if (!visible || !runningNode?.startedAtMs || !runningDefinition) return;
     const controller = new AbortController();
@@ -176,28 +174,31 @@
       0,
       runningNode.startedAtMs + runningDefinition.timeoutSeconds * 1000 - Date.now()
     );
+    /* Timer experiment: disabled for the performance comparison.
     const timer = window.setTimeout(() => {
       if (!controller.signal.aborted) now = Date.now();
     }, remaining);
+    */
     return () => {
       controller.abort();
+      /* Timer experiment: disabled for the performance comparison.
       window.clearTimeout(timer);
+      */
     };
   });
-
   const LIVE_STATES: WorkflowNodeState[] = ['starting', 'running'];
   const ticking = $derived(
     orderedNodes.some((node) => node.startedAtMs && !node.finishedAtMs && LIVE_STATES.includes(node.state))
   );
-
   // One clock for every running stage's elapsed time; stops when hidden or nothing is running.
   $effect(() => {
     if (!visible || !ticking) return;
     now = Date.now();
+    /* Timer experiment: disabled for the performance comparison.
     const timer = window.setInterval(() => (now = Date.now()), 1000);
     return () => window.clearInterval(timer);
+    */
   });
-
   function elapsed(node: WorkflowNodeRunRecord): string {
     if (!node.startedAtMs) return '';
     const end = node.finishedAtMs ?? (LIVE_STATES.includes(node.state) ? now : null);
@@ -208,7 +209,6 @@
     if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
     return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
   }
-
   function runTitle(run: WorkflowRunRecord): string {
     return (run.inputSnapshot as { task?: { title?: string } }).task?.title ?? run.definition.name;
   }

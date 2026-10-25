@@ -29,8 +29,10 @@
   $effect(() => {
     if (!running || startedAtMs === null || !visible || !documentVisible) return;
     now = Date.now();
+    /* Timer experiment: disabled for the performance comparison.
     const timer = setInterval(() => { now = Date.now(); }, 1000);
     return () => clearInterval(timer);
+    */
   });
 </script>
 
