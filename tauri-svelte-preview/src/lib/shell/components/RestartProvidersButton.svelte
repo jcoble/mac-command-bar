@@ -42,10 +42,8 @@
   $effect(() => {
     if (!counting) return;
     // One one-second interval while the warning counts down; cancel, finishing and unmounting clear it.
-    /* Timer experiment: disabled for the performance comparison.
     const timer = window.setInterval(() => stepCountdown('tick'), 1000);
     return () => window.clearInterval(timer);
-    */
   });
 
   // After a restart, re-check (as Check now does) once the connection drops and returns.
@@ -68,7 +66,7 @@
     <AlertDialog.Header>
       <AlertDialog.Title>Restart the remote server on {machineName}?</AlertDialog.Title>
       <AlertDialog.Description>
-        Restarting ends these sessions running on {machineName}.
+        Restarting ends these sessions running on {machineName}. Restarting in {countdown?.remaining ?? 0} seconds.
       </AlertDialog.Description>
     </AlertDialog.Header>
     <ul class="m-0 flex list-disc flex-col gap-1 pl-5 text-[13px]">

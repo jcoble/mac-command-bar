@@ -78,14 +78,12 @@
 	let visualActiveOwnedId = $state<string | null>(null);
 	// One clock for every row's age label, refreshed coarsely; a hidden window skips the write.
 	let nowMs = $state(Date.now());
-	/* Timer experiment: disabled for the performance comparison.
 	onMount(() => {
 		const tick = window.setInterval(() => {
 			if (!document.hidden) nowMs = Date.now();
 		}, 15_000);
 		return () => window.clearInterval(tick);
 	});
-	*/
 	let contextMenu = $state<{ session: OwnedSession; x: number; y: number } | null>(null);
 	let renamingOwnedId = $state<string | null>(null);
 	const contextMenuItems = $derived(

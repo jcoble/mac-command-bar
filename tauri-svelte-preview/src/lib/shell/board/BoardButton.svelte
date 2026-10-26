@@ -41,9 +41,7 @@
         const result = await countBoard(Date.now(), current.signal);
         if (!result || current.signal.aborted) return;
         counted = result.count;
-        /* Timer experiment: disabled for the performance comparison.
         if (result.snoozed_until_ms) timer = window.setTimeout(() => { version += 1; void recount(); }, Math.max(0, result.snoozed_until_ms - Date.now()));
-        */
         const read = await readBoard(Date.now(), Date.now(), current.signal);
         if (!read || current.signal.aborted) return;
         const notifications = boardNotifications(lastRead, read);

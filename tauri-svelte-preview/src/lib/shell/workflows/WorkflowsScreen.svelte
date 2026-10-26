@@ -89,10 +89,8 @@
   $effect(() => {
     if (!ticking) return;
     now = Date.now();
-    /* Timer experiment: disabled for the performance comparison.
     const timer = window.setInterval(() => (now = Date.now()), 1000);
     return () => window.clearInterval(timer);
-    */
   });
 
   onMount(() => {

@@ -49,9 +49,7 @@
     if (active) void showNewestRow(stop.signal);
   });
   async function showNewestRow(signal: AbortSignal): Promise<void> {
-    /* Timer experiment: disabled for the performance comparison.
     await tick();
-    */
     if (!signal.aborted) $virtualizer.scrollToEnd();
   }
   // A call opened inside this bounded list moves to its top, so its diff or output shows.
