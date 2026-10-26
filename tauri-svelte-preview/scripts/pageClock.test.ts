@@ -89,13 +89,13 @@ assert.equal(restarts, 1, 'a cancelled countdown never restarts');
 
 // pageWait ends after its time, or at once on abort.
 let waited = false;
-const wait = pageWait(300, new AbortController().signal);
+const wait = (async () => { await pageWait(300, new AbortController().signal); waited = true; })();
 advance(250);
-await Promise.resolve();
-assert.equal(waited, false);
+for (let flush = 0; flush < 5; flush += 1) await Promise.resolve();
+assert.equal(waited, false, 'pageWait does not end before its time');
 advance(250);
 await wait;
-waited = true;
+assert.equal(waited, true, 'pageWait ends after its time');
 const stopWait = new AbortController();
 const abortedWait = pageWait(60_000, stopWait.signal);
 stopWait.abort();

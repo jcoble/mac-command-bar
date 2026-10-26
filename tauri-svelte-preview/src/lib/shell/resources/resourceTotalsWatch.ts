@@ -40,16 +40,22 @@ async function watchAfter(
   const { listen } = await import('@tauri-apps/api/event');
   if (signal.aborted) return;
   const aborted = deferred();
-  signal.addEventListener('abort', () => aborted.resolve(), { once: true });
-  // Listen first, so no push between the first sample and the listener is lost.
-  const unlisten = await listen<ResourceSampleTotals>('resource-totals', (event) => onTotals(event.payload));
+  const onAbort = (): void => aborted.resolve();
+  signal.addEventListener('abort', onAbort, { once: true });
   try {
-    if (signal.aborted) return;
-    const totals = await invoke<ResourceSampleTotals | null>('watch_resource_totals', { watching: true });
-    if (totals && !signal.aborted) onTotals(totals);
-    await aborted.promise;
+    // Listen first, so no push between the first sample and the listener is lost.
+    const unlisten = await listen<ResourceSampleTotals>('resource-totals', (event) => onTotals(event.payload));
+    try {
+      if (signal.aborted) return;
+      const totals = await invoke<ResourceSampleTotals | null>('watch_resource_totals', { watching: true });
+      if (totals && !signal.aborted) onTotals(totals);
+      await aborted.promise;
+    } finally {
+      unlisten();
+      await invoke('watch_resource_totals', { watching: false });
+    }
   } finally {
-    unlisten();
-    await invoke('watch_resource_totals', { watching: false });
+    signal.removeEventListener('abort', onAbort);
+    aborted.resolve();
   }
 }
