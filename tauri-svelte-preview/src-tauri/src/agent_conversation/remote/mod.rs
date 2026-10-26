@@ -3263,7 +3263,7 @@ async fn wait_for_cancel(cancellations: &mut broadcast::Receiver<u64>, request_i
     }
 }
 
-pub(super) fn validate_ssh_target(target: &str) -> Result<(), String> {
+pub(crate) fn validate_ssh_target(target: &str) -> Result<(), String> {
     if target.is_empty() || target.starts_with('-')
         || !target.bytes().all(|value| value.is_ascii_alphanumeric() || b"._@-".contains(&value)) {
         return Err("SSH destination may contain only letters, numbers, '.', '_', '@', and '-'".into());

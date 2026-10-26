@@ -27,7 +27,7 @@ export async function checkForAppUpdate(
   if (import.meta.env.DEV) {
     appUpdateState.phase = 'current';
     appUpdateState.version = '';
-    appUpdateState.message = 'Development build: this checkout supplies the desktop app. Pull changes; frontend edits hot reload. Restart pnpm app:dev after Rust changes. Check backend compatibility in Connections.';
+    appUpdateState.message = 'Development build: this checkout supplies the desktop app. Build latest pulls main, rebuilds, deploys the backend and restarts; frontend edits hot reload.';
     return;
   }
   appUpdateState.phase = 'checking';

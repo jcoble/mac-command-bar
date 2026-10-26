@@ -5,11 +5,13 @@
   moving keyboard focus into it, slides joined circles out to its right:
   Projects, Messages, and Update while an app update is waiting. The waiting update also
   puts a dot on the green button, and while the circles are out a still arc
-  marks the Update circle. Only the slide moves, once per hover or focus.
+  marks the Update circle. A Build latest run (dev builds) shows the same way, its
+  arc filled to the step it is on. Only the slide moves, once per hover or focus.
 -->
 <script lang="ts">
   import Download from '@lucide/svelte/icons/download';
   import FolderKanban from '@lucide/svelte/icons/folder-kanban';
+  import Hammer from '@lucide/svelte/icons/hammer';
   import House from '@lucide/svelte/icons/house';
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
   import Settings from '@lucide/svelte/icons/settings';
@@ -17,6 +19,7 @@
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { appUpdateState } from '$lib/shell/appUpdateService.svelte';
+  import { buildLatestState } from '$lib/shell/buildLatestService.svelte';
 
   interface Props {
     onOpenProjects: () => void;
@@ -31,6 +34,9 @@
   /** Focus arrived by keyboard; a click's focus does not keep the circles out. */
   let keyboardFocus = $state(false);
   const updateWaiting = $derived(appUpdateState.phase === 'available');
+  const build = $derived(buildLatestState);
+  const buildLabel = $derived(build.phase === 'failed' ? `Build latest failed: ${build.error}`
+    : `Build latest, step ${build.step} of ${build.total}: ${build.text}`);
   const out = $derived(hovered || keyboardFocus);
 </script>
 
@@ -52,7 +58,7 @@
       {#snippet child({ props })}
         <button {...props} type="button" class="home-button" aria-label="Home" data-testid="home-button">
           <House aria-hidden="true" />
-          {#if updateWaiting}<span class="home-dot" aria-hidden="true"></span>{/if}
+          {#if updateWaiting || build.phase !== 'idle'}<span class="home-dot" aria-hidden="true"></span>{/if}
         </button>
       {/snippet}
     </DropdownMenu.Trigger>
@@ -84,6 +90,20 @@
           <circle cx="16" cy="16" r="14" pathLength="3" stroke-width="5" opacity="0.15" />
           <circle cx="16" cy="16" r="14" pathLength="3" stroke-width="3" opacity="0.35" />
           <circle cx="16" cy="16" r="14" pathLength="3" stroke-width="1.5" />
+        </svg>
+      </span>
+    {/if}
+    {#if build.phase !== 'idle'}
+      <span class="home-update">
+        <IconButton label={buildLabel} side="bottom" class="home-circle" data-testid="home-build-latest" onclick={onOpenUpdate}>
+          <Hammer />
+        </IconButton>
+        <!-- Still, like the update arc: filled to the current step, redrawn only when it changes. -->
+        <svg class="home-arc" class:failed={build.phase === 'failed'} viewBox="0 0 32 32" aria-hidden="true"
+          style:stroke-dasharray={`${build.step} ${build.total}`}>
+          <circle cx="16" cy="16" r="14" pathLength={build.total} stroke-width="5" opacity="0.15" />
+          <circle cx="16" cy="16" r="14" pathLength={build.total} stroke-width="3" opacity="0.35" />
+          <circle cx="16" cy="16" r="14" pathLength={build.total} stroke-width="1.5" />
         </svg>
       </span>
     {/if}
@@ -197,6 +217,10 @@
 
   .out .home-arc {
     opacity: 1;
+  }
+
+  .home-arc.failed {
+    stroke: var(--color-attention);
   }
 
   @media (prefers-reduced-motion: reduce) {
