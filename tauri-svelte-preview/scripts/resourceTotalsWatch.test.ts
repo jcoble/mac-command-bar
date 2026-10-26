@@ -7,46 +7,68 @@ Object.defineProperty(window, 'crypto', { value: globalThis.crypto });
 const { watchResourceTotals } = await import('../src/lib/shell/resources/resourceTotalsWatch.ts');
 
 const totals = (cpuPercent: number) => ({ cpuPercent, physicalFootprintBytes: 1, rssBytes: 1, processCount: 1, activeSourceDirectoryReads: 0 });
-const watching = new Set<string>();
+const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+let watching = false;
 const calls: boolean[] = [];
 let abortOnWatch: AbortController | null = null;
-mockIPC((cmd, args) => {
+let holdWatch: Promise<void> | null = null;
+mockIPC(async (cmd, args) => {
   if (cmd !== 'watch_resource_totals') return undefined;
   const on = (args as { watching: boolean }).watching;
   calls.push(on);
-  if (on) watching.add('main');
-  if (on) abortOnWatch?.abort();
-  else watching.delete('main');
+  if (on) {
+    abortOnWatch?.abort();
+    await holdWatch;
+  }
+  watching = on;
   return on ? totals(1) : null;
 }, { shouldMockEvents: true });
 
-// Watching returns a first sample, then receives pushes until aborted; aborting unwatches.
+// The first sample arrives at once, then pushes until aborted; aborting unwatches and ends the watch.
 const seen: number[] = [];
 const life = new AbortController();
-assert.equal((await watchResourceTotals((pushed) => seen.push(pushed.cpuPercent), life.signal))?.cpuPercent, 1);
-assert.ok(watching.has('main'));
+const running = watchResourceTotals((pushed) => seen.push(pushed.cpuPercent), life.signal);
+await settle();
+assert.ok(watching);
 await emit('resource-totals', totals(2));
-assert.deepEqual(seen, [2], 'a pushed change reaches the strip');
+assert.deepEqual(seen, [1, 2], 'the first sample and a pushed change reach the strip');
 life.abort();
-await Promise.resolve();
-assert.equal(watching.has('main'), false, 'aborting stops the watch');
+await running;
+assert.equal(watching, false, 'aborting stops the watch');
 await emit('resource-totals', totals(3));
-assert.deepEqual(seen, [2], 'no pushes after aborting');
+assert.deepEqual(seen, [1, 2], 'no pushes after aborting');
 
 // Aborting while the watch call is in flight still leaves nothing watching.
-calls.length = 0;
 const early = new AbortController();
 abortOnWatch = early;
-assert.equal(await watchResourceTotals(() => undefined, early.signal), null);
+await watchResourceTotals(() => undefined, early.signal);
 abortOnWatch = null;
-assert.equal(watching.has('main'), false, 'an abort during setup leaves nothing watching');
+assert.equal(watching, false, 'an abort during setup leaves nothing watching');
 
 // Already aborted: never watches.
 calls.length = 0;
 const done = new AbortController();
 done.abort();
-assert.equal(await watchResourceTotals(() => undefined, done.signal), null);
+await watchResourceTotals(() => undefined, done.signal);
 assert.deepEqual(calls, [], 'an aborted signal never starts a watch');
+
+// Hidden during the first watch call, then shown again: the old watch's stop cannot cancel the new one.
+let release = (): void => {};
+holdWatch = new Promise((resolve) => { release = resolve; });
+const hidden = new AbortController();
+const first = watchResourceTotals(() => undefined, hidden.signal);
+await settle();
+hidden.abort();
+const shown = new AbortController();
+const second = watchResourceTotals(() => undefined, shown.signal);
+release();
+holdWatch = null;
+await first;
+await settle();
+assert.equal(watching, true, 'the replacement watch is still registered after the old one stops');
+shown.abort();
+await second;
+assert.equal(watching, false);
 
 clearMocks();
 console.log('resource totals watch checks passed');

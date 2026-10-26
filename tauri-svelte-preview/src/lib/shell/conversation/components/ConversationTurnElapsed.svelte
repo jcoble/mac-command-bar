@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { formatWorkedFor } from '$lib/shell/conversation/conversationTimeline.ts';
-  import { pageClock, watchPageClock } from '$lib/pageClock.svelte';
+  import { pageClock, watchPageClock } from '$lib/pageClock';
 
   let { running, completed, startedAtMs, elapsedMs }: {
     running: boolean;

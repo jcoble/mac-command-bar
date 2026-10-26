@@ -15,7 +15,7 @@
   import Pause from '@lucide/svelte/icons/pause';
   import Play from '@lucide/svelte/icons/play';
   import { onMount, untrack } from 'svelte';
-  import { pageClock, watchPageClock } from '$lib/pageClock.svelte';
+  import { pageClock, watchPageClock } from '$lib/pageClock';
 
   import * as Breadcrumb from '$lib/components/ui/breadcrumb/index.js';
   import { Button } from '$lib/components/ui/button/index.js';

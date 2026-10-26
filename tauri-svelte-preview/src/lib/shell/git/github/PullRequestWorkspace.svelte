@@ -7,7 +7,7 @@
    */
   import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import { untrack } from 'svelte';
-  import { pageDeadline } from '$lib/pageClock.svelte';
+  import { pageDeadline } from '$lib/pageClock';
   import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
   import { parseRemoteWorkspacePath, remoteWorkspacePath, sessionWorkspaceRoot } from '$lib/workspacePaths';

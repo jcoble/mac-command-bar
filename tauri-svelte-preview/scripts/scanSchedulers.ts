@@ -33,81 +33,16 @@ const endlessAnimationPattern = /\banimation(?:-iteration-count)?(?:\|important)
 const allowedHits = new Set([
   // The page clock owns the app's one timer for labels and one-shot waits; it is armed only while a
   // watcher or deadline needs it, and every watcher and deadline is cancelled by its owner.
-  'src/lib/pageClock.svelte.ts:setTimeout:let timer: ReturnType<typeof setTimeout> | undefined;',
-  'src/lib/pageClock.svelte.ts:setTimeout:if (atMs !== Infinity) timer = setTimeout(fire, Math.max(0, atMs - Date.now()));',
-  // Svelte tick is awaited only after mounting a user-requested lazy surface.
-  "src/lib/shell/components/DockPanel.svelte:tick:import { tick } from 'svelte';",
-  'src/lib/shell/components/DockPanel.svelte:tick:await tick();',
-  // The one-shot WebSocket readiness bridge removes every listener when it
-  // settles, and disposing the editor closes the socket so the wait rejects.
-  'src/lib/shell/files/editor/csharpLanguageClient.ts:new Promise:await new Promise<void>((resolve, reject) => {',
-  "src/lib/shell/panels/tasks/TasksPanel.svelte:tick:import { onDestroy, onMount, tick } from 'svelte';",
-  'src/lib/shell/panels/tasks/TasksPanel.svelte:tick:await tick();',
-  // These one-shot timers are both stopped by the AbortSignal-owning surface.
-  // TSK-1553: this callback wait owns one five-minute timer; claim, abort and browser-open failure clear it and remove its listener.
-  'src/lib/shell/notionOAuth.ts:new Promise:const code = new Promise<string>((resolve, reject) => {',
-  'src/lib/shell/notionOAuth.ts:setTimeout:const timeout = setTimeout(',
-  // A jump re-aligns its file two frames later, after its neighbours are drawn; the next
-  // jump or unmounting cancels the pending frame.
-  'src/lib/shell/git/components/MultiFileDiff.svelte:cancelAnimationFrame:cancelAnimationFrame(jumpFrame);',
-  'src/lib/shell/git/components/MultiFileDiff.svelte:requestAnimationFrame:jumpFrame = requestAnimationFrame(() => {',
-  "src/lib/shell/git/components/MultiFileDiff.svelte:requestAnimationFrame:jumpFrame = requestAnimationFrame(() => section?.scrollIntoView({ block: 'start' }));",
-  'src/lib/shell/git/components/MultiFileDiff.svelte:cancelAnimationFrame:onDestroy(() => cancelAnimationFrame(jumpFrame));',
-  // A diff read races the abort of its combined owner-and-timeout signal, so a read that ignores
-  // the signal (every local call) still ends; settled by that abort, listener removed in finally.
-  'src/lib/shell/git/gitBackendExtra.ts:new Promise:const aborted = new Promise<never>((_resolve, reject) => {',
-  'src/lib/shell/git/gitBackendExtra.ts:Promise.race:return await Promise.race([read(signal), aborted]);',
-  // TSK-1424 G: the tools column's one-frame WebKit invalidation (hide, change the grid next frame, reveal
-  // a frame later). The pending frame id is kept; a newer transition and dispose() cancel it.
-  'src/lib/shell/layout/frame.ts:requestAnimationFrame:toolsFrame = requestAnimationFrame(() => {',
-  'src/lib/shell/layout/frame.ts:cancelAnimationFrame:cancelAnimationFrame(toolsFrame);',
-  // TSK-1299: the same one-frame invalidation when the drawer changes the frame's width. The pending
-  // frame id is kept; the next layout and unmounting cancel it.
-  'src/lib/shell/components/ShellFrame.svelte:requestAnimationFrame:layoutRequest = requestAnimationFrame(() => {',
-  "src/lib/shell/components/ShellFrame.svelte:requestAnimationFrame:layoutRequest = requestAnimationFrame(() => (centerRegionSlot.style.visibility = ''));",
-  'src/lib/shell/components/ShellFrame.svelte:cancelAnimationFrame:cancelAnimationFrame(layoutRequest);',
-  // TSK-1424 G: refresh after the panel renders visible; flushSync throws inside an effect. The effect's
-  // controller aborts on hide or unmount and the refresh checks it after the tick.
-  'src/lib/shell/files/components/FilesPanel.svelte:tick:import { onDestroy, tick, untrack } from "svelte";',
-  'src/lib/shell/files/components/FilesPanel.svelte:tick:await tick();',
-  // TSK-1424 G: these return the shared cached promise so the preview's {#await} keeps one identity and an
-  // image or formula never blinks back to pending; the reads behind them are named async functions.
-  'src/lib/shell/files/components/SourceMarkdownPreview.svelte:loadKatex:function loadKatex(): Promise<KatexComponent> {',
-  'src/lib/shell/files/components/SourceMarkdownPreview.svelte:localImageUrl:function localImageUrl(file: string): Promise<string> {',
-  // TSK-1424 C: waitFor, the 300 ms wait before a local image send reads its bytes and the wait between
-  // lookups of a session the rail lacks. Its timer is cleared and its abort listener removed when it ends;
-  // Stop aborts the send's signal and stopConversationEvents the lookups' signal, which ends it at once.
-  'src/lib/shell/conversation/conversationService.ts:new Promise:await new Promise<void>((resolve) => {',
-  'src/lib/shell/conversation/conversationService.ts:setTimeout:const timer = setTimeout(finish, ms);',
-  // TSK-1424 B: the chat stream's wait for the next native event. Leaving the session aborts the
-  // stream's signal, whose listener wakes the wait; the stream's finally removes that listener.
-  'src/lib/shell/conversation/conversationConnection.ts:new Promise:if (!items.length && !signal.aborted) await new Promise<void>((resolve) => { wake = resolve; });',
-  // TSK-1561: streamed text waits one frame so a frame's deltas reach the chat as one update. The
-  // frame, the 50 ms fallback for a window that draws no frames, and leaving the session (abort)
-  // each settle the wait, and settling cancels the other two.
-  'src/lib/shell/conversation/conversationMessages.ts:new Promise:await new Promise<void>((resolve) => {',
-  'src/lib/shell/conversation/conversationMessages.ts:cancelAnimationFrame:cancelAnimationFrame(frame);',
-  'src/lib/shell/conversation/conversationMessages.ts:requestAnimationFrame:const frame = requestAnimationFrame(done);',
-  'src/lib/shell/conversation/conversationMessages.ts:setTimeout:const timer = setTimeout(done, 50);',
-  // TSK-1424 B: the chat's readiness gate, resolved when its snapshot is consumed. Leaving the
-  // session (disposeConversationChat) and a failed stream reject it.
-  'src/lib/shell/conversation/conversationConnection.ts:new Promise:selection.ready = new Promise<void>((resolve, reject) => {',
-  // TSK-1424 B: a send's admission, resolved by the backend receipt mid-turn. The send's failure, or
-  // its end without a receipt, rejects it; leaving the session does not cancel a send already made.
-  'src/lib/shell/conversation/conversationConnection.ts:new Promise:const promise = new Promise<AgentConversationSendReceipt>((accept, decline) => {',
-  // TSK-1424 A: scroll work that must wait for the next render inside an effect, where flushSync throws.
-  // Each waiting function takes the timeline's signal, which unmounting aborts, and checks it and the
-  // render window after the tick. Click handlers use flushSync instead.
-  "src/lib/shell/conversation/components/ConversationTimeline.svelte:tick:import { flushSync, onDestroy, tick, untrack, setContext } from 'svelte';",
-  'src/lib/shell/conversation/components/ConversationTimeline.svelte:tick:await tick();',
-  // TSK-1563: scrolling saves the reader's place and checks for paging once a frame instead of per event.
-  // One pending frame at a time; unmounting cancels it, and the work it runs checks the render window.
-  'src/lib/shell/conversation/components/ConversationTimeline.svelte:requestAnimationFrame:viewFrame ||= requestAnimationFrame(() => { viewFrame = 0; saveView(); requestPage(frameOlder); });',
-  'src/lib/shell/conversation/components/ConversationTimeline.svelte:cancelAnimationFrame:onDestroy(() => { stop.abort(); cancelAnimationFrame(viewFrame); });',
-  // TSK-1424 A: a running tool group's first scroll to its newest row waits for the first render inside an
-  // effect; unmounting aborts the group's signal, which the wait checks after the tick.
-  "src/lib/shell/conversation/components/ConversationToolGroup.svelte:tick:import { getContext, onDestroy, setContext, tick, untrack } from 'svelte';",
-  'src/lib/shell/conversation/components/ConversationToolGroup.svelte:tick:await tick();'
+  'src/lib/pageClock.ts:setTimeout:let timer: ReturnType<typeof setTimeout> | undefined;',
+  'src/lib/pageClock.ts:setTimeout:if (atMs !== Infinity) timer = setTimeout(fire, Math.max(0, atMs - Date.now()));',
+  // The two waits nothing else can signal: the next frame, for the WebKit width workarounds in
+  // ShellFrame and layout/frame.ts, and Svelte's render, for ConversationTimeline's chat placement.
+  "src/lib/pageClock.ts:tick:import { tick } from 'svelte';",
+  'src/lib/pageClock.ts:requestAnimationFrame:const frame = requestAnimationFrame(fn);',
+  'src/lib/pageClock.ts:cancelAnimationFrame:return () => cancelAnimationFrame(frame);',
+  'src/lib/pageClock.ts:tick:await tick();',
+  // The one Promise constructor: turns a callback or event into an await; each owner settles it on abort.
+  'src/lib/deferred.ts:new Promise:const promise = new Promise<T>((accept, decline) => {',
 ]);
 
 interface Hit {

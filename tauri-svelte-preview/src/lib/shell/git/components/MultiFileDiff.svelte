@@ -140,22 +140,22 @@
     textRequested = {};
   }
 
-  /** The pending re-align frame of the last jump; a new jump or unmounting cancels it. */
-  let jumpFrame = 0;
-
+  /** Owns the last jump's re-align; the reader scrolling, a new jump or unmounting aborts it. */
+  let align = new AbortController();
   function jumpTo(path: string): void {
+    align.abort();
+    align = new AbortController();
     activePath = path;
     const section = sections[path];
-    section?.scrollIntoView({ block: 'start' });
-    // Files drawn around the target after the jump can change height (a
-    // sideways scrollbar appears) and push it off the top; align once more
-    // after they are drawn.
-    cancelAnimationFrame(jumpFrame);
-    jumpFrame = requestAnimationFrame(() => {
-      jumpFrame = requestAnimationFrame(() => section?.scrollIntoView({ block: 'start' }));
-    });
+    if (!section) return;
+    // Observing aligns it before the next paint, and again whenever a file around it changes height.
+    const observer = new ResizeObserver(() => section.scrollIntoView({ block: 'start' }));
+    for (const other of Object.values(sections)) if (other) observer.observe(other);
+    align.signal.addEventListener('abort', () => observer.disconnect());
+    const stop = { passive: true, signal: align.signal };
+    for (const type of ['wheel', 'pointerdown', 'keydown']) scroller?.addEventListener(type, () => align.abort(), stop);
   }
-  onDestroy(() => cancelAnimationFrame(jumpFrame));
+  onDestroy(() => align.abort());
 
   /** Jump once per requested file, as soon as its section exists — not again
    * every time another file finishes loading. */

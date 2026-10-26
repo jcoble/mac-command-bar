@@ -1,7 +1,7 @@
 <script lang="ts">
   import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import { untrack } from 'svelte';
-  import { pageClock, watchPageClock } from '$lib/pageClock.svelte';
+  import { pageClock, watchPageClock } from '$lib/pageClock';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Check from '@lucide/svelte/icons/check';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';

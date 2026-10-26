@@ -10,6 +10,7 @@ import {
   signatureHelp,
   type Transport
 } from '@codemirror/lsp-client';
+import { deferred } from '../../../deferred.ts';
 import type { Extension } from '@codemirror/state';
 import { keymap } from '@codemirror/view';
 
@@ -102,7 +103,8 @@ async function startCsharpLanguageClient(
     let socketError: Error | null = null;
     const socket = new WebSocket(endpoint.wsUrl);
     state.socket = socket;
-    await new Promise<void>((resolve, reject) => {
+    const opened = deferred();
+    {
       function cleanup(): void {
         socket.removeEventListener('open', handleOpen);
         socket.removeEventListener('error', handleConnectionError);
@@ -110,20 +112,21 @@ async function startCsharpLanguageClient(
       }
       function handleOpen(): void {
         cleanup();
-        resolve();
+        opened.resolve();
       }
       function handleConnectionError(): void {
         cleanup();
-        reject(new Error('Could not connect to Roslyn.'));
+        opened.reject(new Error('Could not connect to Roslyn.'));
       }
       function handleConnectionClose(): void {
         cleanup();
-        reject(new Error('The Roslyn connection closed before it was ready.'));
+        opened.reject(new Error('The Roslyn connection closed before it was ready.'));
       }
       socket.addEventListener('open', handleOpen, { once: true });
       socket.addEventListener('error', handleConnectionError, { once: true });
       socket.addEventListener('close', handleConnectionClose, { once: true });
-    });
+    }
+    await opened.promise;
     if (state.disposed) throw new Error('The C# client left the visible editor.');
     function handleSocketError(): void {
       socketError = new Error('Could not connect to Roslyn.');

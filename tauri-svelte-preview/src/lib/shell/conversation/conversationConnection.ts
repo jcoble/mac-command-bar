@@ -1,3 +1,4 @@
+import { deferred } from '../../deferred.ts';
 import { normalizeProvider } from '../ownedSessions.ts';
 import { EventType, StreamProcessor, type StreamChunk } from '@tanstack/ai/client';
 import {
@@ -223,7 +224,11 @@ function enqueueFactory(signal: AbortSignal, selection: ActiveConversation): {
             if (typeof id === 'string') recordLiveMessages(selection, new Set([id]), false);
             continue;
           }
-          if (!items.length && !signal.aborted) await new Promise<void>((resolve) => { wake = resolve; });
+          if (!items.length && !signal.aborted) {
+            const next = deferred();
+            wake = next.resolve;
+            await next.promise;
+          }
         }
       } finally {
         signal.removeEventListener('abort', abort);
@@ -235,10 +240,10 @@ function enqueueFactory(signal: AbortSignal, selection: ActiveConversation): {
 }
 
 function resetReady(selection: ActiveConversation): void {
-  selection.ready = new Promise<void>((resolve, reject) => {
-    selection.resolveReady = resolve;
-    selection.rejectReady = reject;
-  });
+  const ready = deferred();
+  selection.ready = ready.promise;
+  selection.resolveReady = ready.resolve;
+  selection.rejectReady = ready.reject;
   void ignoreLeftSelection(selection.ready);
 }
 
@@ -709,12 +714,7 @@ export async function sendSelectedConversationMessage(
   if (selection.pendingAdmission) {
     throw new Error('A message is already being admitted.');
   }
-  let resolve!: (receipt: AgentConversationSendReceipt) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<AgentConversationSendReceipt>((accept, decline) => {
-    resolve = accept;
-    reject = decline;
-  });
+  const { promise, resolve, reject } = deferred<AgentConversationSendReceipt>();
   const admission = { resolve, reject };
   selection.pendingAdmission = admission;
   // The timeline orders rows by start time. Without one, the chat's own copy of

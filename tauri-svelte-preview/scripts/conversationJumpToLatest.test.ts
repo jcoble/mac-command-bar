@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { compileModule } from 'svelte/compiler';
 import { EventType, StreamProcessor } from '@tanstack/ai/client';
 import * as conversationMessages from '../src/lib/shell/conversation/conversationMessages.ts';
+import { deferred } from '../src/lib/deferred.ts';
 
 function compileForTest(path: URL, filename: string): string {
   const stripped = stripTypeScriptTypes(readFileSync(path, 'utf8'), { mode: 'strip' });
@@ -79,6 +80,7 @@ function loadConnection() {
   };
   const dependencies = {
     normalizeProvider: (agent: string) => ({ agent }),
+    deferred,
     EventType,
     StreamProcessor,
     createChat,

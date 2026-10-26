@@ -72,10 +72,9 @@ async function refreshResourceSampleOnce(): Promise<ResourceSnapshot | null> {
 export async function watchResourceTotalsUntil(signal: AbortSignal): Promise<void> {
   if (!isNativeTauriRuntime()) return;
   try {
-    const totals = await watchResourceTotals((pushed) => {
-      resourceSampleState.totals = pushed;
+    await watchResourceTotals((totals) => {
+      resourceSampleState.totals = totals;
     }, signal);
-    if (totals) resourceSampleState.totals = totals;
   } catch (error: unknown) {
     resourceSampleState.error =
       error instanceof Error ? error.message : 'Resource usage could not be read.';

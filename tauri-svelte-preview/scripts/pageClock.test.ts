@@ -19,7 +19,7 @@ function setHidden(hidden: boolean): void {
 }
 
 globalThis.$state = <T>(value: T): T => value;
-const { pageClock, pageDeadline, watchPageClock, pageClockArmed } = await import('../src/lib/pageClock.svelte.ts');
+const { pageClock, pageDeadline, pageWait, watchPageClock, pageClockArmed } = await import('../src/lib/pageClock.ts');
 const { startRestartCountdown, stepRestartCountdown } = await import('../src/lib/shell/providers/providerUpdateService.svelte.ts');
 
 // Subscribing refreshes the clock at once, then it advances at the watched resolution.
@@ -86,6 +86,21 @@ countdown = stepRestartCountdown(countdown, 'cancel').phase === 'counting' ? cou
 arm();
 advance(30_000);
 assert.equal(restarts, 1, 'a cancelled countdown never restarts');
+
+// pageWait ends after its time, or at once on abort.
+let waited = false;
+const wait = pageWait(300, new AbortController().signal);
+advance(250);
+await Promise.resolve();
+assert.equal(waited, false);
+advance(250);
+await wait;
+waited = true;
+const stopWait = new AbortController();
+const abortedWait = pageWait(60_000, stopWait.signal);
+stopWait.abort();
+await abortedWait;
+assert.equal(pageClockArmed(), false, 'an aborted wait leaves nothing armed');
 
 mock.timers.reset();
 console.log('page clock checks passed');

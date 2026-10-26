@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import { normalizeProvider } from '../src/lib/shell/ownedSessions.ts';
+import { deferred } from '../src/lib/deferred.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
@@ -108,6 +109,7 @@ assert.equal(legacy.topTabs, undefined);
   const dependencies = {
     rail,
     normalizeProvider,
+    deferred,
     getConversationSession: (id: string) => states.get(id),
     ensureConversationSession: (id: string, provider: string) => {
       if (states.get(id)?.provider !== provider) states.set(id, { provider, generation: 1, selectedChildHistoryOwnedId: null });

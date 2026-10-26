@@ -1,3 +1,5 @@
+import { deferred } from '../deferred.ts';
+import { pageDeadline } from '../pageClock.ts';
 import type { NotionTaskSettings } from './notionTasks.ts';
 
 interface NotionOAuthAttempt {
@@ -33,26 +35,24 @@ export function receiveNotionOAuthCode(state: string, code: string): void {
 export async function waitForClaimCode(state: string, signal: AbortSignal, openBrowser: () => Promise<void>): Promise<string> {
   const opening = new AbortController();
   signal = AbortSignal.any([signal, opening.signal]);
-  const code = new Promise<string>((resolve, reject) => {
-    const finish = (settle: () => void): void => {
-      clearTimeout(timeout);
-      signal.removeEventListener('abort', stop);
-      if (waitingSignIn === waiting) waitingSignIn = null;
-      settle();
-    };
-    const stop = (): void =>
-      finish(() => reject(signal.reason ?? new DOMException('Notion sign-in stopped', 'AbortError')));
-    const waiting = { state, receive: (code: string) => finish(() => resolve(code)) };
-    const timeout = setTimeout(
-      () => finish(() => reject(new Error('Notion sign-in timed out. Try connecting again.'))),
-      LOGIN_TIMEOUT_MS
-    );
-    waitingSignIn = waiting;
-    signal.addEventListener('abort', stop, { once: true });
-    if (signal.aborted) stop();
-  });
+  const code = deferred<string>();
+  const finish = (settle: () => void): void => {
+    cancelTimeout();
+    signal.removeEventListener('abort', stop);
+    if (waitingSignIn === waiting) waitingSignIn = null;
+    settle();
+  };
+  const stop = (): void =>
+    finish(() => code.reject(signal.reason ?? new DOMException('Notion sign-in stopped', 'AbortError')));
+  const waiting = { state, receive: (claim: string) => finish(() => code.resolve(claim)) };
+  const cancelTimeout = pageDeadline(Date.now() + LOGIN_TIMEOUT_MS, () =>
+    finish(() => code.reject(new Error('Notion sign-in timed out. Try connecting again.')))
+  );
+  waitingSignIn = waiting;
+  signal.addEventListener('abort', stop, { once: true });
+  if (signal.aborted) stop();
   try {
-    const [claimCode] = await Promise.all([code, openBrowser()]);
+    const [claimCode] = await Promise.all([code.promise, openBrowser()]);
     return claimCode;
   } finally {
     opening.abort();

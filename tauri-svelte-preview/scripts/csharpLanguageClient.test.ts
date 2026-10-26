@@ -30,7 +30,7 @@ assert.match(client, /workspaceFolders: \[\{/);
 assert.match(client, /socket\.send\(withCsharpWorkspaceFolder\(message, requestedRoot\)\)/);
 assert.match(
   client,
-  /new WebSocket\(endpoint\.wsUrl\)[\s\S]*await new Promise<void>[\s\S]*addEventListener\('open'[\s\S]*new LSPClient/,
+  /new WebSocket\(endpoint\.wsUrl\)[\s\S]*deferred\(\)[\s\S]*addEventListener\('open'[\s\S]*await opened\.promise[\s\S]*new LSPClient/,
   'the official client should wait for the Roslyn WebSocket to open before sending initialization'
 );
 assert.match(client, /ensureNativeCsharpLanguageClientFromTauri\(requestedRoot\)/);

@@ -34,6 +34,8 @@
  * say so in one plain sentence.
  */
 
+import { deferred, type Deferred } from '../../deferred.ts';
+import { pageDeadline } from '../../pageClock.ts';
 import type { GitBackend } from './gitService.ts';
 import { bridgeTokenHeader } from '../../devBridgeToken.ts';
 import { validateProjectRootFromTauri } from '../../tauriSource.ts';
@@ -72,21 +74,31 @@ export async function withGitDiffTimeout<T>(
   owner: AbortSignal,
   timeoutMs = 20_000
 ): Promise<T> {
-  const timeout = AbortSignal.timeout(timeoutMs);
-  const signal = AbortSignal.any([owner, timeout]);
-  let stop = (): void => {};
+  const timeout = new AbortController();
+  const cancelTimeout = pageDeadline(Date.now() + timeoutMs, () => timeout.abort());
+  const signal = AbortSignal.any([owner, timeout.signal]);
+  const result = deferred<T>();
+  const stop = (): void => result.reject(signal.reason);
   try {
     signal.throwIfAborted();
-    const aborted = new Promise<never>((_resolve, reject) => {
-      stop = () => reject(signal.reason);
-      signal.addEventListener('abort', stop, { once: true });
-    });
-    return await Promise.race([read(signal), aborted]);
+    signal.addEventListener('abort', stop, { once: true });
+    void settleFrom(read(signal), result);
+    return await result.promise;
   } catch (error) {
-    if (timeout.aborted && !owner.aborted) throw new Error(GIT_DIFF_TIMEOUT_MESSAGE);
+    if (timeout.signal.aborted && !owner.aborted) throw new Error(GIT_DIFF_TIMEOUT_MESSAGE);
     throw error;
   } finally {
+    cancelTimeout();
     signal.removeEventListener('abort', stop);
+  }
+}
+
+/** Settle `into` from the read, which may finish after an abort already settled it. */
+async function settleFrom<T>(read: Promise<T>, into: Deferred<T>): Promise<void> {
+  try {
+    into.resolve(await read);
+  } catch (error) {
+    into.reject(error);
   }
 }
 

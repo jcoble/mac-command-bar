@@ -2,7 +2,7 @@
 <script lang="ts">
   import Columns2 from '@lucide/svelte/icons/columns-2';
   import { untrack } from 'svelte';
-  import { pageDeadline } from '$lib/pageClock.svelte';
+  import { pageDeadline } from '$lib/pageClock';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as Popover from '$lib/components/ui/popover/index.js';

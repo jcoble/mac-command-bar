@@ -22,7 +22,7 @@
 -->
 <script lang="ts">
   import { flushSync } from 'svelte';
-  import { pageDeadline } from '$lib/pageClock.svelte';
+  import { pageDeadline } from '$lib/pageClock';
 
   interface FilterPillOption {
     value: string;

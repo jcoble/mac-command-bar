@@ -11,7 +11,7 @@
 	import MessageCircle from "@lucide/svelte/icons/message-circle";
 	import Workflow from "@lucide/svelte/icons/workflow";
 	import { onMount } from "svelte";
-	import { pageClock, watchPageClock } from "$lib/pageClock.svelte";
+	import { pageClock, watchPageClock } from "$lib/pageClock";
 
 	import { Badge } from "$lib/components/ui/badge";
 	import { Chip } from "$lib/components/ui/chip/index.js";

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { flushSync, onDestroy, tick, untrack, setContext } from 'svelte';
+  import { flushSync, onDestroy, untrack, setContext } from 'svelte';
   import { createVirtualizer, type VirtualItem } from '@tanstack/svelte-virtual';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import Bot from '@lucide/svelte/icons/bot';
@@ -25,7 +25,7 @@
   import TurnFileCard from './TurnFileCard.svelte';
   import PendingFirstMessage from './PendingFirstMessage.svelte';
   import WorkingSpinner from '../../components/feedback/WorkingSpinner.svelte';
-  import { pageClock, watchPageClock } from '$lib/pageClock.svelte';
+  import { afterRender, pageClock, watchPageClock } from '$lib/pageClock';
 
   interface Props {
     items: readonly ConversationDisplayItem[];
@@ -185,7 +185,7 @@
   // Work deferred to after the next render stops when the timeline unmounts. An effect
   // re-run must not cancel it: the send anchor's effect re-runs as it clears its request.
   const stop = new AbortController();
-  onDestroy(() => { stop.abort(); cancelAnimationFrame(viewFrame); });
+  onDestroy(() => stop.abort());
 
   $effect.pre(() => {
     const currentRows = rows;
@@ -223,7 +223,7 @@
   });
 
   async function restoreKeptRow(signal: AbortSignal, windowId: string, kept: VirtualItem, top: number): Promise<void> {
-    await tick();
+    await afterRender();
     if (signal.aborted || windowId !== renderWindowId) return;
     const row = $virtualizer.measurementsCache.find((item) => item.key === kept.key);
     if (row) $virtualizer.scrollToOffset(row.start + top - kept.start);
@@ -374,7 +374,7 @@
     void followAfterRender(stop.signal, renderWindowId);
   });
   async function followAfterRender(signal: AbortSignal, windowId: string): Promise<void> {
-    await tick();
+    await afterRender();
     if (signal.aborted || windowId !== renderWindowId) return;
     if (follow && !hasNewer && !restoring && !jumping) scrollToEnd();
   }
@@ -389,7 +389,7 @@
     void restoreView(stop.signal, renderWindowId);
   });
   async function restoreView(signal: AbortSignal, windowId: string): Promise<void> {
-    await tick();
+    await afterRender();
     if (signal.aborted || windowId !== renderWindowId || !restoring) return;
     if (follow) scrollToEnd();
     else if (savedAnchor && !restoreAnchor(savedAnchor)) {
@@ -401,7 +401,7 @@
       scrollToEnd();
     }
     // Restore after the admitted content has mounted.
-    await tick();
+    await afterRender();
     if (signal.aborted || windowId !== renderWindowId || !restoring) return;
     if (follow) scrollToEnd();
     else if (savedAnchor) restoreAnchor(savedAnchor);
@@ -527,7 +527,7 @@
     if (landed) void continuePaging(stop.signal, request);
   });
   async function continuePaging(signal: AbortSignal, request: NonNullable<typeof pageRequest>): Promise<void> {
-    await tick();
+    await afterRender();
     if (signal.aborted || request.windowId !== renderWindowId) return;
     if (host && continueHistoryPaging(true,
       request.older ? host.scrollTop <= 80 : atEnd(), request.height, host.scrollHeight)) requestPage(request.older);
@@ -544,12 +544,11 @@
     // onto the end of the loaded rows asks for nothing; ask once it lands there.
     scheduleViewWork(direction === 'older');
   }
-  // Saving the place and asking for a page read the layout, so they run once a frame, after its
-  // scrolls; the frame's last event says which way to page.
-  let viewFrame = 0, frameOlder = false;
+  // Browsers deliver scroll and wheel events at most once a frame, so saving the place and asking
+  // for a page run in the handler; the event says which way to page.
   function scheduleViewWork(older: boolean): void {
-    frameOlder = older;
-    viewFrame ||= requestAnimationFrame(() => { viewFrame = 0; saveView(); requestPage(frameOlder); });
+    saveView();
+    requestPage(older);
   }
   function handleWheel(event: WheelEvent): void {
     if (event.target instanceof Element && event.target.closest('[data-tool-scroll]')) return;
@@ -643,7 +642,7 @@
     void anchorSentRow(stop.signal, renderWindowId, itemId);
   });
   async function anchorSentRow(signal: AbortSignal, windowId: string, itemId: string): Promise<void> {
-    await tick();
+    await afterRender();
     if (signal.aborted || windowId !== renderWindowId || anchoredSendItemId !== itemId) return;
     const index = rows.findIndex((row) => row.key === itemId);
     if (index < 0) return;
@@ -667,7 +666,7 @@
     void followAfterTurn(stop.signal, renderWindowId);
   });
   async function followAfterTurn(signal: AbortSignal, windowId: string): Promise<void> {
-    await tick();
+    await afterRender();
     if (signal.aborted || windowId !== renderWindowId || restoring || jumping || hasNewer || !atEnd()) return;
     follow = true;
     saveView();

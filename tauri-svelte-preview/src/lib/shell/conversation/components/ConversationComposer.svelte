@@ -11,7 +11,7 @@
   import type { ConversationAttachment, AgentUserInputAction, AgentConfigValue, AgentPermissionRequest, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import { settings } from '$lib/shell/settings/settingsStore.svelte';
-  import { pageDeadline } from '$lib/pageClock.svelte';
+  import { pageDeadline } from '$lib/pageClock';
   import type { AgentConversationConfigField, AgentConversationConfigState } from '$lib/shell/conversation/conversationConfig.ts';
   import type { ConversationCommand } from '$lib/shell/conversation/conversationCommandCatalog.ts';
   import { contextMeterPopover, draftAfterSlashCommand, moveSlashMenuIndex, ringDash, slashCommandQuery, slashMenuState, snapshotConversationCommands, type ContextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';

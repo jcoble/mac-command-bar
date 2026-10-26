@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { pageDeadline } from '$lib/pageClock.svelte';
+  import { pageDeadline } from '$lib/pageClock';
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import {
