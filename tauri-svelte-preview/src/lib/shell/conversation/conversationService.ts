@@ -1,3 +1,4 @@
+import { pageWait } from '../../pageClock.ts';
 import {
   changeAgentConversationCheckoutFromTauri,
   createAgentConversationRequestId,
@@ -1143,7 +1144,7 @@ async function lookUpSession(ownedId: string, signal: AbortSignal): Promise<bool
       sessionsNotFound.set(ownedId, Date.now());
       return false;
     }
-    await waitFor(SESSION_LOOKUP_RETRY_MS, signal);
+    await pageWait(SESSION_LOOKUP_RETRY_MS, signal);
     if (signal.aborted) return false;
     if (rail.owned.some((session) => session.ownedId === ownedId)) return true;
   }
@@ -1482,20 +1483,6 @@ export async function changeStructuredConversationCheckout(
 
 const preparingSends = new Map<string, AbortController>();
 
-/** Waits the given time; aborting the signal ends the wait at once. */
-async function waitFor(ms: number, signal: AbortSignal): Promise<void> {
-  await new Promise<void>((resolve) => {
-    const finish = (): void => {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', finish);
-      resolve();
-    };
-    const timer = setTimeout(finish, ms);
-    signal.addEventListener('abort', finish, { once: true });
-    if (signal.aborted) finish();
-  });
-}
-
 /** A run of the chat that only answers its interrupts. */
 export async function resumeConversationRun(run: AguiRun): Promise<void> {
   await invoke('run_agui', { input: run });
@@ -1625,7 +1612,7 @@ export async function sendStructuredMessage(
       // Image bytes cross the IPC as a JSON number array, which holds the main
       // thread (~80 ms per 600 KB measured). Wait out the send's scroll glide
       // (~250 ms in WebKit) so the message lands smoothly before that work.
-      await waitFor(300, preparation.signal);
+      await pageWait(300, preparation.signal);
       if (preparation.signal.aborted) {
         if (!turnWasAlreadyActive) await invoke('stop_agent_conversation_turn', {
           request: { ownedId, generation: state.generation }

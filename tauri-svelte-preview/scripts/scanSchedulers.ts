@@ -31,107 +31,18 @@ const tailwindHasPattern = /\b(?:(?:group|peer)-)?has-(?:\[[^\]\r\n]+\]|[A-Za-z]
 const endlessAnimationPattern = /\banimation(?:-iteration-count)?(?:\|important)?\s*(?::|=\s*\{?\s*["'`]?)(?:[^;{}"'`<>]|\{[^{}"'`<>]*\}|(["'])[\w-]*\1)*?(?<![\w-])infinite(?![\w-])|\banimate-(?:spin|pulse|ping|bounce)\b/gi;
 
 const allowedHits = new Set([
-  'src/lib/shell/components/UtilityStrip.svelte:setInterval:const refreshInterval = window.setInterval(() => {',
-  'src/lib/shell/components/UtilityStrip.svelte:clearInterval:window.clearInterval(refreshInterval);',
-  // One fifteen-second interval for every rail row's age label; it skips hidden windows and unmounting clears it.
-  'src/lib/shell/components/SessionRail.svelte:setInterval:const tick = window.setInterval(() => {',
-  // The remote-restart warning's one-second countdown; cancel, finishing and unmounting clear it.
-  "src/lib/shell/components/RestartProvidersButton.svelte:setInterval:const timer = window.setInterval(() => stepCountdown('tick'), 1000);",
-  // Svelte tick is awaited only after mounting a user-requested lazy surface.
-  "src/lib/shell/components/DockPanel.svelte:tick:import { tick } from 'svelte';",
-  'src/lib/shell/components/DockPanel.svelte:tick:await tick();',
-  // The one-shot WebSocket readiness bridge removes every listener when it
-  // settles, and disposing the editor closes the socket so the wait rejects.
-  'src/lib/shell/files/editor/csharpLanguageClient.ts:new Promise:await new Promise<void>((resolve, reject) => {',
-  "src/lib/shell/panels/tasks/TasksPanel.svelte:tick:import { onDestroy, onMount, tick } from 'svelte';",
-  'src/lib/shell/panels/tasks/TasksPanel.svelte:tick:await tick();',
-  // These one-shot timers are both stopped by the AbortSignal-owning surface.
-  // TSK-1553: this callback wait owns one five-minute timer; claim, abort and browser-open failure clear it and remove its listener.
-  'src/lib/shell/notionOAuth.ts:new Promise:const code = new Promise<string>((resolve, reject) => {',
-  'src/lib/shell/notionOAuth.ts:setTimeout:const timeout = setTimeout(',
-  'src/lib/shell/workflows/components/WorkflowRuns.svelte:setTimeout:const timer = window.setTimeout(() => {',
-  // The Board badge's one timer: when the earliest snoozed card wakes it recounts and reloads an open board; each recount and unmounting clear it.
-  'src/lib/shell/board/BoardButton.svelte:setTimeout:if (result.snoozed_until_ms) timer = window.setTimeout(() => { version += 1; void recount(); }, Math.max(0, result.snoozed_until_ms - Date.now()));',
-  // One five-second shot per active turn; the effect clears it when the turn ends or the composer unmounts.
-  'src/lib/shell/conversation/components/ConversationComposer.svelte:setTimeout:const timer = setTimeout(() => (turnSettled = true), 5000);',
-  // One ten-second shot while a filter group is open; closing the group or unmounting clears it.
-  'src/lib/components/ui/filter-pills/filter-pills.svelte:setTimeout:timer = window.setTimeout(close, AUTO_CLOSE_MS);',
-  // A jump re-aligns its file two frames later, after its neighbours are drawn; the next
-  // jump or unmounting cancels the pending frame.
-  'src/lib/shell/git/components/MultiFileDiff.svelte:cancelAnimationFrame:cancelAnimationFrame(jumpFrame);',
-  'src/lib/shell/git/components/MultiFileDiff.svelte:requestAnimationFrame:jumpFrame = requestAnimationFrame(() => {',
-  "src/lib/shell/git/components/MultiFileDiff.svelte:requestAnimationFrame:jumpFrame = requestAnimationFrame(() => section?.scrollIntoView({ block: 'start' }));",
-  'src/lib/shell/git/components/MultiFileDiff.svelte:cancelAnimationFrame:onDestroy(() => cancelAnimationFrame(jumpFrame));',
-  // The 350 ms pull request search debounce; each keystroke, Enter and unmounting clear it.
-  'src/lib/shell/git/github/PullRequestWorkspace.svelte:setTimeout:let searchTimer: ReturnType<typeof setTimeout> | undefined;',
-  'src/lib/shell/git/github/PullRequestWorkspace.svelte:setTimeout:if (searchInput.trim() !== searchedText) searchTimer = setTimeout(() => void load(true), 350);',
-  // A diff read races the abort of its combined owner-and-timeout signal, so a read that ignores
-  // the signal (every local call) still ends; settled by that abort, listener removed in finally.
-  'src/lib/shell/git/gitBackendExtra.ts:new Promise:const aborted = new Promise<never>((_resolve, reject) => {',
-  'src/lib/shell/git/gitBackendExtra.ts:Promise.race:return await Promise.race([read(signal), aborted]);',
-  // TSK-1424 E/H: one one-second clock for every running workflow stage's elapsed time. It runs only
-  // while the panel is visible and a stage is running; the effect cleanup clears it on hide, finish or unmount.
-  'src/lib/shell/workflows/components/WorkflowRuns.svelte:setInterval:const timer = window.setInterval(() => (now = Date.now()), 1000);',
-  // The Workflows screen's one elapsed-time clock; it runs only while a running step is on screen.
-  'src/lib/shell/workflows/WorkflowsScreen.svelte:setInterval:const timer = window.setInterval(() => (now = Date.now()), 1000);',
-  // TSK-1424 G: the tools column's one-frame WebKit invalidation (hide, change the grid next frame, reveal
-  // a frame later). The pending frame id is kept; a newer transition and dispose() cancel it.
-  'src/lib/shell/layout/frame.ts:requestAnimationFrame:toolsFrame = requestAnimationFrame(() => {',
-  'src/lib/shell/layout/frame.ts:cancelAnimationFrame:cancelAnimationFrame(toolsFrame);',
-  // TSK-1299: the same one-frame invalidation when the drawer changes the frame's width. The pending
-  // frame id is kept; the next layout and unmounting cancel it.
-  'src/lib/shell/components/ShellFrame.svelte:requestAnimationFrame:layoutRequest = requestAnimationFrame(() => {',
-  "src/lib/shell/components/ShellFrame.svelte:requestAnimationFrame:layoutRequest = requestAnimationFrame(() => (centerRegionSlot.style.visibility = ''));",
-  'src/lib/shell/components/ShellFrame.svelte:cancelAnimationFrame:cancelAnimationFrame(layoutRequest);',
-  // TSK-1424 G: refresh after the panel renders visible; flushSync throws inside an effect. The effect's
-  // controller aborts on hide or unmount and the refresh checks it after the tick.
-  'src/lib/shell/files/components/FilesPanel.svelte:tick:import { onDestroy, tick, untrack } from "svelte";',
-  'src/lib/shell/files/components/FilesPanel.svelte:tick:await tick();',
-  // TSK-1424 G: these return the shared cached promise so the preview's {#await} keeps one identity and an
-  // image or formula never blinks back to pending; the reads behind them are named async functions.
-  'src/lib/shell/files/components/SourceMarkdownPreview.svelte:loadKatex:function loadKatex(): Promise<KatexComponent> {',
-  'src/lib/shell/files/components/SourceMarkdownPreview.svelte:localImageUrl:function localImageUrl(file: string): Promise<string> {',
-  // TSK-1424 C: the turn's one-second elapsed clock. It runs only while the turn runs and the label and
-  // window are visible; the effect cleanup clears it when the turn ends, it scrolls out of view or unmounts.
-  'src/lib/shell/conversation/components/ConversationTurnElapsed.svelte:setInterval:const timer = setInterval(() => { now = Date.now(); }, 1000);',
-  // TSK-1424 C: waitFor, the 300 ms wait before a local image send reads its bytes and the wait between
-  // lookups of a session the rail lacks. Its timer is cleared and its abort listener removed when it ends;
-  // Stop aborts the send's signal and stopConversationEvents the lookups' signal, which ends it at once.
-  'src/lib/shell/conversation/conversationService.ts:new Promise:await new Promise<void>((resolve) => {',
-  'src/lib/shell/conversation/conversationService.ts:setTimeout:const timer = setTimeout(finish, ms);',
-  // TSK-1424 B: the chat stream's wait for the next native event. Leaving the session aborts the
-  // stream's signal, whose listener wakes the wait; the stream's finally removes that listener.
-  'src/lib/shell/conversation/conversationConnection.ts:new Promise:if (!items.length && !signal.aborted) await new Promise<void>((resolve) => { wake = resolve; });',
-  // TSK-1561: streamed text waits one frame so a frame's deltas reach the chat as one update. The
-  // frame, the 50 ms fallback for a window that draws no frames, and leaving the session (abort)
-  // each settle the wait, and settling cancels the other two.
-  'src/lib/shell/conversation/conversationMessages.ts:new Promise:await new Promise<void>((resolve) => {',
-  'src/lib/shell/conversation/conversationMessages.ts:cancelAnimationFrame:cancelAnimationFrame(frame);',
-  'src/lib/shell/conversation/conversationMessages.ts:requestAnimationFrame:const frame = requestAnimationFrame(done);',
-  'src/lib/shell/conversation/conversationMessages.ts:setTimeout:const timer = setTimeout(done, 50);',
-  // TSK-1424 B: the chat's readiness gate, resolved when its snapshot is consumed. Leaving the
-  // session (disposeConversationChat) and a failed stream reject it.
-  'src/lib/shell/conversation/conversationConnection.ts:new Promise:selection.ready = new Promise<void>((resolve, reject) => {',
-  // TSK-1424 B: a send's admission, resolved by the backend receipt mid-turn. The send's failure, or
-  // its end without a receipt, rejects it; leaving the session does not cancel a send already made.
-  'src/lib/shell/conversation/conversationConnection.ts:new Promise:const promise = new Promise<AgentConversationSendReceipt>((accept, decline) => {',
-  // TSK-1424 A: scroll work that must wait for the next render inside an effect, where flushSync throws.
-  // Each waiting function takes the timeline's signal, which unmounting aborts, and checks it and the
-  // render window after the tick. Click handlers use flushSync instead.
-  "src/lib/shell/conversation/components/ConversationTimeline.svelte:tick:import { flushSync, onDestroy, tick, untrack, setContext } from 'svelte';",
-  'src/lib/shell/conversation/components/ConversationTimeline.svelte:tick:await tick();',
-  // TSK-1424 A: the background line's one-second clock. It runs only while the line is on screen and the
-  // window is visible; going off screen, hiding the window or the action's destroy on unmount clears it.
-  'src/lib/shell/conversation/components/ConversationTimeline.svelte:setInterval:let timer: ReturnType<typeof setInterval> | null = null;',
-  'src/lib/shell/conversation/components/ConversationTimeline.svelte:setInterval:timer = setInterval(() => { backgroundNow = Date.now(); }, 1000);',
-  // TSK-1563: scrolling saves the reader's place and checks for paging once a frame instead of per event.
-  // One pending frame at a time; unmounting cancels it, and the work it runs checks the render window.
-  'src/lib/shell/conversation/components/ConversationTimeline.svelte:requestAnimationFrame:viewFrame ||= requestAnimationFrame(() => { viewFrame = 0; saveView(); requestPage(frameOlder); });',
-  'src/lib/shell/conversation/components/ConversationTimeline.svelte:cancelAnimationFrame:onDestroy(() => { stop.abort(); cancelAnimationFrame(viewFrame); });',
-  // TSK-1424 A: a running tool group's first scroll to its newest row waits for the first render inside an
-  // effect; unmounting aborts the group's signal, which the wait checks after the tick.
-  "src/lib/shell/conversation/components/ConversationToolGroup.svelte:tick:import { getContext, onDestroy, setContext, tick, untrack } from 'svelte';",
-  'src/lib/shell/conversation/components/ConversationToolGroup.svelte:tick:await tick();'
+  // The page clock owns the app's one timer for labels and one-shot waits; it is armed only while a
+  // watcher or deadline needs it, and every watcher and deadline is cancelled by its owner.
+  'src/lib/pageClock.ts:setTimeout:let timer: ReturnType<typeof setTimeout> | undefined;',
+  'src/lib/pageClock.ts:setTimeout:if (atMs !== Infinity) timer = setTimeout(fire, Math.max(0, atMs - Date.now()));',
+  // The two waits nothing else can signal: the next frame, for the WebKit width workarounds in
+  // ShellFrame and layout/frame.ts, and Svelte's render, for ConversationTimeline's chat placement.
+  "src/lib/pageClock.ts:tick:import { tick } from 'svelte';",
+  'src/lib/pageClock.ts:requestAnimationFrame:const frame = requestAnimationFrame(fn);',
+  'src/lib/pageClock.ts:cancelAnimationFrame:return () => cancelAnimationFrame(frame);',
+  'src/lib/pageClock.ts:tick:await tick();',
+  // The one Promise constructor: turns a callback or event into an await; each owner settles it on abort.
+  'src/lib/deferred.ts:new Promise:const promise = new Promise<T>((accept, decline) => {',
 ]);
 
 interface Hit {

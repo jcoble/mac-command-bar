@@ -26,12 +26,6 @@ export async function readResourceSample(): Promise<ResourceSample | null> {
   return invoke<ResourceSample>('read_resource_sample');
 }
 
-export async function readResourceTotals(): Promise<ResourceSampleTotals | null> {
-  if (!isNativeTauriRuntime()) return null;
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<ResourceSampleTotals>('read_resource_totals');
-}
-
 /**
  * Only ever called after a person has confirmed a dialog naming the process
  * ids in `expectedPids`.

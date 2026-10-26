@@ -13,8 +13,8 @@
    * `ShellOverlays.svelte`), so this component only says which one was asked
    * for and hands over the rectangle of the button that was pressed.
    *
-   * The one piece of IO here is the lightweight resource totals read: it runs
-   * on mount and whenever the window becomes visible during this experiment.
+   * The one piece of IO here is the resource totals: while the window is
+   * visible the strip watches them and the backend pushes each change.
    */
   import { onMount } from 'svelte';
   import Cpu from '@lucide/svelte/icons/cpu';
@@ -25,8 +25,8 @@
     formatResourceCpu
   } from '$lib/shell/resources/resourceSampleViewModel';
   import {
-    refreshResourceTotals,
-    resourceSampleState
+    resourceSampleState,
+    watchResourceTotalsUntil
   } from '$lib/shell/resources/resourceSampleStore.svelte';
   import { resourceDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
 
@@ -81,13 +81,22 @@
   });
 
   onMount(() => {
-    void refreshResourceTotals();
-    const refreshWhenVisible = (): void => {
-      if (document.visibilityState === 'visible') void refreshResourceTotals();
+    let watch: AbortController | null = null;
+    const sync = (): void => {
+      const visible = document.visibilityState === 'visible';
+      if (visible && !watch) {
+        watch = new AbortController();
+        void watchResourceTotalsUntil(watch.signal);
+      } else if (!visible && watch) {
+        watch.abort();
+        watch = null;
+      }
     };
-    document.addEventListener('visibilitychange', refreshWhenVisible);
+    sync();
+    document.addEventListener('visibilitychange', sync);
     return () => {
-      document.removeEventListener('visibilitychange', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', sync);
+      watch?.abort();
     };
   });
 </script>

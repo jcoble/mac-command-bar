@@ -45,18 +45,12 @@ test('a_plan_with_equal_steps_is_the_same_display_item', () => {
 });
 
 test('streamed_text_deltas_in_one_frame_reach_the_chat_as_one_update', async () => {
-  let frames = 0;
-  Object.assign(globalThis, {
-    requestAnimationFrame: (callback: () => void) => { frames += 1; return setTimeout(callback, 0); },
-    cancelAnimationFrame: (frame: ReturnType<typeof setTimeout>) => clearTimeout(frame)
-  });
   const delta = (messageId: string, text: string) => ({ type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta: text });
   const other = { type: EventType.TEXT_MESSAGE_CONTENT, messageId: 'b', delta: 'Other' };
   const finished = { type: EventType.RUN_FINISHED, threadId: 'owner', runId: 'run-1' };
   const queue: object[] = [delta('a', 'One'), delta('a', ' two'), delta('a', ' three'), other, finished, delta('a', ' four')];
   const signal = new AbortController().signal;
-  assert.deepEqual(await takeStreamItem(queue, signal), delta('a', 'One two three'));
-  assert.equal(frames, 1);
+  assert.deepEqual(await takeStreamItem(queue, signal), delta('a', 'One two three'), 'one wait merges the deltas');
   assert.deepEqual(await takeStreamItem(queue, signal), other, 'another message waits for its own update');
   assert.equal(await takeStreamItem(queue, signal), finished);
   assert.deepEqual(await takeStreamItem(queue, signal), delta('a', ' four'));

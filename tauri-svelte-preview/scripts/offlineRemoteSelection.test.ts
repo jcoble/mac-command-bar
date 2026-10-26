@@ -144,4 +144,20 @@ assert.equal(snapshot, null, 'the saved workspace read fails quietly');
   assert.equal(controller.activeWorkspaceSnapshot?.rightTab, 'source-control', 'coming back shows it again');
 }
 
+// Fast tab clicks queue no saves; one save runs half a second after the last.
+{
+  const { SessionSelectionController } = await import('../src/lib/shell/controllers/sessionSelectionController.svelte.ts');
+  const controller = new SessionSelectionController();
+  await controller.selectSession('local-other');
+  let saves = 0;
+  controller.editorSessions.persistWorkspaceState = async () => { saves += 1; };
+  for (const rightTab of ['files', 'source-control', 'files', 'source-control'] as const) {
+    controller.persistWorkspaceState('local-other', { rightTab });
+  }
+  assert.equal(controller.activeOwnedId, 'local-other');
+  assert.equal(saves, 0, 'no save while clicking');
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  assert.equal(saves, 1, 'one save after the clicks stop');
+}
+
 console.log('offlineRemoteSelection: ok');

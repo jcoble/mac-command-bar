@@ -21,6 +21,7 @@ import {
 } from 'dockview-core';
 
 import { gridPanelIds, storedColumnWidth } from './layoutStorage';
+import { nextFrame } from '../../pageClock';
 
 export type ShellRegionId = 'sessions' | 'center' | 'tools' | 'dock';
 
@@ -191,7 +192,7 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
   let layoutVersion = 0;
   let rememberedToolsWidth = TOOLS_WIDTH;
   let toolsTransitionVersion = 0;
-  let toolsFrame = 0;
+  let cancelToolsFrame = (): void => {};
   /** True only once a widening has actually been applied to the grid. */
   let toolsExpanded = false;
   let collapsedToolsWidth = TOOLS_WIDTH;
@@ -485,8 +486,8 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
     // from the grid mutation by one frame boundary, then reveal only the newest
     // requested arrangement.
     options.regions.center.style.visibility = 'hidden';
-    cancelAnimationFrame(toolsFrame);
-    toolsFrame = requestAnimationFrame(() => {
+    cancelToolsFrame();
+    cancelToolsFrame = nextFrame(() => {
       if (disposed || transitionVersion !== toolsTransitionVersion) return;
       try {
         const panel = api.getPanel('tools');
@@ -506,7 +507,7 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
           }
           if (sessions !== null) setRegionWidth('sessions', sessions);
         });
-        toolsFrame = requestAnimationFrame(() => {
+        cancelToolsFrame = nextFrame(() => {
           if (!disposed && transitionVersion === toolsTransitionVersion) {
             options.regions.center.style.visibility = '';
           }
@@ -545,11 +546,11 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
   const setToolsExpanded = (expanded: boolean): void => {
     const transitionVersion = ++toolsTransitionVersion;
     options.regions.center.style.visibility = 'hidden';
-    cancelAnimationFrame(toolsFrame);
-    toolsFrame = requestAnimationFrame(() => {
+    cancelToolsFrame();
+    cancelToolsFrame = nextFrame(() => {
       if (disposed || transitionVersion !== toolsTransitionVersion) return;
       applyToolsExpanded(expanded);
-      toolsFrame = requestAnimationFrame(() => {
+      cancelToolsFrame = nextFrame(() => {
         if (!disposed && transitionVersion === toolsTransitionVersion) {
           options.regions.center.style.visibility = '';
         }
@@ -587,7 +588,7 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
     },
     dispose(): void {
       disposed = true;
-      cancelAnimationFrame(toolsFrame);
+      cancelToolsFrame();
       changeListener.dispose();
       api.dispose();
     }

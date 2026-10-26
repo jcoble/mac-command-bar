@@ -2,6 +2,7 @@
 <script lang="ts">
   import Columns2 from '@lucide/svelte/icons/columns-2';
   import { untrack } from 'svelte';
+  import { pageDeadline } from '$lib/pageClock';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as Popover from '$lib/components/ui/popover/index.js';
@@ -31,19 +32,17 @@
     untrack(() => (version += 1));
     const life = new AbortController();
     let request: AbortController | null = null;
-    let timer = 0;
-    // A recount aborts the one before it. The one timer brings a snoozed card back into the count.
+    let cancelWake = (): void => {};
+    // A recount aborts the one before it. The one deadline brings a snoozed card back into the count.
     async function recount(): Promise<void> {
       request?.abort();
-      window.clearTimeout(timer);
+      cancelWake();
       const current = (request = new AbortController());
       try {
         const result = await countBoard(Date.now(), current.signal);
         if (!result || current.signal.aborted) return;
         counted = result.count;
-        /* Timer experiment: disabled for the performance comparison.
-        if (result.snoozed_until_ms) timer = window.setTimeout(() => { version += 1; void recount(); }, Math.max(0, result.snoozed_until_ms - Date.now()));
-        */
+        if (result.snoozed_until_ms) cancelWake = pageDeadline(result.snoozed_until_ms, () => { version += 1; void recount(); });
         const read = await readBoard(Date.now(), Date.now(), current.signal);
         if (!read || current.signal.aborted) return;
         const notifications = boardNotifications(lastRead, read);
@@ -61,7 +60,7 @@
     return () => {
       life.abort();
       request?.abort();
-      window.clearTimeout(timer);
+      cancelWake();
     };
   });
 </script>

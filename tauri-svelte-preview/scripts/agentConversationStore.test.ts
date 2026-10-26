@@ -12,7 +12,7 @@ import { EventType, StreamProcessor, type StreamChunk } from '@tanstack/ai/clien
 import { shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
 import { conversationDisplayItems } from '../src/lib/shell/conversation/conversationMessages.ts';
 import { agentItemFromEvent, displayItemFromAgentItem } from '../src/lib/shell/conversation/conversationTimeline.ts';
-
+import { deferred } from '../src/lib/deferred.ts';
 import { sessionPresenceHistory, sessionPresenceEventFromConversation, synchronizeSessionPresenceWork, deriveSessionPresence, EMPTY_SESSION_PRESENCE_HISTORY } from '../src/lib/shell/conversation/sessionPresence.ts';
 
 type ProviderName = 'codex' | 'claude';
@@ -1231,7 +1231,7 @@ await test('Stop during revival prevents dispatch and releases the prepared runt
     recordSentConversationAttachments: () => undefined,
     attachmentDisplayMetadata: () => undefined,
     invoke: async (command: string) => { calls.push(command); },
-    setConversationAttachments: () => undefined
+    setConversationAttachments: () => undefined, pageWait: async () => undefined
   };
   const api = Function(...Object.keys(dependencies), `${code}\nreturn { sendStructuredMessage, stopStructuredTurn, preparingSends };`)(...Object.values(dependencies)) as {
     sendStructuredMessage: (id: string, text: string) => Promise<void>;
@@ -1276,7 +1276,7 @@ await test('Stop during the image send wait skips hydration and writes no sessio
     recordSentConversationAttachments: () => undefined,
     attachmentDisplayMetadata: () => undefined,
     invoke: async (command: string) => { calls.push(command); },
-    setConversationAttachments: () => undefined
+    setConversationAttachments: () => undefined, pageWait: async () => undefined
   };
   const api = Function(...Object.keys(dependencies), `${code}\nreturn { sendStructuredMessage, stopStructuredTurn, preparingSends };`)(...Object.values(dependencies)) as {
     sendStructuredMessage: (id: string, text: string) => Promise<void>;
@@ -1323,7 +1323,7 @@ await test('an observed active turn routes Stop to the backend', async () => {
     recordSentConversationAttachments: () => undefined,
     attachmentDisplayMetadata: () => undefined,
     invoke: async (command: string) => { calls.push(command); },
-    setConversationAttachments: () => undefined
+    setConversationAttachments: () => undefined, pageWait: async () => undefined
   };
   const api = Function(...Object.keys(dependencies), `${code}\nreturn { sendStructuredMessage, stopStructuredTurn, preparingSends };`)(...Object.values(dependencies)) as {
     sendStructuredMessage: (id: string, text: string) => Promise<void>;
@@ -1651,8 +1651,8 @@ await test('a sent message draws below the history it was sent after', () => {
       }
     }
   };
-  const send = Function('active', 'rejectPendingAdmission',
-    `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn sendSelectedConversationMessage;`)(active, () => {});
+  const send = Function('active', 'rejectPendingAdmission', 'deferred',
+    `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn sendSelectedConversationMessage;`)(active, () => {}, deferred);
   void send('owned-sent', 'Next question');
   const shown = conversationDisplayItems(processor.getMessages());
   assert.deepEqual(shown.map((item) => item.kind === 'user' ? item.text : item.kind), ['Earlier', 'Next question'],
@@ -1674,9 +1674,9 @@ await test('a sent message draws its screenshots in the same step as its text', 
       }
     }
   };
-  const send = Function('active', 'rejectPendingAdmission', 'attachmentDisplayMetadata',
+  const send = Function('active', 'rejectPendingAdmission', 'attachmentDisplayMetadata', 'deferred',
     `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn sendSelectedConversationMessage;`
-  )(active, () => {}, ({ bytes: _bytes, ...shown }: Record<string, unknown>) => shown);
+  )(active, () => {}, ({ bytes: _bytes, ...shown }: Record<string, unknown>) => shown, deferred);
   void send('owned-shots', 'Look at this', 'user-optimistic', [
     { id: 'shot', name: 'shot.png', mimeType: 'image/png', path: '/vault/shot.png', previewUrl: 'blob:shot', bytes: [1, 2, 3] }
   ]);
@@ -1776,7 +1776,7 @@ await test('leaving a session ends every wait on its stream and readiness and wr
     admitInitialSnapshot: write('snapshot'),
     emitEvent: write('event'),
     pushMessagesSnapshot: write('messages snapshot'),
-    optimisticUserId: () => null,
+    optimisticUserId: () => null, deferred,
     sendStructuredMessage: async () => { writesAfterLeave.push('native send'); return null; },
     setConversationSendError: write('send error'),
     failChildConversationTranscript: write('child error'),

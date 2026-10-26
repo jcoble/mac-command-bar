@@ -8,6 +8,7 @@
    */
   import 'dockview-core/dist/styles/dockview.css';
   import { onMount, type Snippet } from 'svelte';
+  import { nextFrame } from '$lib/pageClock';
 
   import {
     createShellFrame,
@@ -84,7 +85,7 @@
     const owner = { active: true };
     let laidOutWidth = -1;
     let laidOutHeight = -1;
-    let layoutRequest = 0;
+    let cancelLayout = (): void => {};
     let lastLayoutAt = 0;
     const reportRegionWidths = (): void => {
       const sessionsWidth = frame?.regionWidth('sessions');
@@ -114,12 +115,12 @@
         frame?.layout(width, height);
         reportRegionWidths();
       };
-      cancelAnimationFrame(layoutRequest);
+      cancelLayout();
       centerRegionSlot.style.visibility = release ? 'hidden' : '';
       if (!release) return apply();
-      layoutRequest = requestAnimationFrame(() => {
+      cancelLayout = nextFrame(() => {
         apply();
-        layoutRequest = requestAnimationFrame(() => (centerRegionSlot.style.visibility = ''));
+        cancelLayout = nextFrame(() => (centerRegionSlot.style.visibility = ''));
       });
     };
     const scheduleFrameLayout = () => {
@@ -166,7 +167,7 @@
     return () => {
       owner.active = false;
       observer?.disconnect();
-      cancelAnimationFrame(layoutRequest);
+      cancelLayout();
       frameLayoutListener?.dispose();
       frameLayoutListener = null;
       frame?.dispose();

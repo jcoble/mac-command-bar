@@ -1,3 +1,4 @@
+import { pageWait } from '../../pageClock.ts';
 import { EventType, type StreamChunk, type UIMessage } from '@tanstack/ai/client';
 import type { CreateChatReturn } from '@tanstack/ai-svelte';
 import type { AgentConfigValue, AgentEvent, AgentConversationEvent, AgentItem, AgentPermissionOption, AgentPermissionRequest, AgentUserInputField, AgentUserInputRequest, ConversationAttachment } from './conversationTypes.ts';
@@ -112,19 +113,10 @@ function textContentOf(item: object | undefined): TextContent | null {
   return item && 'type' in item && item.type === EventType.TEXT_MESSAGE_CONTENT ? item as TextContent : null;
 }
 
-/** Waits for the next frame, or 50 ms when the window draws no frames (hidden), or abort. */
+/** Waits about one frame (16 ms), or until abort. Not a poll: it runs only while streamed text is queued,
+ * and it keeps time in a hidden window, so a run that finishes there still lands. */
 async function nextFrame(signal: AbortSignal): Promise<void> {
-  await new Promise<void>((resolve) => {
-    const done = (): void => {
-      cancelAnimationFrame(frame);
-      clearTimeout(timer);
-      signal.removeEventListener('abort', done);
-      resolve();
-    };
-    const frame = requestAnimationFrame(done);
-    const timer = setTimeout(done, 50);
-    signal.addEventListener('abort', done, { once: true });
-  });
+  await pageWait(16, signal);
 }
 
 /** Takes the next queued item for the chat. Streamed text waits for the next frame,

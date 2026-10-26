@@ -1,8 +1,6 @@
-import {
-  readResourceSample,
-  readResourceTotals,
-  stopResourceProcessTree
-} from './resourceSampleBackend.ts';
+import { readResourceSample, stopResourceProcessTree } from './resourceSampleBackend.ts';
+import { watchResourceTotals } from './resourceTotalsWatch.ts';
+import { isNativeTauriRuntime } from '$lib/tauriSource';
 import type { ResourceSample, ResourceSampleTotals } from './resourceSampleTypes.ts';
 import { buildStopRequest, type ResourceStopTarget } from './resourceStopModel.ts';
 import { resourceDiagnostics } from '../resourceDiagnostics.svelte.ts';
@@ -70,27 +68,16 @@ async function refreshResourceSampleOnce(): Promise<ResourceSnapshot | null> {
   }
 }
 
-let totalsRefreshInFlight: Promise<ResourceSampleTotals | null> | null = null;
-
-export async function refreshResourceTotals(): Promise<ResourceSampleTotals | null> {
-  if (totalsRefreshInFlight) return totalsRefreshInFlight;
-  totalsRefreshInFlight = refreshResourceTotalsOnce();
-  return totalsRefreshInFlight;
-}
-
-async function refreshResourceTotalsOnce(): Promise<ResourceSampleTotals | null> {
+/** Keep `resourceSampleState.totals` current from backend pushes until `signal` aborts. */
+export async function watchResourceTotalsUntil(signal: AbortSignal): Promise<void> {
+  if (!isNativeTauriRuntime()) return;
   try {
-    const totals = await readResourceTotals();
-    if (totals) resourceSampleState.totals = totals;
-    return totals;
+    await watchResourceTotals((totals) => {
+      resourceSampleState.totals = totals;
+    }, signal);
   } catch (error: unknown) {
-      resourceSampleState.error =
-        error instanceof Error
-          ? error.message
-          : 'Resource usage could not be read.';
-      return null;
-  } finally {
-    totalsRefreshInFlight = null;
+    resourceSampleState.error =
+      error instanceof Error ? error.message : 'Resource usage could not be read.';
   }
 }
 

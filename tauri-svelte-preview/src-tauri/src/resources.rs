@@ -21,11 +21,13 @@ use tauri::State;
 
 use crate::debug_log::stderr_log;
 
+pub mod totals;
+
 /// How long a stopped process is given to exit on its own before the harder
 /// signal follows.
 const RESOURCE_STOP_GRACE_SECONDS: u64 = 5;
 
-static ACTIVE_SOURCE_DIRECTORY_READS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static ACTIVE_SOURCE_DIRECTORY_READS: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) struct SourceDirectoryReadGuard;
 
@@ -46,6 +48,7 @@ pub struct ResourceRegistry {
     active_source_root: Arc<Mutex<Option<PathBuf>>>,
     sample_system: Arc<Mutex<System>>,
     sampled_process_ids: Arc<Mutex<Vec<u32>>>,
+    totals_watch: Mutex<totals::WatchState>,
 }
 
 impl Default for ResourceRegistry {
@@ -56,6 +59,7 @@ impl Default for ResourceRegistry {
             active_source_root: Arc::new(Mutex::new(None)),
             sample_system: Arc::new(Mutex::new(System::new())),
             sampled_process_ids: Arc::new(Mutex::new(Vec::new())),
+            totals_watch: Mutex::default(),
         }
     }
 }
@@ -437,105 +441,6 @@ pub async fn read_resource_sample(
     })
     .await
     .map_err(|error| format!("Resource sampling task failed: {error}"))?
-}
-
-/// Refresh only the process ids already attributed to Assembly. A missing or
-/// stale cache is rediscovered so the gutter is accurate before the Resource
-/// Manager has opened and after an attributed helper restarts.
-#[tauri::command]
-pub async fn read_resource_totals(
-    registry: State<'_, ResourceRegistry>,
-    terminal_registry: State<'_, crate::terminal::TerminalRegistry>,
-    agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
-    lsp_registry: State<'_, crate::files::lsp::SourceLspRegistry>,
-) -> Result<ResourceSampleTotals, String> {
-    let system = Arc::clone(&registry.sample_system);
-    let sampled_process_ids = Arc::clone(&registry.sampled_process_ids);
-    let terminal_registry = terminal_registry.inner().clone();
-    let agent_runtime = agent_runtime.inner().clone();
-    let lsp_registry = lsp_registry.inner().clone();
-
-    tauri::async_runtime::spawn_blocking(move || {
-        let owners = resource_sample_owners(&terminal_registry, &agent_runtime, &lsp_registry)?;
-        let cached_process_ids = sampled_process_ids
-            .lock()
-            .map_err(|_| "Resource sampler is unavailable".to_string())?
-            .clone();
-        let mut process_ids = cached_process_ids.clone();
-        process_ids.push(std::process::id());
-        process_ids.extend(owners.iter().map(|owner| owner.root_pid));
-        process_ids.sort_unstable();
-        process_ids.dedup();
-
-        let mut system = system
-            .lock()
-            .map_err(|_| "Resource sampler is unavailable".to_string())?;
-        let sysinfo_pids = process_ids
-            .iter()
-            .copied()
-            .map(Pid::from_u32)
-            .collect::<Vec<_>>();
-        system.refresh_processes(ProcessesToUpdate::Some(&sysinfo_pids), true);
-
-        if cached_process_ids.is_empty()
-            || cached_process_ids
-                .iter()
-                .any(|pid| system.process(Pid::from_u32(*pid)).is_none())
-        {
-            let processes = observe_processes(&mut system, std::process::id());
-            let sample = build_resource_sample(
-                resource_sample_timestamp_millis(),
-                std::process::id(),
-                &processes,
-                &owners,
-            );
-            process_ids = sample
-                .app
-                .parts
-                .iter()
-                .map(|part| part.pid)
-                .chain(sample.groups.iter().flat_map(|group| {
-                    group
-                        .sessions
-                        .iter()
-                        .flat_map(|session| session.processes.iter().map(|process| process.pid))
-                }))
-                .collect();
-            process_ids.sort_unstable();
-            process_ids.dedup();
-            *sampled_process_ids
-                .lock()
-                .map_err(|_| "Resource sampler is unavailable".to_string())? = process_ids;
-            return Ok(sample.totals);
-        }
-
-        let mut totals = ResourceSampleTotals {
-            cpu_percent: 0.0,
-            physical_footprint_bytes: 0,
-            rss_bytes: 0,
-            process_count: 0,
-            active_source_directory_reads: ACTIVE_SOURCE_DIRECTORY_READS.load(Ordering::Relaxed),
-        };
-        let mut alive_process_ids = Vec::with_capacity(process_ids.len());
-        for pid in process_ids {
-            let Some(process) = system.process(Pid::from_u32(pid)) else {
-                continue;
-            };
-            let rss_bytes = process.memory();
-            totals.cpu_percent += process.cpu_usage();
-            totals.physical_footprint_bytes +=
-                mcb_core::scanners::resources::process_footprint_bytes(pid, &process.name().to_string_lossy(), rss_bytes);
-            totals.rss_bytes += rss_bytes;
-            totals.process_count += 1;
-            alive_process_ids.push(pid);
-        }
-        *sampled_process_ids
-            .lock()
-            .map_err(|_| "Resource sampler is unavailable".to_string())? = alive_process_ids;
-        Ok(totals)
-    })
-    .await
-    .map_err(|error| format!("Resource totals task failed: {error}"))?
 }
 
 fn resource_sample_owners(

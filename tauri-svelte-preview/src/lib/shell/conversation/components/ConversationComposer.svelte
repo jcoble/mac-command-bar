@@ -11,6 +11,7 @@
   import type { ConversationAttachment, AgentUserInputAction, AgentConfigValue, AgentPermissionRequest, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import { settings } from '$lib/shell/settings/settingsStore.svelte';
+  import { pageDeadline } from '$lib/pageClock';
   import type { AgentConversationConfigField, AgentConversationConfigState } from '$lib/shell/conversation/conversationConfig.ts';
   import type { ConversationCommand } from '$lib/shell/conversation/conversationCommandCatalog.ts';
   import { contextMeterPopover, draftAfterSlashCommand, moveSlashMenuIndex, ringDash, slashCommandQuery, slashMenuState, snapshotConversationCommands, type ContextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
@@ -175,6 +176,7 @@
   function onWindowKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape' && planExpanded) planExpanded = false;
   }
+
   /* A pre-effect, so a draft cleared from outside (a send, a steer) reaches
      the box before the template writes it; as a plain effect the measuring
      effect below could run first and keep the open box's height. */
@@ -188,6 +190,7 @@
     activeIndex = 0;
     dismissedDraft = null;
   });
+
   const menu = $derived(slashMenuState(inputDraft, commandSnapshot, {
     activeIndex,
     dismissed: dismissedDraft === inputDraft
@@ -214,10 +217,7 @@
        here rather than at the click: a remote turn starts a beat after the
        draft clears, and letting go at the click shut the box for that beat. */
     hasOpened = false;
-    /* Timer experiment: disabled for the performance comparison.
-    const timer = setTimeout(() => (turnSettled = true), 5000);
-    return () => clearTimeout(timer);
-    */
+    return pageDeadline(Date.now() + 5000, () => (turnSettled = true));
   });
   /**
    * Empty, the composer is a single capsule line: add button, placeholder,

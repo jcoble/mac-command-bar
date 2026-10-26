@@ -5,7 +5,8 @@
   At rest the row shows one pill per group. Pressing a group opens it: the row
   shows a Back button, which closes the group without changing its selection,
   then the group's options, which toggle on and off. Deselecting every option
-  clears the group. Escape or a press anywhere outside the row closes the group and keeps its selection. When the
+  clears the group. Escape, a press anywhere outside the row, or ten
+  seconds with no press, closes the group and keeps its selection. When the
   keyboard is in the row, opening a group moves focus to its first option and
   closing it moves focus back to the group's pill. A closed
   group with a selection shows the chosen labels joined ("Claude/Codex") as a
@@ -21,6 +22,7 @@
 -->
 <script lang="ts">
   import { flushSync } from 'svelte';
+  import { pageDeadline } from '$lib/pageClock';
 
   interface FilterPillOption {
     value: string;
@@ -46,13 +48,13 @@
 
   const AUTO_CLOSE_MS = 10_000;
   let openId = $state<string | null>(null);
-  let timer: number | undefined;
+  let cancelAutoClose = (): void => {};
   let row = $state<HTMLDivElement | null>(null);
 
   const openGroup = $derived(groups.find((group) => group.id === openId) ?? null);
   const anySelected = $derived(groups.some((group) => selected(group.id).length > 0));
 
-  $effect(() => () => clearTimeout(timer));
+  $effect(() => () => cancelAutoClose());
 
   // While a group is open, a press outside the row closes it and keeps its
   // selection. The listener exists only while open; closing or unmounting removes it.
@@ -70,10 +72,8 @@
   }
 
   function restartTimer(): void {
-    clearTimeout(timer);
-    /* Timer experiment: disabled for the performance comparison.
-    timer = window.setTimeout(close, AUTO_CLOSE_MS);
-    */
+    cancelAutoClose();
+    cancelAutoClose = pageDeadline(Date.now() + AUTO_CLOSE_MS, close);
   }
 
   // The pressed button disappears when the row swaps between pills and
@@ -91,7 +91,7 @@
   }
 
   function close(): void {
-    clearTimeout(timer);
+    cancelAutoClose();
     const hadFocus = focusInRow();
     const groupId = openId ?? groups[0]?.id;
     flushSync(() => (openId = null));

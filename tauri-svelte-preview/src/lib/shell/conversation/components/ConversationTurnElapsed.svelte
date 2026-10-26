@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { formatWorkedFor } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { pageClock, watchPageClock } from '$lib/pageClock';
 
   let { running, completed, startedAtMs, elapsedMs }: {
     running: boolean;
@@ -11,9 +12,8 @@
   let host = $state<HTMLSpanElement>();
   let visible = $state(false);
   let documentVisible = $state(true);
-  let now = $state(Date.now());
   const duration = $derived(running && startedAtMs !== null
-    ? Math.max(0, now - startedAtMs) : elapsedMs);
+    ? Math.max(0, pageClock.now - startedAtMs) : elapsedMs);
 
   onMount(() => {
     const observer = new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; });
@@ -28,11 +28,7 @@
   });
   $effect(() => {
     if (!running || startedAtMs === null || !visible || !documentVisible) return;
-    now = Date.now();
-    /* Timer experiment: disabled for the performance comparison.
-    const timer = setInterval(() => { now = Date.now(); }, 1000);
-    return () => clearInterval(timer);
-    */
+    return watchPageClock(1000);
   });
 </script>
 

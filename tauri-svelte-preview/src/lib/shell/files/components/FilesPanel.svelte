@@ -70,7 +70,7 @@
 	import Search from "@lucide/svelte/icons/search";
 	import Square from "@lucide/svelte/icons/square";
 	import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
-	import { onDestroy, tick, untrack } from "svelte";
+	import { onDestroy, untrack } from "svelte";
 
 	interface Props {
 		visible: boolean;
@@ -348,18 +348,10 @@
 		};
 	});
 
+	// Effects run after the DOM update; untrack keeps the refresh's reads out of this effect.
 	$effect(() => {
-		if (!visible) return;
-		const controller = new AbortController();
-		void refreshFilesAfterRender(controller.signal);
-		return () => controller.abort();
+		if (visible) untrack(refreshFiles);
 	});
-
-	/** Hiding the panel or unmounting it aborts the signal before the refresh. */
-	async function refreshFilesAfterRender(signal: AbortSignal): Promise<void> {
-		await tick();
-		if (!signal.aborted) refreshFiles();
-	}
 
 	async function loadCheckouts(
 		roots: readonly string[],

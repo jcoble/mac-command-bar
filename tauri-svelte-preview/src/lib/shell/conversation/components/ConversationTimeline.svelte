@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { flushSync, onDestroy, tick, untrack, setContext } from 'svelte';
+  import { flushSync, onDestroy, untrack, setContext } from 'svelte';
   import { createVirtualizer, type VirtualItem } from '@tanstack/svelte-virtual';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import Bot from '@lucide/svelte/icons/bot';
@@ -25,6 +25,7 @@
   import TurnFileCard from './TurnFileCard.svelte';
   import PendingFirstMessage from './PendingFirstMessage.svelte';
   import WorkingSpinner from '../../components/feedback/WorkingSpinner.svelte';
+  import { afterRender, pageClock, watchPageClock } from '$lib/pageClock';
 
   interface Props {
     items: readonly ConversationDisplayItem[];
@@ -184,7 +185,7 @@
   // Work deferred to after the next render stops when the timeline unmounts. An effect
   // re-run must not cancel it: the send anchor's effect re-runs as it clears its request.
   const stop = new AbortController();
-  onDestroy(() => { stop.abort(); cancelAnimationFrame(viewFrame); });
+  onDestroy(() => stop.abort());
 
   $effect.pre(() => {
     const currentRows = rows;
@@ -222,7 +223,7 @@
   });
 
   async function restoreKeptRow(signal: AbortSignal, windowId: string, kept: VirtualItem, top: number): Promise<void> {
-    await tick();
+    await afterRender();
     if (signal.aborted || windowId !== renderWindowId) return;
     const row = $virtualizer.measurementsCache.find((item) => item.key === kept.key);
     if (row) $virtualizer.scrollToOffset(row.start + top - kept.start);
@@ -373,7 +374,7 @@
     void followAfterRender(stop.signal, renderWindowId);
   });
   async function followAfterRender(signal: AbortSignal, windowId: string): Promise<void> {
-    await tick();
+    await afterRender();
     if (signal.aborted || windowId !== renderWindowId) return;
     if (follow && !hasNewer && !restoring && !jumping) scrollToEnd();
   }
@@ -388,7 +389,7 @@
     void restoreView(stop.signal, renderWindowId);
   });
   async function restoreView(signal: AbortSignal, windowId: string): Promise<void> {
-    await tick();
+    await afterRender();
     if (signal.aborted || windowId !== renderWindowId || !restoring) return;
     if (follow) scrollToEnd();
     else if (savedAnchor && !restoreAnchor(savedAnchor)) {
@@ -400,7 +401,7 @@
       scrollToEnd();
     }
     // Restore after the admitted content has mounted.
-    await tick();
+    await afterRender();
     if (signal.aborted || windowId !== renderWindowId || !restoring) return;
     if (follow) scrollToEnd();
     else if (savedAnchor) restoreAnchor(savedAnchor);
@@ -461,36 +462,27 @@
     if (target.kind === 'child') onOpenChild?.(target.childId);
     else showToolItem(target.itemId);
   }
-  /* One clock for the background line's elapsed times. It runs only while the
-     line is on screen and the window is visible; the line leaving the render
-     window unmounts it and stops the clock. */
-  let backgroundNow = $state(Date.now());
+  /* The background line's elapsed times follow the page clock while the line
+     is on screen (the clock itself pauses in a hidden window); the line leaving
+     the render window unmounts it and stops watching. */
   function backgroundClock(node: HTMLElement) {
-    let onScreen = false;
-    let timer: ReturnType<typeof setInterval> | null = null;
-    const sync = (): void => {
-      const run = onScreen && document.visibilityState === 'visible';
-      if (run && !timer) {
-        backgroundNow = Date.now();
-        /* Timer experiment: disabled for the performance comparison.
-        timer = setInterval(() => { backgroundNow = Date.now(); }, 1000);
-        */
-      } else if (!run && timer) {
-        clearInterval(timer);
-        timer = null;
+    let stopWatching: (() => void) | null = null;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && !stopWatching) stopWatching = watchPageClock(1000);
+      else if (!entry.isIntersecting && stopWatching) {
+        stopWatching();
+        stopWatching = null;
       }
-    };
-    const observer = new IntersectionObserver(([entry]) => { onScreen = entry.isIntersecting; sync(); });
+    });
     observer.observe(node);
-    document.addEventListener('visibilitychange', sync);
     return {
       destroy() {
         observer.disconnect();
-        document.removeEventListener('visibilitychange', sync);
-        if (timer) clearInterval(timer);
+        stopWatching?.();
       }
     };
   }
+
   let disclosureWindow = '';
   let previousLiveTail: string | undefined;
   let previousActiveTurn: string | null = null;
@@ -517,6 +509,7 @@
     previousLiveTail = tail;
     previousActiveTurn = turn;
   });
+
   function requestPage(older: boolean): void {
     if (!host || restoring || jumping || pageRequest) return;
     if (older ? !hasOlder || loadingOlder || host.scrollTop > 80 : !hasNewer || loadingNewer || !atEnd()) return;
@@ -534,7 +527,7 @@
     if (landed) void continuePaging(stop.signal, request);
   });
   async function continuePaging(signal: AbortSignal, request: NonNullable<typeof pageRequest>): Promise<void> {
-    await tick();
+    await afterRender();
     if (signal.aborted || request.windowId !== renderWindowId) return;
     if (host && continueHistoryPaging(true,
       request.older ? host.scrollTop <= 80 : atEnd(), request.height, host.scrollHeight)) requestPage(request.older);
@@ -549,22 +542,20 @@
     userDirection = null;
     // Wheel events fire before the scroll they cause, so a gesture that coasts
     // onto the end of the loaded rows asks for nothing; ask once it lands there.
-    scheduleViewWork(direction === 'older');
-  }
-  // Saving the place and asking for a page read the layout, so they run once a frame, after its
-  // scrolls; the frame's last event says which way to page.
-  let viewFrame = 0, frameOlder = false;
-  function scheduleViewWork(older: boolean): void {
-    frameOlder = older;
-    viewFrame ||= requestAnimationFrame(() => { viewFrame = 0; saveView(); requestPage(frameOlder); });
+    // Browsers fire scroll at most once a frame, so the place is saved here only.
+    saveView();
+    requestPage(direction === 'older');
   }
   function handleWheel(event: WheelEvent): void {
     if (event.target instanceof Element && event.target.closest('[data-tool-scroll]')) return;
     anchoredSendItemId = null;
     userDirection = event.deltaY < 0 ? 'older' : 'newer';
+    const followed = follow;
     if (event.deltaY < 0) follow = false;
     else if (event.deltaY > 0 && !hasNewer && atEnd()) follow = true;
-    if (event.deltaY) scheduleViewWork(event.deltaY < 0);
+    // At an edge no scroll follows, so the wheel saves a changed follow and asks for the page itself.
+    if (follow !== followed) saveView();
+    if (event.deltaY) requestPage(event.deltaY < 0);
   }
 
   function readerInput(node: HTMLDivElement) {
@@ -596,8 +587,8 @@
       if (!older && !newer) return;
       anchoredSendItemId = null;
       userDirection = older ? 'older' : 'newer';
-      if (older) follow = false;
-      scheduleViewWork(older);
+      if (older && follow) { follow = false; saveView(); }
+      requestPage(older);
     };
     node.addEventListener('pointerdown', pointerDown);
     node.addEventListener('touchstart', touchStart, { passive: true });
@@ -650,7 +641,7 @@
     void anchorSentRow(stop.signal, renderWindowId, itemId);
   });
   async function anchorSentRow(signal: AbortSignal, windowId: string, itemId: string): Promise<void> {
-    await tick();
+    await afterRender();
     if (signal.aborted || windowId !== renderWindowId || anchoredSendItemId !== itemId) return;
     const index = rows.findIndex((row) => row.key === itemId);
     if (index < 0) return;
@@ -674,7 +665,7 @@
     void followAfterTurn(stop.signal, renderWindowId);
   });
   async function followAfterTurn(signal: AbortSignal, windowId: string): Promise<void> {
-    await tick();
+    await afterRender();
     if (signal.aborted || windowId !== renderWindowId || restoring || jumping || hasNewer || !atEnd()) return;
     follow = true;
     saveView();
@@ -750,7 +741,7 @@
                       {#if work.kind === 'subagent'}<Bot data-icon="inline-start" aria-hidden="true" />{:else}<Terminal data-icon="inline-start" aria-hidden="true" />{/if}
                       <span class="max-w-[24ch] truncate">{backgroundWorkLabel(work)}</span>
                     </Button>
-                    <span class="background-elapsed">{formatBackgroundElapsed(backgroundNow - work.startedAtMs)}</span>
+                    <span class="background-elapsed">{formatBackgroundElapsed(pageClock.now - work.startedAtMs)}</span>
                   </span>
                 {/each}
               </div>

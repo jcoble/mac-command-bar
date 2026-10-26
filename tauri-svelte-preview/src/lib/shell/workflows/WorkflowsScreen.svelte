@@ -15,6 +15,7 @@
   import Pause from '@lucide/svelte/icons/pause';
   import Play from '@lucide/svelte/icons/play';
   import { onMount, untrack } from 'svelte';
+  import { pageClock, watchPageClock } from '$lib/pageClock';
 
   import * as Breadcrumb from '$lib/components/ui/breadcrumb/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -68,7 +69,7 @@
   let closeupId = $state<string | null>(null);
   let busy = $state(false);
   let timeline = $state<{ runId: string; items: WorkflowTimelineItem[]; loading: boolean; error: string } | null>(null);
-  let now = $state(Date.now());
+  const now = $derived(pageClock.now);
   /** Usage rows of every run, for the board's costs; read when the board shows. */
   let boardUsage = $state<WorkflowUsageRow[]>([]);
   /** The open run's usage rows for its Cost tab; null while reading. */
@@ -83,16 +84,12 @@
   /** Ends every read and listener when the screen closes. */
   const stop = new AbortController();
 
-  // One clock for every elapsed time on screen; it runs only while a running run or step is shown.
+  // Every elapsed time on screen follows the page clock while a running run or step is shown.
   const ticking = $derived(runs.some((run) => run.nodes.some((node) => node.state === 'running' || node.state === 'starting')
     && (openRunId === null || openRunId === run.id)));
   $effect(() => {
     if (!ticking) return;
-    now = Date.now();
-    /* Timer experiment: disabled for the performance comparison.
-    const timer = window.setInterval(() => (now = Date.now()), 1000);
-    return () => window.clearInterval(timer);
-    */
+    return watchPageClock(1000);
   });
 
   onMount(() => {
