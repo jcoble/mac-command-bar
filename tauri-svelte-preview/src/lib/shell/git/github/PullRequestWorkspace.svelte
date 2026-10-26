@@ -7,6 +7,7 @@
    */
   import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import { untrack } from 'svelte';
+  import { pageDeadline } from '$lib/pageClock.svelte';
   import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
   import { parseRemoteWorkspacePath, remoteWorkspacePath, sessionWorkspaceRoot } from '$lib/workspacePaths';
@@ -74,7 +75,7 @@
   let searchInput = $state('');
   /** The text the current list was searched with, so typing the same text again does not reload. */
   let searchedText = '';
-  let searchTimer: ReturnType<typeof setTimeout> | undefined;
+  let cancelSearch = (): void => {};
   let items = $state<GithubPullRequestSummary[]>([]);
   let cursor = $state<string | null>(null);
   let totalCount = $state(0);
@@ -288,14 +289,13 @@
 
   function onSearchKey(event: KeyboardEvent): void {
     if (event.key !== 'Enter') return;
-    clearTimeout(searchTimer);
-    void load(true);
+    cancelSearch(); void load(true);
   }
 
   /** The list follows the box once typing pauses; Enter searches at once. */
   function onSearchInput(): void {
-    clearTimeout(searchTimer);
-    if (searchInput.trim() !== searchedText) searchTimer = setTimeout(() => void load(true), 350);
+    cancelSearch();
+    if (searchInput.trim() !== searchedText) cancelSearch = pageDeadline(Date.now() + 350, () => void load(true));
   }
 
   /** A link names a repository; find the project that has it as its remote.
@@ -559,7 +559,7 @@
     const active = rail.activeOwnedId;
     if (showing && untrack(() => (!loaded && !loading && !error) || active !== followedSession)) untrack(() => void load(true));
   });
-  $effect(() => () => clearTimeout(searchTimer));
+  $effect(() => () => cancelSearch());
   $effect(() => {
     const key = selectedKey;
     const target = untrack(() => pullRequestSelection.selected);

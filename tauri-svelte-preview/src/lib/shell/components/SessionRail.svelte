@@ -11,6 +11,7 @@
 	import MessageCircle from "@lucide/svelte/icons/message-circle";
 	import Workflow from "@lucide/svelte/icons/workflow";
 	import { onMount } from "svelte";
+	import { pageClock, watchPageClock } from "$lib/pageClock.svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
 	import { Chip } from "$lib/components/ui/chip/index.js";
@@ -76,14 +77,10 @@
 	const NO_STATUS: RailRowStatus = { waiting: [], background: 0, helpers: 0, runs: 0 };
 	let collapsedGroups = $state<Record<string, boolean>>({});
 	let visualActiveOwnedId = $state<string | null>(null);
-	// One clock for every row's age label, refreshed coarsely; a hidden window skips the write.
-	let nowMs = $state(Date.now());
-	onMount(() => {
-		const tick = window.setInterval(() => {
-			if (!document.hidden) nowMs = Date.now();
-		}, 15_000);
-		return () => window.clearInterval(tick);
-	});
+	// Every row's age label follows the page clock in 15-second steps, so a faster
+	// watcher elsewhere does not redraw the rail every second.
+	const nowMs = $derived(Math.floor(pageClock.now / 15_000) * 15_000);
+	onMount(() => watchPageClock(15_000));
 	let contextMenu = $state<{ session: OwnedSession; x: number; y: number } | null>(null);
 	let renamingOwnedId = $state<string | null>(null);
 	const contextMenuItems = $derived(

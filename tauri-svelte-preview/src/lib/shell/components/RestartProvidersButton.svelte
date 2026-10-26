@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import { pageDeadline } from '$lib/pageClock.svelte';
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import {
@@ -24,7 +25,6 @@
 
   // A remote restart ends the sessions running there, so it warns and counts down first.
   let countdown = $state<RestartCountdown | null>(null);
-  const counting = $derived(countdown !== null);
   const endingSessions = $derived(profileId ? sessionsEndedByRestart(rail.owned, profileId) : []);
 
   function requestRestart() {
@@ -40,10 +40,9 @@
   }
 
   $effect(() => {
-    if (!counting) return;
-    // One one-second interval while the warning counts down; cancel, finishing and unmounting clear it.
-    const timer = window.setInterval(() => stepCountdown('tick'), 1000);
-    return () => window.clearInterval(timer);
+    if (!countdown) return;
+    // Each step arms the next second, also in a hidden window; cancel, finishing and unmounting clear it.
+    return pageDeadline(Date.now() + 1000, () => stepCountdown('tick'));
   });
 
   // After a restart, re-check (as Check now does) once the connection drops and returns.

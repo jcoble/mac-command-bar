@@ -25,6 +25,7 @@
   import TurnFileCard from './TurnFileCard.svelte';
   import PendingFirstMessage from './PendingFirstMessage.svelte';
   import WorkingSpinner from '../../components/feedback/WorkingSpinner.svelte';
+  import { pageClock, watchPageClock } from '$lib/pageClock.svelte';
 
   interface Props {
     items: readonly ConversationDisplayItem[];
@@ -461,31 +462,23 @@
     if (target.kind === 'child') onOpenChild?.(target.childId);
     else showToolItem(target.itemId);
   }
-  /* One clock for the background line's elapsed times. It runs only while the
-     line is on screen and the window is visible; the line leaving the render
-     window unmounts it and stops the clock. */
-  let backgroundNow = $state(Date.now());
+  /* The background line's elapsed times follow the page clock while the line
+     is on screen (the clock itself pauses in a hidden window); the line leaving
+     the render window unmounts it and stops watching. */
   function backgroundClock(node: HTMLElement) {
-    let onScreen = false;
-    let timer: ReturnType<typeof setInterval> | null = null;
-    const sync = (): void => {
-      const run = onScreen && document.visibilityState === 'visible';
-      if (run && !timer) {
-        backgroundNow = Date.now();
-        timer = setInterval(() => { backgroundNow = Date.now(); }, 1000);
-      } else if (!run && timer) {
-        clearInterval(timer);
-        timer = null;
+    let stopWatching: (() => void) | null = null;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting && !stopWatching) stopWatching = watchPageClock(1000);
+      else if (!entry.isIntersecting && stopWatching) {
+        stopWatching();
+        stopWatching = null;
       }
-    };
-    const observer = new IntersectionObserver(([entry]) => { onScreen = entry.isIntersecting; sync(); });
+    });
     observer.observe(node);
-    document.addEventListener('visibilitychange', sync);
     return {
       destroy() {
         observer.disconnect();
-        document.removeEventListener('visibilitychange', sync);
-        if (timer) clearInterval(timer);
+        stopWatching?.();
       }
     };
   }
@@ -750,7 +743,7 @@
                       {#if work.kind === 'subagent'}<Bot data-icon="inline-start" aria-hidden="true" />{:else}<Terminal data-icon="inline-start" aria-hidden="true" />{/if}
                       <span class="max-w-[24ch] truncate">{backgroundWorkLabel(work)}</span>
                     </Button>
-                    <span class="background-elapsed">{formatBackgroundElapsed(backgroundNow - work.startedAtMs)}</span>
+                    <span class="background-elapsed">{formatBackgroundElapsed(pageClock.now - work.startedAtMs)}</span>
                   </span>
                 {/each}
               </div>

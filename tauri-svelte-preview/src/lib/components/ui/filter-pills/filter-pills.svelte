@@ -22,6 +22,7 @@
 -->
 <script lang="ts">
   import { flushSync } from 'svelte';
+  import { pageDeadline } from '$lib/pageClock.svelte';
 
   interface FilterPillOption {
     value: string;
@@ -47,13 +48,13 @@
 
   const AUTO_CLOSE_MS = 10_000;
   let openId = $state<string | null>(null);
-  let timer: number | undefined;
+  let cancelAutoClose = (): void => {};
   let row = $state<HTMLDivElement | null>(null);
 
   const openGroup = $derived(groups.find((group) => group.id === openId) ?? null);
   const anySelected = $derived(groups.some((group) => selected(group.id).length > 0));
 
-  $effect(() => () => clearTimeout(timer));
+  $effect(() => () => cancelAutoClose());
 
   // While a group is open, a press outside the row closes it and keeps its
   // selection. The listener exists only while open; closing or unmounting removes it.
@@ -71,8 +72,8 @@
   }
 
   function restartTimer(): void {
-    clearTimeout(timer);
-    timer = window.setTimeout(close, AUTO_CLOSE_MS);
+    cancelAutoClose();
+    cancelAutoClose = pageDeadline(Date.now() + AUTO_CLOSE_MS, close);
   }
 
   // The pressed button disappears when the row swaps between pills and
@@ -90,7 +91,7 @@
   }
 
   function close(): void {
-    clearTimeout(timer);
+    cancelAutoClose();
     const hadFocus = focusInRow();
     const groupId = openId ?? groups[0]?.id;
     flushSync(() => (openId = null));

@@ -1,6 +1,7 @@
 <script lang="ts">
   import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import { untrack } from 'svelte';
+  import { pageClock, watchPageClock } from '$lib/pageClock.svelte';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Check from '@lucide/svelte/icons/check';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -77,7 +78,7 @@
   let busy = $state<string | null>(null);
   let loadGeneration = 0;
   let actionController: AbortController | null = null;
-  let now = $state(Date.now());
+  const now = $derived(pageClock.now);
   /** The step whose details screen is open, by its id in the workflow; null shows the run. */
   let openStepId = $state<string | null>(null);
 
@@ -169,33 +170,16 @@
     }
   }
 
-  $effect(() => {
-    if (!visible || !runningNode?.startedAtMs || !runningDefinition) return;
-    const controller = new AbortController();
-    const remaining = Math.max(
-      0,
-      runningNode.startedAtMs + runningDefinition.timeoutSeconds * 1000 - Date.now()
-    );
-    const timer = window.setTimeout(() => {
-      if (!controller.signal.aborted) now = Date.now();
-    }, remaining);
-    return () => {
-      controller.abort();
-      window.clearTimeout(timer);
-    };
-  });
-
   const LIVE_STATES: WorkflowNodeState[] = ['starting', 'running'];
   const ticking = $derived(
     orderedNodes.some((node) => node.startedAtMs && !node.finishedAtMs && LIVE_STATES.includes(node.state))
   );
 
-  // One clock for every running stage's elapsed time; stops when hidden or nothing is running.
+  // Every running stage's elapsed time, and the past-its-timeout warning, follow the
+  // page clock; nothing is watched while hidden or when no stage runs.
   $effect(() => {
     if (!visible || !ticking) return;
-    now = Date.now();
-    const timer = window.setInterval(() => (now = Date.now()), 1000);
-    return () => window.clearInterval(timer);
+    return watchPageClock(1000);
   });
 
   function elapsed(node: WorkflowNodeRunRecord): string {
