@@ -1,3 +1,4 @@
+import { pageDeadline } from '../../pageClock.ts';
 import { sessionCheckoutRoot, sessionWorkspaceRoot, parseRemoteWorkspacePath } from '../../workspacePaths.ts';
 import { projectRegistry } from '../projects/projectRegistry.svelte.ts';
 /**
@@ -269,10 +270,17 @@ export class SessionSelectionController {
 		this.activeWorkspaceSnapshot = this.editorSessions.rememberWorkspaceState(patch) ?? this.activeWorkspaceSnapshot;
 	}
 
+	private cancelWorkspaceSave = (): void => {};
+
+	/** Remembers the change at once and saves half a second after the last one, so fast tab clicks
+	 * write once instead of queueing a full save each. Leaving the session saves what it remembered. */
 	persistWorkspaceState(ownedId: string, patch: Partial<SessionWorkspaceSnapshot>): void {
 		if (this.activeOwnedId !== ownedId) return;
 		this.rememberWorkspaceState(patch);
-		void this.ignoreWorkspaceWriteFailure(this.editorSessions.persistWorkspaceState(ownedId));
+		this.cancelWorkspaceSave();
+		this.cancelWorkspaceSave = pageDeadline(Date.now() + 500, () => {
+			void this.ignoreWorkspaceWriteFailure(this.editorSessions.persistWorkspaceState(ownedId));
+		});
 	}
 
 	async persistConversationAttachmentIds(ownedId: string, ids: readonly string[]): Promise<void> {
