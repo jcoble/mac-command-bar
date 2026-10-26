@@ -1,0 +1,74 @@
+{
+ "_note": "Bot review threads recorded from merged PRs #431 (outdated, resolved by the owner login), #443 (resolved by the owner login, not outdated) and #448 (open), 2026-10-22.",
+ "threads": [
+  {
+   "id": "PRRT_kwDOS63Ils6vFT1E",
+   "isResolved": true,
+   "isOutdated": true,
+   "resolvedBy": {
+    "__typename": "User",
+    "login": "jcoble"
+   },
+   "comments": {
+    "nodes": [
+     {
+      "databaseId": 4345530967,
+      "author": {
+       "__typename": "Bot",
+       "login": "chatgpt-codex-connector"
+      },
+      "path": "tauri-svelte-preview/src/lib/shell/board/boardQuestionFolds.ts",
+      "line": null,
+      "originalLine": 21,
+      "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Preserve saved folds for temporarily unreachable machines**"
+     }
+    ]
+   }
+  },
+  {
+   "id": "PRRT_kwDOS63Ils6vGNfZ",
+   "isResolved": true,
+   "isOutdated": false,
+   "resolvedBy": {
+    "__typename": "User",
+    "login": "jcoble"
+   },
+   "comments": {
+    "nodes": [
+     {
+      "databaseId": 4345909788,
+      "author": {
+       "__typename": "Bot",
+       "login": "chatgpt-codex-connector"
+      },
+      "path": "tauri-svelte-preview/src/lib/shell/git/components/BranchMenu.svelte",
+      "line": 110,
+      "originalLine": 110,
+      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Share worktree-aware branch switching with the phone route**"
+     }
+    ]
+   }
+  },
+  {
+   "id": "PRRT_kwDOS63Ils6vKkpC",
+   "isResolved": false,
+   "isOutdated": false,
+   "resolvedBy": null,
+   "comments": {
+    "nodes": [
+     {
+      "databaseId": 4347740388,
+      "author": {
+       "__typename": "Bot",
+       "login": "chatgpt-codex-connector"
+      },
+      "path": "tauri-svelte-preview/src-tauri/src/agent_conversation/manager/tests/permissions.rs",
+      "line": 109,
+      "originalLine": 109,
+      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Await the completion event instead of polling in the new test**"
+     }
+    ]
+   }
+  }
+ ]
+}
