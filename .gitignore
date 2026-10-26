@@ -16,6 +16,7 @@ tauri-svelte-preview/src-tauri/adapters/claude-agent-acp*
 tauri-svelte-preview/src-tauri/adapters/agy-acp*
 tauri-svelte-preview/src-tauri/adapters/agy_acp_server.par
 tauri-svelte-preview/src-tauri/adapters/localharness_external
+tauri-svelte-preview/src-tauri/models-acp/
 tauri-svelte-preview/provider-release/
 tauri-svelte-preview/remote-backend-release/
 tauri-svelte-preview/tools/agy-acp/target/
