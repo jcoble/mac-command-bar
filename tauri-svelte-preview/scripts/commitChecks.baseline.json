@@ -57,7 +57,7 @@
     "tauri-svelte-preview/src/lib/shell/git/github/PullRequestWorkspace.svelte": 921,
     "tauri-svelte-preview/src/lib/shell/conversation/ConversationSurface.svelte": 814,
     "tauri-svelte-preview/src/lib/shell/conversation/components/ConversationComposer.svelte": 728,
-    "tauri-svelte-preview/src/lib/shell/conversation/components/ConversationTimeline.svelte": 795,
+    "tauri-svelte-preview/src/lib/shell/conversation/components/ConversationTimeline.svelte": 794,
     "tauri-svelte-preview/src/lib/shell/conversation/conversationConnection.ts": 855,
     "tauri-svelte-preview/src/lib/shell/conversation/conversationService.ts": 1707,
     "tauri-svelte-preview/src/lib/shell/conversation/conversationStore.svelte.ts": 1126,

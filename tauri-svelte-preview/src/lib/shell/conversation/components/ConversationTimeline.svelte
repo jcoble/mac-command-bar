@@ -542,21 +542,20 @@
     userDirection = null;
     // Wheel events fire before the scroll they cause, so a gesture that coasts
     // onto the end of the loaded rows asks for nothing; ask once it lands there.
-    scheduleViewWork(direction === 'older');
-  }
-  // Browsers deliver scroll and wheel events at most once a frame, so saving the place and asking
-  // for a page run in the handler; the event says which way to page.
-  function scheduleViewWork(older: boolean): void {
+    // Browsers fire scroll at most once a frame, so the place is saved here only.
     saveView();
-    requestPage(older);
+    requestPage(direction === 'older');
   }
   function handleWheel(event: WheelEvent): void {
     if (event.target instanceof Element && event.target.closest('[data-tool-scroll]')) return;
     anchoredSendItemId = null;
     userDirection = event.deltaY < 0 ? 'older' : 'newer';
+    const followed = follow;
     if (event.deltaY < 0) follow = false;
     else if (event.deltaY > 0 && !hasNewer && atEnd()) follow = true;
-    if (event.deltaY) scheduleViewWork(event.deltaY < 0);
+    // At an edge no scroll follows, so the wheel saves a changed follow and asks for the page itself.
+    if (follow !== followed) saveView();
+    if (event.deltaY) requestPage(event.deltaY < 0);
   }
 
   function readerInput(node: HTMLDivElement) {
@@ -588,8 +587,8 @@
       if (!older && !newer) return;
       anchoredSendItemId = null;
       userDirection = older ? 'older' : 'newer';
-      if (older) follow = false;
-      scheduleViewWork(older);
+      if (older && follow) { follow = false; saveView(); }
+      requestPage(older);
     };
     node.addEventListener('pointerdown', pointerDown);
     node.addEventListener('touchstart', touchStart, { passive: true });

@@ -113,7 +113,8 @@ function textContentOf(item: object | undefined): TextContent | null {
   return item && 'type' in item && item.type === EventType.TEXT_MESSAGE_CONTENT ? item as TextContent : null;
 }
 
-/** Waits about one frame (16 ms) through the page clock, or until abort; it keeps time in a hidden window too. */
+/** Waits about one frame (16 ms), or until abort. Not a poll: it runs only while streamed text is queued,
+ * and it keeps time in a hidden window, so a run that finishes there still lands. */
 async function nextFrame(signal: AbortSignal): Promise<void> {
   await pageWait(16, signal);
 }
