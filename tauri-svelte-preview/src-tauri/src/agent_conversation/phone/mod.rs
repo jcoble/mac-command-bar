@@ -299,12 +299,12 @@ async fn forget_me(State(state): State<ServerState>, Extension(device): Extensio
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-/// `GET /phone/v1/sessions` → `{sessions}`: this machine's sessions, newest activity first (one SQL statement).
+/// `GET /phone/v1/sessions` → `{sessions}`: this machine's sessions, pinned first, then newest activity (one SQL statement); each says whether it is `pinned` and `done`.
 async fn sessions(State(state): State<ServerState>) -> Reply {
     let sessions = state.manager.store().list_phone_sessions().map_err(|error| server_error(&error))?;
-    let sessions: Vec<Value> = sessions.into_iter().map(|(entry, last_activity_at)| {
+    let sessions: Vec<Value> = sessions.into_iter().map(|(entry, last_activity_at, pinned, done)| {
         let mut row = json!(entry);
-        row["lastActivityAt"] = json!(last_activity_at);
+        row["lastActivityAt"] = json!(last_activity_at); row["pinned"] = json!(pinned); row["done"] = json!(done);
         row
     }).collect();
     Ok(Json(json!({ "sessions": sessions })).into_response())
@@ -1986,7 +1986,7 @@ mod tests {
         let newest = &sessions[0];
         assert_eq!((newest["name"].as_str(), newest["provider"].as_str(), newest["project"].as_str(), newest["state"].as_str()),
             (Some("New lane"), Some("codex"), Some("assembly"), Some("idle")));
-        assert_eq!((newest["lastActivityAt"].as_i64(), &newest["runId"], &newest["stepId"]), (Some(300), &Value::Null, &Value::Null));
+        assert_eq!((newest["lastActivityAt"].as_i64(), &newest["runId"], &newest["stepId"], newest["pinned"].as_bool(), newest["done"].as_bool()), (Some(300), &Value::Null, &Value::Null, Some(false), Some(false)));
         assert!(newest["handle"].as_str().is_some_and(|handle| !handle.is_empty()));
     }
 
