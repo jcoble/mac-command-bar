@@ -44,6 +44,8 @@
     kind: string;
     /** How long it ran, already formatted; empty when it never started. */
     duration: string;
+    /** Usage from the run's usage rows, for a step whose record carries none. */
+    usage?: string | null;
     busy: boolean;
     /** Retry this step; null when it has not failed. */
     onRetry: (() => void) | null;
@@ -51,7 +53,7 @@
     rounds: WorkflowTimelineItem[];
   }
 
-  let { node, status, kind, duration, busy, onRetry, rounds }: Props = $props();
+  let { node, status, kind, duration, usage = null, busy, onRetry, rounds }: Props = $props();
 
   // A round's result in one or two words, with the tone its chip reads in.
   const ROUND_RESULT: Partial<Record<WorkflowTimelineItem['kind'], [string, ChipTone]>> = {
@@ -101,7 +103,7 @@
       { label: 'Started', value: clock(node.startedAtMs) },
       { label: 'Finished', value: clock(node.finishedAtMs) },
       { label: 'Duration', value: duration },
-      { label: 'Usage', value: node.startedAtMs ? usageSummary(node) ?? 'Not reported' : '' }
+      { label: 'Usage', value: node.startedAtMs ? usageSummary(node) ?? usage ?? 'Not reported' : '' }
     ].filter((row) => row.value)
   );
 </script>
