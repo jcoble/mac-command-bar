@@ -1,15 +1,13 @@
-use chrono::{DateTime, Datelike, Local};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use super::{
     home_dir, object, stable_key, timestamp,
-    CodexChildRollout, ProjectedRecord,
+    ProjectedRecord,
 };
 use crate::agent_conversation::protocol::{AgentConversationPayload, AgentEventType};
 
@@ -39,8 +37,8 @@ pub(super) fn holds_session_at(home: &Path, id: &str) -> Result<bool, String> {
 
 pub(super) fn discover_child_path(parent_id: &str, child_id: &str) -> Option<PathBuf> {
     let path = discover_path(child_id)?;
-    child_rollout_from_first_line(&path, parent_id)
-        .filter(|child| child.child_id == child_id)
+    child_id_from_first_line(&path, parent_id)
+        .filter(|id| id == child_id)
         .map(|_| path)
 }
 
@@ -54,49 +52,10 @@ pub(super) fn child_watch_directory(parent_id: &str, child_id: &str) -> Result<P
     Ok(super::home_dir()?.join(".codex/sessions"))
 }
 
-pub(super) fn scan_child_rollouts(
-    parent_path: &Path,
-    parent_id: &str,
-) -> Result<Vec<CodexChildRollout>, String> {
-    let parent_directory = parent_path
-        .parent()
-        .ok_or_else(|| "The parent transcript has no dated directory".to_string())?;
-    let sessions_root = parent_directory
-        .ancestors()
-        .nth(3)
-        .ok_or_else(|| "The parent transcript has no sessions directory".to_string())?;
-    let today: DateTime<Local> = SystemTime::now().into();
-    let today_directory = sessions_root
-        .join(format!("{:04}", today.year()))
-        .join(format!("{:02}", today.month()))
-        .join(format!("{:02}", today.day()));
-
-    // A parent may live in an older date directory while children spawned now
-    // are written under today's date, so scan both when those directories differ.
-    let mut directories = vec![parent_directory.to_path_buf()];
-    if today_directory != parent_directory {
-        directories.push(today_directory);
-    }
-    let mut children = BTreeMap::new();
-    for directory in directories {
-        let entries = match fs::read_dir(directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(format!("Could not scan child transcripts: {error}")),
-        };
-        for child in entries.flatten().filter_map(|entry| {
-            child_rollout_from_first_line(&entry.path(), parent_id)
-        }) {
-            children.insert(child.child_id.clone(), child);
-        }
-    }
-    Ok(children.into_values().collect())
-}
-
-fn child_rollout_from_first_line(
+fn child_id_from_first_line(
     path: &Path,
     parent_id: &str,
-) -> Option<CodexChildRollout> {
+) -> Option<String> {
     if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
         return None;
     }
@@ -115,66 +74,7 @@ fn child_rollout_from_first_line(
     {
         return None;
     }
-    let child_id = payload.get("id").and_then(Value::as_str)?.to_string();
-    let spawn = payload.pointer("/source/subagent/thread_spawn");
-    let role = spawn
-        .and_then(|value| value.get("agent_role"))
-        .or_else(|| payload.get("agent_role"))
-        .and_then(Value::as_str);
-    let name = spawn
-        .and_then(|value| value.get("agent_path"))
-        .or_else(|| payload.get("agent_path"))
-        .and_then(Value::as_str)
-        .and_then(|path| path.rsplit('/').find(|part| !part.is_empty()))
-        .or_else(|| {
-            spawn
-                .and_then(|value| value.get("agent_nickname"))
-                .or_else(|| payload.get("agent_nickname"))
-                .and_then(Value::as_str)
-        })
-        .unwrap_or("Sub-agent");
-    let label = role.map_or_else(|| name.to_string(), |role| format!("{name} ({role})"));
-    let running = !last_turn_ended(path) && !silent_too_long(path);
-    Some(CodexChildRollout {
-        child_id,
-        label,
-        state: if running { "running" } else { "finished" }.to_string(),
-        latest_activity: if running { "Running" } else { "Finished" }.to_string(),
-    })
-}
-
-/// How long a child may write nothing before it counts as gone. A child that crashed or was
-/// killed never writes its closing record; without this its session could never suspend.
-pub(crate) const CHILD_SILENCE_LIMIT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
-
-fn silent_too_long(path: &Path) -> bool {
-    path.metadata().and_then(|metadata| metadata.modified()).ok()
-        .and_then(|modified| modified.elapsed().ok())
-        .is_some_and(|silence| silence > CHILD_SILENCE_LIMIT)
-}
-
-/// How much of a child transcript's end is read to find its newest turn record.
-const TURN_RECORD_TAIL_BYTES: u64 = 64 * 1024;
-
-/// Whether the transcript's newest turn record says the turn ended (`task_complete` or
-/// `turn_aborted`) rather than started. A short quiet time proves nothing: a long command
-/// writes nothing until it returns. Only the end of the file is read.
-fn last_turn_ended(path: &Path) -> bool {
-    let Ok(len) = path.metadata().map(|metadata| metadata.len()) else { return false };
-    let start = len.saturating_sub(TURN_RECORD_TAIL_BYTES);
-    let Ok(bytes) = super::read_range(path, start, TURN_RECORD_TAIL_BYTES) else { return false };
-    let (lines, _) = super::complete_lines(&bytes, start > 0);
-    lines.iter().rev().find_map(|line| {
-        let value: Value = serde_json::from_slice(line).ok()?;
-        if value.get("type").and_then(Value::as_str) != Some("event_msg") {
-            return None;
-        }
-        match value.pointer("/payload/type").and_then(Value::as_str)? {
-            "task_complete" | "turn_aborted" => Some(true),
-            "task_started" => Some(false),
-            _ => None,
-        }
-    }).unwrap_or(false)
+    payload.get("id").and_then(Value::as_str).map(str::to_owned)
 }
 
 /// Codex holds an exclusive lock on `~/.codex/thread-writer-locks/<thread id>.lock` while it writes the thread, the app and

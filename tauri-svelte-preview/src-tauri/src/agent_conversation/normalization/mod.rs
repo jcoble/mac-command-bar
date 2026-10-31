@@ -1,5 +1,6 @@
 pub(in crate::agent_conversation) mod tools;
 pub(crate) mod turn_usage;
+pub(super) mod native_children;
 
 use serde_json::Value;
 
@@ -295,8 +296,7 @@ pub(super) fn payload_from_session_update_for_turn(
                 summary: details.summary,
                 output: details.output,
                 path: details.path,
-                diff: details.diff, has_detail: false, added: None, removed: None,
-            })
+                diff: details.diff, })
         }
         "tool_call_update" => {
             let state = match update.get("status").and_then(Value::as_str) {
@@ -318,8 +318,7 @@ pub(super) fn payload_from_session_update_for_turn(
                 summary: details.summary,
                 output: details.output,
                 path: details.path,
-                diff: details.diff, has_detail: false, added: None, removed: None,
-            })
+                diff: details.diff, })
         }
         "plan" => Some(AgentConversationPayload::Plan {
             items: update

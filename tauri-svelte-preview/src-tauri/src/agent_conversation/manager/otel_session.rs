@@ -8,7 +8,7 @@ impl AgentRuntimeManager {
     pub fn owned_id_for_native_session(&self, native_session_id: &str) -> Option<String> {
         let live = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values()
             .find(|session| session.native_session_id.as_deref() == Some(native_session_id)
-                || session.claude_children.contains_key(native_session_id))
+                || session.native_children.contains_key(native_session_id))
             .map(|session| session.owned_id.clone());
         live.or_else(|| self.store.owned_id_for_native_session(native_session_id).ok().flatten())
     }
