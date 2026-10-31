@@ -486,10 +486,6 @@ pub enum AgentConversationPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")] path: Option<String>,
         /// A unified diff, when the call changed a file.
         #[serde(default, skip_serializing_if = "Option::is_none")] diff: Option<String>,
-        /// On a history page's row, which has no output or diff: whether one is read by id on open, and the diff's line counts.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")] has_detail: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")] added: Option<u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")] removed: Option<u32>,
     },
     ChildUpdate {
         child_id: String,

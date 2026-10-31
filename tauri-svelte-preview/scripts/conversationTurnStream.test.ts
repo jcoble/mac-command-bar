@@ -148,9 +148,8 @@ test('a tool call runs until its result, and the row shows the state and output 
   }
 });
 
-// TSK-1574: while a call runs its result carries the output so far; the finished result keeps only
-// what the closed row shows, and opening the row reads the output and diff by id.
-test('a running call shows its streamed output and the finished row keeps no output', () => {
+// A completed call carries its final output and diff, just as a running call carries its output so far.
+test('a completed tool keeps its output after streaming ends', () => {
   const processor = new StreamProcessor();
   const send = (chunks: object[]) => chunks.forEach((chunk) => processor.processChunk(chunk as never));
   const result = (call: object) => ({ type: EventType.TOOL_CALL_RESULT, toolCallId: 'run', messageId: 'run-result', role: 'tool',
@@ -163,23 +162,24 @@ test('a running call shows its streamed output and the finished row keeps no out
   ]);
   assert.equal(conversationHasRunningTool(processor.getMessages()), true);
   assert.deepEqual(conversationDisplayItems(processor.getMessages()).map((item) => [item.state, item.output]), [['running', '1\n2\n']]);
-  send([{ type: EventType.TOOL_CALL_END, toolCallId: 'run', input: { summary: 'seq 3' } }, result({ state: 'completed', hasDetail: true })]);
+  send([{ type: EventType.TOOL_CALL_END, toolCallId: 'run', input: { summary: 'seq 3' } }, result({ state: 'completed', output: '1\n2\n3\n' })]);
   assert.equal(conversationHasRunningTool(processor.getMessages()), false);
-  assert.deepEqual(conversationDisplayItems(processor.getMessages()).map((item) => item.kind === 'tool' && [item.state, item.output, item.hasDetail, item.summary]),
-    [['completed', undefined, true, 'seq 3']]);
+  assert.deepEqual(conversationDisplayItems(processor.getMessages()).map((item) => item.kind === 'tool' && [item.state, item.output, item.summary]),
+    [['completed', '1\n2\n3\n', 'seq 3']]);
 });
 
-test('file edits count lines from added and removed when the diff is not loaded', () => {
+test('file edits keep their diff when grouped and count its changed lines', () => {
+  const diff = '--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1,2 @@\n-old\n+new\n+--- added line\n';
   const processor = new StreamProcessor();
-  // What a history page sends for an edit: the path and the counts, no diff.
+  // The same complete result reaches live and history rows.
   [{ type: EventType.TOOL_CALL_START, toolCallId: 'edit', toolCallName: 'apply_patch', parentMessageId: 'edit' },
     { type: EventType.TOOL_CALL_END, toolCallId: 'edit', input: { path: 'notes.txt' } },
     { type: EventType.TOOL_CALL_RESULT, toolCallId: 'edit', messageId: 'edit-result', role: 'tool', content: JSON.stringify(
-      { kind: 'tool', itemId: 'edit', name: 'apply_patch', state: 'completed', path: 'notes.txt', hasDetail: true, added: 2, removed: 1 }) }
+      { kind: 'tool', itemId: 'edit', name: 'apply_patch', state: 'completed', path: 'notes.txt', diff }) }
   ].forEach((chunk) => processor.processChunk(chunk as never));
   const items = conversationDisplayItems(processor.getMessages());
   assert.deepEqual(turnFileChanges(items), { files: 1, added: 2, removed: 1 });
-  assert.deepEqual(foldFileEdits(items).flatMap((item) => item.kind === 'fileEdits' ? item.edits : []), [{ itemId: 'edit', path: 'notes.txt', added: 2, removed: 1 }]);
+  assert.deepEqual(foldFileEdits(items).flatMap((item) => item.kind === 'fileEdits' ? item.edits : []), [{ itemId: 'edit', path: 'notes.txt', diff, added: 2, removed: 1 }]);
 });
 
 // Protects 882f6c3b7 (ACP steering): a correction sent into a running turn
