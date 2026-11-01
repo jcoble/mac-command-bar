@@ -2,12 +2,15 @@
   WorkflowCost.svelte — a run's Cost tab: what it has cost so far, its tokens
   and time, then one row per step attempt and model from the usage rows the
   agents' turns wrote. A cost the provider reported reads "reported"; one
-  worked out from the rate table reads "est.". A step that ran without a usage
-  row reads "engine" for a command step and "not measured" for an agent.
+  worked out from the rate table reads "est.". A step attempt that ran without a
+  usage row reads "engine" for a command step, or its role's model and "not measured" for an
+  agent. Earlier attempts' times come from the run's log.
 -->
 <script lang="ts">
   import * as Card from '$lib/components/ui/card/index.js';
-  import { costText, shortDuration, stepGlyph } from '../workflowBoard.ts';
+  import { shortDuration, stepGlyph } from '../workflowBoard.ts';
+  import { costLines, costSummary, money, tokenCount as count } from '../workflowStepInfo.ts';
+  import type { WorkflowTimelineItem } from '../workflowTimeline.ts';
   import type { WorkflowRunRecord, WorkflowUsageRow } from '../workflowTypes.ts';
   import StepGlyphIcon from './StepGlyphIcon.svelte';
 
@@ -16,46 +19,28 @@
     /** Null while reading. */
     rows: WorkflowUsageRow[] | null;
     now: number;
+    /** The run's log, for earlier attempts' times. */
+    timeline: WorkflowTimelineItem[];
   }
 
-  let { run, rows, now }: Props = $props();
+  let { run, rows, now, timeline }: Props = $props();
 
   const ENDED = ['completed', 'cancelled', 'failed'];
-  const total = $derived(rows ? costText(rows) : '');
   const tokensIn = $derived((rows ?? []).reduce((sum, row) => sum + row.inputTokens + row.cacheReadTokens + row.cacheWriteTokens, 0));
   const tokensOut = $derived((rows ?? []).reduce((sum, row) => sum + row.outputTokens, 0));
   const cacheRead = $derived((rows ?? []).reduce((sum, row) => sum + row.cacheReadTokens, 0));
 
-  const count = (tokens: number): string => tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(tokens);
   const percent = (part: number, whole: number): string => whole ? `${Math.round((100 * part) / whole)}%` : '—';
 
-  /** Every step attempt, in order: the ones with usage rows, and the steps that ran without any. */
-  const lines = $derived.by(() => {
-    const measured = new Set((rows ?? []).map((row) => row.nodeRunId.split(':').slice(1, -1).join(':')));
-    const usage = (rows ?? []).map((row) => {
-      const [, ...rest] = row.nodeRunId.split(':');
-      const attempt = Number(rest.pop());
-      return { key: `${row.nodeRunId}\n${row.model}`, step: rest.join(':'), attempt, model: row.model, row };
-    });
-    const unmeasured = run.nodes.filter((node) => node.startedAtMs && !measured.has(node.nodeId)).map((node) => ({
-      key: node.id, step: node.nodeId, attempt: node.attempt, model: node.provider ? 'not measured' : 'engine', row: null
-    }));
-    const order = new Map(run.definition.nodes.map((node, index) => [node.id, index]));
-    return [...usage, ...unmeasured].sort((a, b) => (order.get(a.step) ?? 0) - (order.get(b.step) ?? 0) || a.attempt - b.attempt);
-  });
+  const lines = $derived(costLines(run, rows, timeline, now));
+  const summary = $derived(costSummary(rows, lines));
 
-  function stepTime(step: string, attempt: number): string {
-    const node = run.nodes.find((candidate) => candidate.nodeId === step);
-    if (!node?.startedAtMs || node.attempt !== attempt) return '—';
-    return shortDuration((node.finishedAtMs ?? (stepGlyph(node) === 'running' ? now : node.startedAtMs)) - node.startedAtMs);
-  }
-
-  function cost(row: WorkflowUsageRow | null): string {
-    if (!row) return '—';
+  function cost(row: WorkflowUsageRow | null, engine: boolean): string {
+    if (!row) return engine ? '—' : 'not measured';
     // A turn's reported cost sits on its largest model's row; its other models' rows carry an estimate of 0.
     if (row.reportedCostMicros === null && row.estimatedCostMicros === 0) return "in the turn's reported cost";
-    const reported = row.reportedCostMicros === null ? '' : `$${(row.reportedCostMicros / 1_000_000).toFixed(2)} reported`;
-    const estimated = row.estimatedCostMicros ? `$${(row.estimatedCostMicros / 1_000_000).toFixed(2)} est.` : '';
+    const reported = row.reportedCostMicros === null ? '' : `${money(row.reportedCostMicros)} reported`;
+    const estimated = row.estimatedCostMicros ? `${money(row.estimatedCostMicros)} est.` : '';
     return [reported, estimated].filter(Boolean).join(' + ') || 'not priced';
   }
 </script>
@@ -65,7 +50,8 @@
     <Card.Root size="sm" class="gap-1 shadow-sm">
       <Card.Content class="flex flex-col gap-1">
         <span class="text-[13px] text-muted-foreground">Cost so far</span>
-        <span class="text-(length:--text-heading) font-semibold tabular-nums">{total || (rows?.length ? 'Not priced' : rows ? 'Not measured' : '—')}</span>
+        <span class="text-(length:--text-heading) font-semibold tabular-nums">{summary.total}</span>
+        {#if summary.note}<span class="text-[13px] text-muted-foreground">{summary.note}</span>{/if}
       </Card.Content>
     </Card.Root>
     <Card.Root size="sm" class="gap-1 shadow-sm">
@@ -104,11 +90,11 @@
               <tr class="border-b last:border-b-0">
                 <td class="py-2"><span class="font-semibold">{line.step}</span> <span class="text-muted-foreground">a{line.attempt}</span></td>
                 <td>{line.model}</td>
-                <td class="text-right">{stepTime(line.step, line.attempt)}</td>
+                <td class="text-right">{line.time}</td>
                 <td class="text-right">{line.row ? count(tokens) : '—'}</td>
                 <td class="text-right">{line.row ? count(line.row.outputTokens) : '—'}</td>
                 <td class="text-right">{line.row ? percent(line.row.cacheReadTokens, tokens) : '—'}</td>
-                <td class="text-right">{cost(line.row)}</td>
+                <td class="text-right">{cost(line.row, line.engine)}</td>
                 <td class="pl-6">
                   {#if node && latest}
                     <span class="flex items-center gap-1.5"><StepGlyphIcon glyph={stepGlyph(node)} />{node.state}</span>
