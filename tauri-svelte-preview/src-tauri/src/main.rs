@@ -3778,7 +3778,7 @@ fn main() {
             agent_conversation::list_agent_conversation_events,
             agent_conversation::list_agent_conversation_events_before,
             agent_conversation::list_agent_conversation_items_before,
-            agent_conversation::list_agent_conversation_items_after, agent_conversation::manager::tool_call::read_agent_conversation_tool_call,
+            agent_conversation::list_agent_conversation_items_after,
             agent_conversation::update_agent_conversation_session_meta,
             agent_conversation::read_agent_conversation_child_history,
             agent_conversation::stop_agent_conversation_child_history,

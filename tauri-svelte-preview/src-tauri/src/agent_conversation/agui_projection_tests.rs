@@ -89,7 +89,7 @@ fn reply(id: &str, text: &str) -> Payload { Payload::AssistantMessage { item_id:
 fn user(id: &str, text: &str) -> Payload { Payload::UserMessage { item_id: id.into(), text: text.into(), completed: true, attachment_ids: vec!["shot-1".into()] } }
 fn tool(id: &str, state: ToolState, summary: Option<&str>, output: Option<&str>) -> Payload {
     Payload::Tool { item_id: id.into(), name: "Write".into(), state, summary: summary.map(str::to_string),
-        output: output.map(str::to_string), path: summary.map(|_| "notes/hello.txt".into()), diff: None, has_detail: false, added: None, removed: None }
+        output: output.map(str::to_string), path: summary.map(|_| "notes/hello.txt".into()), diff: None, }
 }
 fn permission(id: &str, state: ApprovalState) -> Payload {
     let options = if state == ApprovalState::Requested {
@@ -353,35 +353,15 @@ fn a_closed_session_drops_its_view_and_child_agents_are_kept_per_turn() {
     assert!(script.send(turn(TurnState::Started)).is_empty());
 }
 
-#[test]
-fn a_running_call_streams_its_output_and_ends_with_the_closed_row_only() {
-    let mut script = Script::open();
-    script.send(turn(TurnState::Started));
-    let call = |state: ToolState, output: Option<&str>, diff: Option<&str>| Payload::Tool { item_id: "tool-1".into(), name: "Edit".into(), state,
-        summary: None, output: output.map(str::to_string), path: None, diff: diff.map(str::to_string), has_detail: false, added: None, removed: None };
-    script.send(call(ToolState::Started, None, None));
-    let content = |chunk: &Value| serde_json::from_str::<Value>(chunk["content"].as_str().unwrap()).unwrap();
-    let running = script.send(call(ToolState::Updated, Some("Edited notes.txt"), Some("+hello")));
-    assert_eq!((types(&running), content(&running[0])["output"].clone()), (vec!["TOOL_CALL_RESULT"], json!("Edited notes.txt")));
-    let done = script.send(call(ToolState::Completed, None, None));
-    // Output and diff are read by id when the row opens (TSK-1574); a replayed history row keeps saying it has them.
-    assert_eq!((types(&done), content(&done[1])), (vec!["TOOL_CALL_END", "TOOL_CALL_RESULT"], json!({ "kind": "tool", "itemId": "tool-1",
-        "name": "Edit", "state": "completed", "summary": "Edited notes.txt", "hasDetail": true, "added": 1, "removed": 0 })));
-    let replayed = script.send(Payload::Tool { item_id: "tool-2".into(), name: "Edit".into(), state: ToolState::Completed,
-        summary: None, output: None, path: None, diff: None, has_detail: true, added: Some(1), removed: Some(0) });
-    assert_eq!(content(replayed.last().unwrap())["hasDetail"], json!(true));
-    // Imported history sends the finished call's output in a later event with no name.
-    let imported = script.send(Payload::Tool { item_id: "tool-2".into(), name: String::new(), state: ToolState::Completed,
-        summary: None, output: Some("2 files".into()), path: None, diff: None, has_detail: false, added: None, removed: None });
-    assert_eq!((types(&imported), content(&imported[0])["hasDetail"].clone()), (vec!["TOOL_CALL_RESULT"], json!(true)));
-}
+#[path = "agui_projection_tools_tests.rs"]
+mod eager_tools;
 
 #[test]
 fn arguments_that_change_before_a_call_ends_reach_the_client() {
     let mut script = Script::open();
     script.send(turn(TurnState::Started));
     let task = |state: ToolState, summary: &str| Payload::Tool { item_id: "background-task:1".into(), name: "Background command".into(), state,
-        summary: Some(summary.into()), output: None, path: None, diff: None, has_detail: false, added: None, removed: None };
+        summary: Some(summary.into()), output: None, path: None, diff: None, };
     assert_eq!(types(&script.send(task(ToolState::Started, "npm test"))), ["TOOL_CALL_START", "TOOL_CALL_ARGS"]);
     assert!(script.send(task(ToolState::Updated, "npm test: 40 of 90")).is_empty());
     let done = script.send(task(ToolState::Completed, "Completed"));
@@ -473,7 +453,7 @@ fn every_start_carries_the_row_facts_and_a_call_is_its_own_message() {
     let done = script.send(tool("tool-1", ToolState::Completed, Some("Write notes/hello.txt"), Some("notes/hello.txt")));
     let native: Value = serde_json::from_str(done.last().unwrap()["content"].as_str().unwrap()).unwrap();
     assert_eq!(native, json!({ "kind": "tool", "itemId": "tool-1", "name": "Write", "state": "completed",
-        "summary": "Write notes/hello.txt", "path": "notes/hello.txt", "hasDetail": true }));
+        "summary": "Write notes/hello.txt", "path": "notes/hello.txt", "output": "notes/hello.txt" }));
     let blocks = serde_json::from_value(json!([{ "kind": "code", "language": "sh", "value": "ls", "complete": true }])).unwrap();
     let ended = script.send(Payload::AssistantMessage { item_id: "msg-1".into(), text: "On it".into(), completed: true, blocks: Some(blocks) });
     assert_eq!((&ended[0]["metadata"]["completed"], &ended[0]["metadata"]["blocks"][0]["kind"]), (&json!(true), &json!("code")));

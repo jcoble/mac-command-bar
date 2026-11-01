@@ -19,14 +19,6 @@ pub const RECONCILIATION_BYTES: u64 = 4 * 1024 * 1024;
 const TOOL_SUMMARY_CHARS: usize = 200;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CodexChildRollout {
-    pub child_id: String,
-    pub label: String,
-    pub state: String,
-    pub latest_activity: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileIdentity {
     pub device: u64,
     pub inode: u64,
@@ -114,16 +106,6 @@ pub fn child_watch_directory(
 /// Whether Claude's own transcript for this session holds a turn to resume.
 pub fn claude_transcript_holds_a_turn(native_session_id: &str) -> Result<bool, String> {
     claude::holds_a_turn(&safe_session_id(native_session_id)?)
-}
-
-#[cfg(test)]
-pub(crate) use codex::CHILD_SILENCE_LIMIT;
-
-pub(crate) fn scan_codex_child_rollouts(
-    parent_path: &Path,
-    parent_id: &str,
-) -> Result<Vec<CodexChildRollout>, String> {
-    codex::scan_child_rollouts(parent_path, parent_id)
 }
 
 pub fn inspect(path: &Path) -> Result<Option<TranscriptLocation>, String> {
@@ -405,8 +387,7 @@ pub fn tool_record(
             summary,
             output: None,
             path,
-            diff, has_detail: false, added: None, removed: None,
-        }),
+            diff, }),
     }
 }
 
@@ -463,8 +444,7 @@ pub fn tool_output_record(item_id: &str, output: String, timestamp_ms: u128) -> 
             summary: None,
             output: Some(output),
             path: None,
-            diff: None, has_detail: false, added: None, removed: None,
-        }),
+            diff: None, }),
     }
 }
 

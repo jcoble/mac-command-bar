@@ -244,8 +244,8 @@
   }
 
   setContext<ConversationDisclosureContext>(conversationDisclosureContext, {
-    get ownedId() { return historyOwnedId; }, get(key) { return disclosures[key]; },
-    set(key, open) { if (disclosures[key] === open) return; follow = false; disclosures = { ...disclosures, [key]: open }; saveView(); }
+    get(key) { return disclosures[key]; },
+    set(key, open) { follow = false; disclosures = { ...disclosures, [key]: open }; saveView(); }
   });
 
   function countDiffLines(item: ConversationDisplayItem, diffText: string): { added: number; removed: number } {
@@ -276,7 +276,7 @@
         const path = toolFilePath(item);
         if (path && !seenPaths.has(path)) {
           seenPaths.add(path);
-          edits.push({ path, ...(item.diff || item.added == null ? countDiffLines(item, item.diff ?? '') : { added: item.added, removed: item.removed ?? 0 }) });
+          edits.push({ path, ...countDiffLines(item, item.diff ?? '') });
         }
       } else if (item.kind === 'file' && item.completed) {
         const p = typeof item.metadata?.path === 'string' ? item.metadata.path : '';

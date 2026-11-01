@@ -1554,7 +1554,7 @@ mod tests {
 
     fn tool(state: ToolState, summary: Option<&str>) -> Payload {
         Payload::Tool { item_id: "t1".into(), name: "start_run".into(), state, summary: summary.map(str::to_string),
-            output: None, path: None, diff: None, has_detail: false, added: None, removed: None, }
+            output: None, path: None, diff: None, }
     }
 
     #[test]
@@ -2120,7 +2120,7 @@ mod tests {
 
     fn edit(output: Option<String>, diff: Option<String>) -> Payload {
         Payload::Tool { item_id: "edit".into(), name: "Edit".into(), state: ToolState::Completed, summary: Some("notes.txt".into()),
-            output, path: Some("/work/notes.txt".into()), diff, has_detail: false, added: None, removed: None, }
+            output, path: Some("/work/notes.txt".into()), diff, }
     }
 
     #[tokio::test]
@@ -2130,7 +2130,7 @@ mod tests {
         let diff = "--- a/notes.txt\n+++ b/notes.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n";
         file_session(&state, "lane", vec![
             Payload::Tool { item_id: "edit".into(), name: "Edit".into(), state: ToolState::Started, summary: None,
-                output: None, path: None, diff: None, has_detail: false, added: None, removed: None, },
+                output: None, path: None, diff: None, },
             edit(Some("Wrote 2 lines".into()), Some(diff.into())),
             tool(ToolState::Completed, Some("wc -l notes.txt")),
         ]);
@@ -2152,7 +2152,7 @@ mod tests {
         let token = paired(&state, &base).await;
         // Imported history stores the call, then its output in a later event with no name or summary.
         let call = |name: &str, state, summary: Option<&str>, output: Option<&str>| Payload::Tool { item_id: "tool-a".into(),
-            name: name.into(), state, summary: summary.map(str::to_string), output: output.map(str::to_string), path: None, diff: None, has_detail: false, added: None, removed: None, };
+            name: name.into(), state, summary: summary.map(str::to_string), output: output.map(str::to_string), path: None, diff: None, };
         file_session(&state, "lane", vec![
             call("shell", ToolState::Started, Some("ls"), None),
             call("", ToolState::Completed, None, Some("result")),

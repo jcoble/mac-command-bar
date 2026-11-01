@@ -6,7 +6,7 @@
 //! starts, and the whole reply a provider re-sends when it finishes one
 //! (`record_finished_reply` in `manager.rs`). Remote sessions reach the desktop
 //! as the same native events, so they are projected here the same way.
-use super::{agui::{self, ResumeStatus, RunAgentInput}, manager::tool_call};
+use super::agui::{self, ResumeStatus, RunAgentInput};
 use super::protocol::{
     AgentConversationEvent, AgentConversationPayload as Payload, AgentUserInputAction,
     AgentUserInputField, AgentUserInputKind, ApprovalState, ConversationConnectionState, ToolState, TurnState,
@@ -58,10 +58,10 @@ pub struct Opened {
     pub live: Vec<(u64, i64, Vec<Value>)>,
 }
 
-/// A call still open: its latest arguments, output and diff, as updates may
-/// carry each one only once.
+/// The latest fields of a call this turn: imported output can follow completion.
 #[derive(Default)]
 struct OpenCall {
+    name: String,
     args: Map<String, Value>,
     output: Option<String>,
     diff: Option<String>,
@@ -454,16 +454,12 @@ impl View {
     /// latest ones and the native call as its result, which the client draws the row from.
     fn tool(&mut self, out: &mut Vec<Value>, event: &AgentConversationEvent, id: &str, name: &str, state: ToolState, fields: [&Option<String>; 4]) {
         let [summary, path, output, diff] = fields;
-        if self.ended.contains(id) { // Imported history sends a finished call's output in an event of its own.
-            if output.is_some() || diff.is_some() || matches!(event.payload, Payload::Tool { has_detail: true, .. }) {
-                out.push(agui::tool_result(id, &serde_json::to_string(&tool_call::without_details(event.clone()).payload).unwrap_or_default(), state == ToolState::Failed));
-            }
-            return;
-        }
+        let ended = self.ended.contains(id);
         let call = self.tools.entry(id.to_string()).or_insert_with(|| {
             out.push(agui::tool_start(id, name, Some(id), facts(event, "mcp-tool")));
             OpenCall::default()
         });
+        if !name.is_empty() { call.name = name.to_string(); }
         let first = call.args.is_empty();
         for (key, value) in [("summary", summary), ("path", path)] { if let Some(value) = value { call.args.insert(key.into(), json!(value)); } }
         call.output = output.clone().or(call.output.take());
@@ -471,20 +467,21 @@ impl View {
         if first && !call.args.is_empty() {
             out.push(agui::tool_args(id, &Value::Object(call.args.clone())));
         }
-        if !matches!(state, ToolState::Completed | ToolState::Failed) {
-            // A running call's output so far reaches an open row; each result replaces the one before.
-            if output.as_deref().is_some_and(|text| !text.is_empty()) {
-                out.push(agui::tool_result(id, &serde_json::to_string(&event.payload).unwrap_or_default(), false));
-            }
-            return;
+        let payload = Payload::Tool {
+            item_id: id.to_string(), name: call.name.clone(), state,
+            summary: call.args.get("summary").and_then(Value::as_str).map(str::to_owned),
+            path: call.args.get("path").and_then(Value::as_str).map(str::to_owned),
+            output: call.output.clone(), diff: call.diff.clone(),
+        };
+        let completed = matches!(state, ToolState::Completed | ToolState::Failed);
+        if completed && !ended {
+            out.push(agui::tool_end(id, &Value::Object(call.args.clone())));
         }
-        let call = self.tools.remove(id).unwrap_or_default();
-        out.push(agui::tool_end(id, &Value::Object(call.args)));
-        // The finished row keeps what it shows closed; opening it reads the output and diff by id.
-        let mut finished = event.clone();
-        if let Payload::Tool { output, diff, .. } = &mut finished.payload { (*output, *diff) = (call.output, call.diff); }
-        let payload = serde_json::to_string(&tool_call::without_details(finished).payload).unwrap_or_default();
-        out.push(agui::tool_result(id, &payload, state == ToolState::Failed));
+        if completed || output.is_some() || diff.is_some() {
+            // Stock clients replace each result, so sparse later events carry the accumulated call.
+            out.push(agui::tool_result(id, &serde_json::to_string(&payload).unwrap_or_default(), state == ToolState::Failed));
+        }
+        if !completed { return; }
         self.ended.insert(id.to_string());
     }
 
@@ -553,7 +550,7 @@ impl View {
         out.extend(texts.iter().map(|id| agui::text_end(id, json!({ "completed": true }))));
         let mut tools: Vec<(String, OpenCall)> = self.tools.drain().collect();
         tools.sort_by(|a, b| a.0.cmp(&b.0));
-        out.extend(tools.into_iter().map(|(id, call)| agui::tool_end(&id, &Value::Object(call.args))));
+        out.extend(tools.into_iter().filter(|(id, _)| !self.ended.contains(id)).map(|(id, call)| agui::tool_end(&id, &Value::Object(call.args))));
         let mut children: Vec<String> = self.children.drain().filter(|(_, finished)| !finished).map(|(id, _)| id).collect();
         children.sort();
         out.extend(children.iter().map(|id| agui::subagent_finished(id)));

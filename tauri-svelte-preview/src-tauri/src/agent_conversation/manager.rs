@@ -53,7 +53,7 @@ use super::providers::{
     AgentRuntimeAdapter, AgentRuntimeError, GeneratedText, InitializeAgentInput, LoadAgentSession,
     NewAgentSession, PermissionResponse, ProviderRegistry, StructuredRuntimeHandle,
 };
-use super::history::transcript::{self, CodexChildRollout};
+use super::history::transcript;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 /// How much of a conversation opening it hands over, in bytes of stored event.
@@ -84,7 +84,6 @@ const TITLE_SOURCE_USER: &str = "user";
 /// given to name a session by. A name comes from the shape of an exchange, not
 /// from all of it, and the call is billed by the token.
 const TITLE_INPUT_CHAR_CAP: usize = 1_000;
-const CHILD_ROLLOUT_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
 pub type ConversationEmitter = std::sync::Arc<dyn Fn(AgentConversationEvent) + Send + Sync>;
 pub type BrokerEmitter = std::sync::Arc<dyn Fn(WorkflowBrokerEvent) + Send + Sync>;
@@ -134,7 +133,7 @@ struct PendingPermission {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ClaudeChildSession {
+struct NativeChildSession {
     parent_id: String,
     transcript_id: String,
     label: Option<String>,
@@ -242,10 +241,7 @@ pub struct ManagedAgentSession {
     autonomous_turn_started: bool,
     /// The Claude adapter forwards Claude Code's running and idle state.
     claude_reports_state: bool,
-    child_rollout_scan: Option<tokio::task::JoinHandle<()>>,
-    child_rollout_parent_path: Option<PathBuf>,
-    codex_children: HashMap<String, CodexChildRollout>,
-    claude_children: HashMap<String, ClaudeChildSession>,
+    native_children: HashMap<String, NativeChildSession>,
     rail_meta: AgentConversationSessionMeta,
     /// Where the current name came from: the first prompt, the utility model, or
     /// the person. A session recovered from a row written before this was
@@ -653,7 +649,7 @@ impl AgentRuntimeManager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !sessions.contains_key(owned_id) {
-            disconnect_claude_children(&mut session, &self.emitter);
+            disconnect_native_children(&mut session, &self.emitter);
             sessions.insert(owned_id.to_string(), session);
         }
         Ok(true)
@@ -1629,12 +1625,6 @@ impl AgentRuntimeManager {
             }
             if let Some(task) = prior
                 .as_mut()
-                .and_then(|session| session.child_rollout_scan.take())
-            {
-                task.abort();
-            }
-            if let Some(task) = prior
-                .as_mut()
                 .and_then(|session| session.cancel_deadline.take())
             {
                 task.abort();
@@ -1683,7 +1673,6 @@ impl AgentRuntimeManager {
             ordered_events,
             pool_key,
             native_session_id,
-            child_rollout_scan,
             from_cwd,
         ) = {
             let mut sessions = self
@@ -1710,7 +1699,6 @@ impl AgentRuntimeManager {
                 session.ordered_events.take(),
                 session.pool_key.take(),
                 session.native_session_id.clone(),
-                session.child_rollout_scan.take(),
                 from_cwd,
             )
         };
@@ -1741,13 +1729,9 @@ impl AgentRuntimeManager {
                     session.transport = transport;
                     session.ordered_events = ordered_events;
                     session.pool_key = pool_key;
-                    session.child_rollout_scan = child_rollout_scan;
                 }
                 return Err(error);
             }
-        }
-        if let Some(task) = child_rollout_scan {
-            task.abort();
         }
 
         let mut sessions = self
@@ -1884,7 +1868,7 @@ impl AgentRuntimeManager {
         }
         let mut prior = sessions.remove(&owned_id);
         if let Some(session) = prior.as_mut() {
-            disconnect_claude_children(session, &self.emitter);
+            disconnect_native_children(session, &self.emitter);
         }
         let generation = prior
             .as_ref()
@@ -1953,12 +1937,9 @@ impl AgentRuntimeManager {
                 autonomous_turn_id: None,
                 autonomous_turn_started: false,
                 claude_reports_state: false,
-                child_rollout_scan: None,
-                child_rollout_parent_path: None,
-                codex_children: HashMap::new(),
-                claude_children: prior
+                native_children: prior
                     .as_ref()
-                    .map(|session| session.claude_children.clone())
+                    .map(|session| session.native_children.clone())
                     .unwrap_or_default(),
                 // A replacement generation is the same conversation, so it keeps
                 // the name it was given and where that name came from. Starting
@@ -2597,7 +2578,6 @@ impl AgentRuntimeManager {
             (native_session_id, ordered_events, admitted.sequence)
         };
 
-        self.start_child_rollout_scan(owned_id, generation)?;
         let params = prompt_params(native_session_id, input);
         spawn_prompt_completion(transport, ordered_events, turn_id.clone(), params).await;
         Ok(AgentConversationSendReceipt {
@@ -2607,75 +2587,6 @@ impl AgentRuntimeManager {
             user_item_id,
             admitted_sequence,
         })
-    }
-
-    fn start_child_rollout_scan(&self, owned_id: &str, generation: u64) -> Result<(), String> {
-        let mut sessions = self
-            .sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let session = current_session_mut(&mut sessions, owned_id, generation)?;
-        if session.provider != AgentConversationProvider::Codex {
-            return Ok(());
-        }
-        if let Some(task) = session.child_rollout_scan.take() {
-            task.abort();
-        }
-        let native_session_id = session
-            .native_session_id
-            .clone()
-            .ok_or_else(|| "Structured provider session has not started".to_string())?;
-        let manager = self.clone();
-        let owned_id = owned_id.to_string();
-        session.child_rollout_scan = Some(tokio::spawn(async move {
-            run_child_rollout_scan(manager, owned_id, generation, native_session_id).await;
-        }));
-        Ok(())
-    }
-
-    async fn finish_child_rollout_scan(&self, owned_id: &str, generation: u64, turn_id: &str) {
-        let scan = {
-            let mut sessions = self
-                .sessions
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) else {
-                return;
-            };
-            if session.active_turn_id.as_deref() != Some(turn_id) {
-                return;
-            }
-            session.native_session_id.clone().map(|native_session_id| {
-                (native_session_id, session.child_rollout_parent_path.clone())
-            })
-        };
-        let Some((native_session_id, parent_path)) = scan else {
-            return;
-        };
-        let outcome = scan_codex_children_once(
-            &Arc::downgrade(&self.sessions),
-            &self.emitter,
-            owned_id,
-            generation,
-            &native_session_id,
-            parent_path,
-        )
-        .await;
-        if outcome.is_some_and(|outcome| outcome.has_running_children) {
-            return;
-        }
-        let mut sessions = self
-            .sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) else {
-            return;
-        };
-        if session.active_turn_id.as_deref() == Some(turn_id) {
-            if let Some(task) = session.child_rollout_scan.take() {
-                task.abort();
-            }
-        }
     }
 
     /// Run one product action through the current structured agent without
@@ -3286,7 +3197,7 @@ impl AgentRuntimeManager {
                     record_payload_for_session_and_dispatch(session, &self.emitter,
                         AgentConversationPayload::UserInputResolved { request_id, cancelled: true })?;
                 }
-                disconnect_claude_children(session, &self.emitter);
+                disconnect_native_children(session, &self.emitter);
                 session.background_work.clear();
                 session.live_tool_calls.clear();
                 finish_autonomous_turn(session, &self.emitter,
@@ -4182,11 +4093,7 @@ impl AgentRuntimeManager {
                 native_session_mode: Some(AgentNativeSessionMode::Resume),
             },
         )?;
-        if let Some(mut session) = sessions.remove(owned_id) {
-            if let Some(task) = session.child_rollout_scan.take() {
-                task.abort();
-            }
-        }
+        sessions.remove(owned_id);
         Ok(true)
     }
 
@@ -4340,9 +4247,7 @@ impl AgentRuntimeManager {
                 );
             }
             let transport = session.transport.take();
-            if let Some(task) = session.child_rollout_scan.take() {
-                task.abort();
-            }
+
             abort_cancel_deadline(session);
             session.ordered_events = None;
             let pending_permission_rows = session.permission_requests.drain().collect::<Vec<_>>();
@@ -4936,8 +4841,8 @@ struct StoredSessionExtra {
     capabilities: AgentCapabilities,
     #[serde(default)]
     rail_meta: AgentConversationSessionMeta,
-    #[serde(default)]
-    claude_children: HashMap<String, ClaudeChildSession>,
+    #[serde(default, rename = "claudeChildren")]
+    native_children: HashMap<String, NativeChildSession>,
     #[serde(default)]
     helper_of: Option<String>,
 }
@@ -4960,7 +4865,7 @@ pub(super) fn imported_session_extra(
         config: AgentConversationConfigState::default(),
         capabilities: empty_capabilities(provider),
         rail_meta: AgentConversationSessionMeta::default(),
-        claude_children: HashMap::new(),
+        native_children: HashMap::new(),
         helper_of: None,
     })
     .map_err(|error| format!("Could not encode imported session metadata: {error}"))
@@ -4984,7 +4889,7 @@ fn persisted_session_row_for_candidate(
         config: session.config.clone(),
         capabilities: candidate.capabilities.clone(),
         rail_meta: session.rail_meta.clone(),
-        claude_children: session.claude_children.clone(),
+        native_children: session.native_children.clone(),
         helper_of: session.helper_of.clone(),
     };
     Ok(SessionRow {
@@ -5152,10 +5057,7 @@ fn recovered_session_from_row(
         autonomous_turn_id: None,
         autonomous_turn_started: false,
         claude_reports_state: false,
-        child_rollout_scan: None,
-        child_rollout_parent_path: None,
-        codex_children: HashMap::new(),
-        claude_children: stored.claude_children,
+        native_children: stored.native_children,
         rail_meta: stored.rail_meta,
         title_source: row.title_source,
         suspending: false, turn_usage: Default::default(),
@@ -5474,7 +5376,7 @@ pub(super) fn selected_item_page(page: ItemPage) -> Result<AgentConversationItem
         events: page
             .events
             .into_iter()
-            .map(|row| stored_event(row).map(tool_call::without_details))
+            .map(|row| stored_event(row))
             .collect::<Result<Vec<_>, _>>()?,
         turns: page
             .turns
@@ -5889,31 +5791,30 @@ async fn pump_inbound(
                     // Claude is completed locally by cancel_turn; cancelTurns can still emit updates (TSK-1508 cancel probes).
                     if session.suspending || (session.provider == AgentConversationProvider::Claude
                         && session.state == AgentRuntimeState::Interrupting) { break 'update false; }
-                    let child_content = is_known_claude_child_inbound(session, &params);
+                    let child_content = is_known_native_child_inbound(session, &params);
                     if child_content
                         || matches!(
                             session_update_kind(&params),
-                            Some("subagent_spawned" | "subagent_state_update")
+                            Some("subagent_spawned" | "subagent_state_update" | "subagent_update")
                         )
                     {
                         runtime_error = false;
                     }
-                    if let Some(payload) = claude_native_child_payload(session, &params) {
-                        let reached_quiescence = session_is_quiescent(session);
+                    if let Some(payload) = native_child_payload(session, &params) {
                         if session.writer_lease.owner == AgentWriterLeaseOwner::Structured {
                             if let Err(error) =
                                 record_payload_for_session_and_dispatch(session, &emitter, payload)
                             {
                                 crate::debug_log::stderr_log!(
-                                    "Could not record Claude child lifecycle: {error}"
+                                    "Could not record native child lifecycle: {error}"
                                 );
                             }
                         } else if let Err(error) = persist_session(session) {
                             crate::debug_log::stderr_log!(
-                                "Could not persist Claude child lifecycle: {error}"
+                                "Could not persist native child lifecycle: {error}"
                             );
                         }
-                        break 'update reached_quiescence;
+                        break 'update session_is_quiescent(session);
                     }
                     // Native child content belongs to the child's provider transcript.
                     // The parent journal carries only spawn/state metadata.
@@ -6212,7 +6113,7 @@ async fn pump_inbound(
                     if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
                         continue;
                     }
-                    let child_scoped = is_known_claude_child_inbound(session, &params);
+                    let child_scoped = is_known_native_child_inbound(session, &params);
                     session.next_user_input_id = session.next_user_input_id.saturating_add(1);
                     let request_id = format!("input-{}", session.next_user_input_id);
                     let lifecycle = lifecycle_update_for_state(
@@ -6289,7 +6190,7 @@ async fn pump_inbound(
                     continue;
                 }
                 let request_id = format!("perm-{}", uuid::Uuid::new_v4());
-                let child_scoped = is_known_claude_child_inbound(session, &params);
+                let child_scoped = is_known_native_child_inbound(session, &params);
                 let lifecycle = lifecycle_update_for_state(
                     session,
                     AgentRuntimeState::WaitingApproval,
@@ -6348,9 +6249,7 @@ async fn settle_closed_transport(
                 .as_ref()
                 .is_some_and(|current| Arc::ptr_eq(current, transport))
         }) {
-            if let Some(task) = session.child_rollout_scan.take() {
-                task.abort();
-            }
+
             abort_cancel_deadline(session);
             session.runtime = None;
             session.transport = None;
@@ -6380,7 +6279,7 @@ async fn settle_closed_transport(
                     },
                 );
             }
-            disconnect_claude_children(session, &emitter);
+            disconnect_native_children(session, &emitter);
             for (item_id, _) in session.background_work.drain().collect::<Vec<_>>() {
                 if item_id.starts_with("background-task:") {
                     let _ = record_payload_for_session_and_dispatch(
@@ -6395,8 +6294,7 @@ async fn settle_closed_transport(
                             ),
                             output: None,
                             path: None,
-                            diff: None, has_detail: false, added: None, removed: None,
-                        },
+                            diff: None, },
                     );
                 }
             }
@@ -6478,7 +6376,7 @@ fn routed_session_for_inbound(
             .filter(matching_transport)
             .find(|session| {
                 session.native_session_id.as_deref() == Some(native_session_id)
-                    || session.claude_children.contains_key(native_session_id)
+                    || session.native_children.contains_key(native_session_id)
                     || is_claude_replay_session_id(session, native_session_id)
             })
             .map(|session| (session.owned_id.clone(), session.generation));
@@ -6509,10 +6407,10 @@ fn inbound_native_session_id(params: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-fn is_known_claude_child_inbound(session: &ManagedAgentSession, params: &Value) -> bool {
+fn is_known_native_child_inbound(session: &ManagedAgentSession, params: &Value) -> bool {
     inbound_native_session_id(params)
         .is_some_and(|session_id| {
-            session.claude_children.contains_key(session_id)
+            session.native_children.contains_key(session_id)
                 || is_claude_replay_session_id(session, session_id)
         })
 }
@@ -6702,87 +6600,40 @@ fn is_claude_replay_session_id(session: &ManagedAgentSession, session_id: &str) 
         })
 }
 
-fn claude_native_child_payload(
+fn native_child_payload(
     session: &mut ManagedAgentSession,
     params: &Value,
 ) -> Option<AgentConversationPayload> {
-    if session.provider != AgentConversationProvider::Claude {
-        return None;
-    }
-    let update = params.get("update").unwrap_or(params);
-    let kind = session_update_kind(params)?;
-    if !matches!(kind, "subagent_spawned" | "subagent_state_update") {
-        return None;
-    }
-    let child_id = update
-        .get("subagentSessionId")
-        .or_else(|| update.get("subagent_session_id"))
-        .and_then(Value::as_str)?
-        .to_string();
+    let update = super::normalization::native_children::read(params)?;
+    let child_id = update.child_id.to_string();
     if is_claude_replay_session_id(session, &child_id) {
         return None;
     }
-    let parent_id = inbound_native_session_id(params)?.to_string();
-    let existing = session.claude_children.get(&child_id);
-    let transcript_id = existing
-        .map(|child| child.transcript_id.clone())
+    let existing = session.native_children.get(&child_id);
+    let parent_id = update.parent_id.to_string();
+    let transcript_id = existing.map(|child| child.transcript_id.clone())
         .unwrap_or_else(|| durable_claude_agent_id(&child_id).to_string());
-    let label = update
-        .get("name")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| existing.and_then(|child| child.label.clone()));
-    let state = if kind == "subagent_spawned" {
-        "running".to_string()
-    } else {
-        match update
-            .get("state")
-            .and_then(Value::as_str)
-            .unwrap_or("running")
-        {
-            "completed" => "finished".to_string(),
-            other => other.to_string(),
-        }
-    };
-    let terminal = matches!(
-        state.as_str(),
-        "finished" | "failed" | "cancelled" | "disconnected"
-    );
+    let label = update.label.map(str::to_owned).or_else(|| existing.and_then(|child| child.label.clone()));
+    let state = update.state.map(str::to_owned).or_else(|| existing.map(|child| child.state.clone()))
+        .unwrap_or_else(|| "running".into());
+    let terminal = matches!(state.as_str(), "finished" | "failed" | "cancelled" | "disconnected");
+    // This work id is already consumed by the desktop/phone rail; keep its wire identity.
     let work_id = format!("claude-child:{child_id}");
     if terminal {
         if session.background_work.remove(&work_id).is_some() {
             expect_claude_wake(session);
         }
     } else {
-        insert_background_work(
-            &mut session.background_work,
-            work_id,
-            BackgroundWorkKind::Subagent,
-            label.clone().unwrap_or_default(),
-        );
+        insert_background_work(&mut session.background_work, work_id, BackgroundWorkKind::Subagent,
+            label.clone().unwrap_or_default());
     }
-    session.claude_children.insert(
-        child_id.clone(),
-        ClaudeChildSession {
-            parent_id: parent_id.clone(),
-            transcript_id: transcript_id.clone(),
-            label: label.clone(),
-            state: state.clone(),
-        },
-    );
+    session.native_children.insert(child_id.clone(), NativeChildSession {
+        parent_id: parent_id.clone(), transcript_id: transcript_id.clone(), label: label.clone(), state: state.clone(),
+    });
     Some(AgentConversationPayload::ChildUpdate {
-        child_id,
-        parent_tool_call_id: parent_id.clone(),
-        parent_id: Some(parent_id),
-        transcript_id: Some(transcript_id),
-        label,
-        state,
-        latest_activity: update
-            .get("task")
-            .and_then(Value::as_str)
-            .map(|value| value.chars().take(160).collect()),
+        child_id, parent_tool_call_id: parent_id.clone(), parent_id: Some(parent_id),
+        transcript_id: Some(transcript_id), label, state,
+        latest_activity: update.activity.map(|text| text.chars().take(160).collect()),
     })
 }
 
@@ -6796,12 +6647,12 @@ fn durable_claude_agent_id(session_id: &str) -> &str {
         .unwrap_or(session_id)
 }
 
-fn disconnect_claude_children(
+fn disconnect_native_children(
     session: &mut ManagedAgentSession,
     emitter: &Arc<Mutex<Option<ConversationEmitter>>>,
 ) {
     let active = session
-        .claude_children
+        .native_children
         .iter()
         .filter(|(_, child)| {
             !matches!(
@@ -6812,7 +6663,7 @@ fn disconnect_claude_children(
         .map(|(child_id, child)| (child_id.clone(), child.clone()))
         .collect::<Vec<_>>();
     for (child_id, child) in active {
-        if let Some(stored) = session.claude_children.get_mut(&child_id) {
+        if let Some(stored) = session.native_children.get_mut(&child_id) {
             stored.state = "disconnected".to_string();
         }
         session.background_work.remove(&format!("claude-child:{child_id}"));
@@ -6935,8 +6786,7 @@ fn stopped_background_task_payload(
         summary: Some("Stopped".into()),
         output: None,
         path: None,
-        diff: None, has_detail: false, added: None, removed: None,
-    })
+        diff: None, })
 }
 
 fn background_task_payload(params: &Value) -> Option<AgentConversationPayload> {
@@ -6985,8 +6835,7 @@ fn background_task_payload(params: &Value) -> Option<AgentConversationPayload> {
         summary,
         output: None,
         path: None,
-        diff: None, has_detail: false, added: None, removed: None,
-    })
+        diff: None, })
 }
 
 fn background_command_exit_code(path: &str) -> Option<i32> {
@@ -7009,157 +6858,6 @@ fn raw_update_failed(params: &Value) -> bool {
         .or_else(|| update.get("state"))
         .and_then(Value::as_str)
         == Some("failed")
-}
-
-async fn run_child_rollout_scan(
-    manager: AgentRuntimeManager,
-    owned_id: String,
-    generation: u64,
-    native_session_id: String,
-) {
-    let sessions = Arc::downgrade(&manager.sessions);
-    let mut parent_path = None;
-    loop {
-        let Some(outcome) = scan_codex_children_once(
-            &sessions,
-            &manager.emitter,
-            &owned_id,
-            generation,
-            &native_session_id,
-            parent_path,
-        )
-        .await
-        else {
-            return;
-        };
-        parent_path = Some(outcome.parent_path);
-        // After the turn ends, keep polling only while a child is still working.
-        if !outcome.keep_scanning {
-            // The last child finished after the turn did, so the idle process
-            // may stop now. Detach this task first so stopping does not abort it.
-            if let Ok(session) = current_session_mut(
-                &mut manager.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-                &owned_id,
-                generation,
-            ) {
-                session.child_rollout_scan.take();
-            }
-            if let Err(error) = manager.suspend_if_quiescent(&owned_id, generation).await {
-                crate::debug_log::stderr_log!("Could not tear down quiescent runtime: {error}");
-            }
-            return;
-        }
-        tokio::time::sleep(CHILD_ROLLOUT_SCAN_INTERVAL).await;
-    }
-}
-
-struct ChildRolloutScanOutcome {
-    parent_path: PathBuf,
-    has_running_children: bool,
-    keep_scanning: bool,
-}
-
-async fn scan_codex_children_once(
-    sessions: &Weak<Mutex<HashMap<String, ManagedAgentSession>>>,
-    emitter: &Arc<Mutex<Option<ConversationEmitter>>>,
-    owned_id: &str,
-    generation: u64,
-    native_session_id: &str,
-    parent_path: Option<PathBuf>,
-) -> Option<ChildRolloutScanOutcome> {
-    let native_id = native_session_id.to_string();
-    let scan_parent_id = native_id.clone();
-    let scan = tokio::task::spawn_blocking(move || {
-        let path = match parent_path {
-            Some(path) => path,
-            None => {
-                transcript::discover(AgentConversationProvider::Codex, &native_id)
-                    .ok()
-                    .flatten()?
-                    .canonical_path
-            }
-        };
-        transcript::scan_codex_child_rollouts(&path, &scan_parent_id)
-            .ok()
-            .map(|children| (path, children))
-    })
-    .await
-    .ok()
-    .flatten()?;
-    let (parent_path, children) = scan;
-    let sessions = sessions.upgrade()?;
-    let mut sessions = sessions
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let session = current_session_mut(&mut sessions, owned_id, generation).ok()?;
-    let turn_active = session.active_turn_id.is_some();
-    let had_running_children = session
-        .codex_children
-        .values()
-        .any(|child| child.state == "running");
-    if session.provider != AgentConversationProvider::Codex
-        || session.state == AgentRuntimeState::Closed
-        // Once the turn ends, only a previously running child earns another scan.
-        || (!turn_active && !had_running_children)
-    {
-        return None;
-    }
-    session.child_rollout_parent_path = Some(parent_path.clone());
-    let (updates, has_running_children, keep_scanning) = child_rollout_scan_updates(
-        native_session_id,
-        &mut session.codex_children,
-        children,
-        turn_active,
-    );
-    for payload in updates {
-        if let Err(error) = record_payload_for_session_and_dispatch(session, emitter, payload) {
-            crate::debug_log::stderr_log!("Could not record child session update: {error}");
-            break;
-        }
-    }
-    Some(ChildRolloutScanOutcome {
-        parent_path,
-        has_running_children,
-        keep_scanning,
-    })
-}
-
-fn child_rollout_scan_updates(
-    parent_id: &str,
-    known: &mut HashMap<String, CodexChildRollout>,
-    children: Vec<CodexChildRollout>,
-    turn_active: bool,
-) -> (Vec<AgentConversationPayload>, bool, bool) {
-    let has_running_children = children.iter().any(|child| child.state == "running");
-    (
-        changed_child_updates(parent_id, known, children),
-        has_running_children,
-        turn_active || has_running_children,
-    )
-}
-
-fn changed_child_updates(
-    parent_id: &str,
-    known: &mut HashMap<String, CodexChildRollout>,
-    children: Vec<CodexChildRollout>,
-) -> Vec<AgentConversationPayload> {
-    let mut updates = Vec::new();
-    for child in children {
-        if known.get(&child.child_id) == Some(&child) {
-            continue;
-        }
-        updates.push(AgentConversationPayload::ChildUpdate {
-            child_id: child.child_id.clone(),
-            parent_tool_call_id: parent_id.to_string(),
-            parent_id: None,
-            transcript_id: None,
-            label: Some(child.label.clone()),
-            state: child.state.clone(),
-            latest_activity: Some(child.latest_activity.clone()),
-        });
-        known.insert(child.child_id.clone(), child);
-    }
-    updates
 }
 
 async fn handle_ordered_session_event(
@@ -7251,7 +6949,6 @@ async fn handle_ordered_session_event(
             true
         }
         OrderedSessionEvent::PromptResult { turn_id, result } => {
-            manager.finish_child_rollout_scan(owned_id, generation, &turn_id).await;
             if let Err(error) = super::history::follow_imported_length(&manager.store, owned_id, false) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
             let cancelled = result
                 .as_ref()
@@ -7847,7 +7544,7 @@ fn projected_background_work(session: &ManagedAgentSession) -> Vec<BackgroundWor
                 kind: entry.kind,
                 label: id
                     .strip_prefix("claude-child:")
-                    .and_then(|child_id| session.claude_children.get(child_id))
+                    .and_then(|child_id| session.native_children.get(child_id))
                     .and_then(|child| child.label.clone())
                     .unwrap_or_else(|| entry.label.clone()),
                 started_at_ms: entry.started_at_ms,
@@ -7899,8 +7596,6 @@ fn session_is_quiescent(session: &ManagedAgentSession) -> bool {
         && session.writer_lease_transition.is_none()
         && session.live_tool_calls.is_empty()
         && session.background_work.is_empty()
-        // Stopping the process would stop a Codex sub-agent still at work.
-        && !session.codex_children.values().any(|child| child.state == "running")
 }
 
 fn abort_cancel_deadline(session: &mut ManagedAgentSession) {
@@ -8004,7 +7699,7 @@ mod tests {
     mod helper_messages;
     mod checkout;
     mod model_effort; mod permissions;
-    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close; mod agui_steer; mod lazy_tool_rows; mod terminal_output;
+    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close; mod agui_steer; mod eager_tool_rows; mod native_children; mod terminal_output;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
@@ -8235,118 +7930,7 @@ mod tests {
         path
     }
 
-    #[test]
-    fn child_rollout_scan_emits_once_until_metadata_changes() {
-        let root = temp_root();
-        let parent_directory = root.join("2026/08/13");
-        let today_directory = root.join(chrono::Local::now().format("%Y/%m/%d").to_string());
-        fs::create_dir_all(&parent_directory).unwrap();
-        fs::create_dir_all(&today_directory).unwrap();
-        let parent = parent_directory.join("rollout-parent.jsonl");
-        fs::write(
-            &parent,
-            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"parent\"}}\n",
-        )
-        .unwrap();
-        fs::write(
-            today_directory.join("rollout-child.jsonl"),
-            concat!(
-                "{\"type\":\"session_meta\",\"payload\":{",
-                "\"id\":\"child-1\",\"parent_thread_id\":\"parent\",",
-                "\"thread_source\":\"subagent\",",
-                "\"source\":{\"subagent\":{\"thread_spawn\":{",
-                "\"agent_path\":\"/root/probe\",\"agent_role\":\"explore\"}}}}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"text\":\"ignored\"}}\n"
-            ),
-        )
-        .unwrap();
-        let children = transcript::scan_codex_child_rollouts(&parent, "parent").unwrap();
-        let mut known = HashMap::new();
 
-        assert_eq!(
-            changed_child_updates("parent", &mut known, children.clone()),
-            vec![AgentConversationPayload::ChildUpdate {
-                child_id: "child-1".into(),
-                parent_tool_call_id: "parent".into(),
-                parent_id: None,
-                transcript_id: None,
-                label: Some("probe (explore)".into()),
-                state: "running".into(),
-                latest_activity: Some("Running".into()),
-            }]
-        );
-        assert!(changed_child_updates("parent", &mut known, children).is_empty());
-        // The child's own transcript says when its turn ends, however long it was quiet before.
-        let child = today_directory.join("rollout-child.jsonl");
-        let append = |line: &str| {
-            use std::io::Write;
-            writeln!(fs::OpenOptions::new().append(true).open(&child).unwrap(), "{line}").unwrap();
-        };
-        let state = || transcript::scan_codex_child_rollouts(&parent, "parent").unwrap()[0].state.clone();
-        append(r#"{"type":"event_msg","payload":{"type":"task_started"}}"#);
-        assert_eq!(state(), "running");
-        append(r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#);
-        assert_eq!(state(), "finished");
-        append(r#"{"type":"event_msg","payload":{"type":"task_started"}}"#);
-        assert_eq!(state(), "running");
-        append(r#"{"type":"event_msg","payload":{"type":"turn_aborted"}}"#);
-        assert_eq!(state(), "finished");
-        // A child that died without its closing record stops counting once it has been silent too long.
-        append(r#"{"type":"event_msg","payload":{"type":"task_started"}}"#);
-        assert_eq!(state(), "running");
-        let silent_since = std::time::SystemTime::now() - transcript::CHILD_SILENCE_LIMIT - Duration::from_secs(60);
-        fs::OpenOptions::new().append(true).open(&child).unwrap().set_modified(silent_since).unwrap();
-        assert_eq!(state(), "finished");
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn child_rollout_scan_outlives_turn_until_running_children_finish() {
-        let running = CodexChildRollout {
-            child_id: "child-1".into(),
-            label: "probe (explore)".into(),
-            state: "running".into(),
-            latest_activity: "Running".into(),
-        };
-        let finished = CodexChildRollout {
-            state: "finished".into(),
-            latest_activity: "Finished".into(),
-            ..running.clone()
-        };
-        let mut known = HashMap::new();
-
-        let (updates, _, keep_scanning) =
-            child_rollout_scan_updates("parent", &mut known, vec![running], true);
-        assert!(keep_scanning);
-        assert_eq!(
-            updates,
-            vec![AgentConversationPayload::ChildUpdate {
-                child_id: "child-1".into(),
-                parent_tool_call_id: "parent".into(),
-                parent_id: None,
-                transcript_id: None,
-                label: Some("probe (explore)".into()),
-                state: "running".into(),
-                latest_activity: Some("Running".into()),
-            }]
-        );
-
-        let (updates, _, keep_scanning) =
-            child_rollout_scan_updates("parent", &mut known, vec![finished], false);
-        assert!(!keep_scanning);
-        assert_eq!(
-            updates,
-            vec![AgentConversationPayload::ChildUpdate {
-                child_id: "child-1".into(),
-                parent_tool_call_id: "parent".into(),
-                parent_id: None,
-                transcript_id: None,
-                label: Some("probe (explore)".into()),
-                state: "finished".into(),
-                latest_activity: Some("Finished".into()),
-            }]
-        );
-    }
 
     /// The stored name of a fixture session, read back the way the rail reads it.
     fn stored_title(fixture: &FixtureManager) -> Option<String> {
@@ -8910,7 +8494,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn claude_native_children_keep_routing_and_transcript_identities_separate() {
         let fixture = fixture_manager_with_provider(
-            "native_claude_children",
+            "native_native_children",
             AgentConversationProvider::Claude,
             None,
         )
@@ -8928,9 +8512,9 @@ mod tests {
                     "name": "Imported child"
                 }
             });
-            assert!(claude_native_child_payload(session, &replayed).is_none());
-            assert!(session.claude_children.is_empty());
-            assert!(is_known_claude_child_inbound(
+            assert!(native_child_payload(session, &replayed).is_none());
+            assert!(session.native_children.is_empty());
+            assert!(is_known_native_child_inbound(
                 session,
                 &json!({
                     "sessionId": replay_id,
@@ -8947,7 +8531,7 @@ mod tests {
                 }
             });
             assert_eq!(
-                claude_native_child_payload(session, &spawned),
+                native_child_payload(session, &spawned),
                 Some(AgentConversationPayload::ChildUpdate {
                     child_id: "agent-a".into(),
                     parent_tool_call_id: root_session_id.clone(),
@@ -8966,7 +8550,7 @@ mod tests {
                     "name": "Researcher"
                 }
             });
-            let nested_payload = claude_native_child_payload(session, &nested).unwrap();
+            let nested_payload = native_child_payload(session, &nested).unwrap();
             assert!(matches!(
                 nested_payload,
                 AgentConversationPayload::ChildUpdate {
@@ -8983,8 +8567,8 @@ mod tests {
                 "sessionId": "agent-b:generation:2",
                 "update": { "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "private child content" } }
             });
-            assert!(is_known_claude_child_inbound(session, &child_content));
-            assert!(claude_native_child_payload(session, &child_content).is_none());
+            assert!(is_known_native_child_inbound(session, &child_content));
+            assert!(native_child_payload(session, &child_content).is_none());
             for (parent, child) in [
                 ("agent-a", "agent-b:generation:2"),
                 (root_session_id.as_str(), "agent-a"),
@@ -8997,7 +8581,7 @@ mod tests {
                         "state": "completed"
                     }
                 });
-                assert!(claude_native_child_payload(session, &completed).is_some());
+                assert!(native_child_payload(session, &completed).is_some());
             }
             assert!(session.background_work.is_empty());
             let still_running = json!({
@@ -9008,9 +8592,9 @@ mod tests {
                     "name": "Late reviewer"
                 }
             });
-            assert!(claude_native_child_payload(session, &still_running).is_some());
-            disconnect_claude_children(session, &fixture.manager.emitter);
-            assert_eq!(session.claude_children["agent-c"].state, "disconnected");
+            assert!(native_child_payload(session, &still_running).is_some());
+            disconnect_native_children(session, &fixture.manager.emitter);
+            assert_eq!(session.native_children["agent-c"].state, "disconnected");
             assert!(session.background_work.is_empty());
             (session.transport.clone().unwrap(), replay_id)
         };
@@ -9299,7 +8883,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn transport_close_disconnects_running_claude_children() {
+    async fn transport_close_disconnects_running_native_children() {
         let fixture = fixture_manager_with_provider(
             "child_then_dies",
             AgentConversationProvider::Claude,
@@ -9332,7 +8916,7 @@ mod tests {
         {
             let sessions = fixture.manager.sessions.lock().unwrap();
             let session = &sessions[&fixture.owned_id];
-            assert_eq!(session.claude_children["child-agent"].state, "disconnected");
+            assert_eq!(session.native_children["child-agent"].state, "disconnected");
             assert!(session.background_work.is_empty());
         }
 
@@ -9499,22 +9083,6 @@ mod tests {
         finish(fixture).await;
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_running_codex_sub_agent_blocks_suspend() {
-        let (fixture, _) = feed_fixture("suspend_codex_child", AgentConversationProvider::Codex).await;
-        fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
-            .codex_children.insert("child-1".into(), CodexChildRollout {
-                child_id: "child-1".into(), label: "probe".into(),
-                state: "running".into(), latest_activity: "Running".into(),
-            });
-        assert!(!fixture
-            .manager
-            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
-            .await
-            .unwrap());
-        assert!(!suspended(&fixture));
-        finish(fixture).await;
-    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn child_terminal_while_cli_running_does_not_suspend() {
@@ -9529,7 +9097,7 @@ mod tests {
         );
         wait_until(|| {
             fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
-                .claude_children
+                .native_children
                 .get("agent-a")
                 .is_some_and(|child| child.state == "finished")
         })
@@ -9700,7 +9268,7 @@ mod tests {
         );
         wait_until(|| {
             fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
-                .claude_children
+                .native_children
                 .get("agent-b")
                 .is_some_and(|child| child.state == "finished")
         })
@@ -9725,7 +9293,7 @@ mod tests {
         );
         wait_until(|| {
             fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
-                .claude_children
+                .native_children
                 .get("agent-a")
                 .is_some_and(|child| child.state == "cancelled")
         })
@@ -9858,7 +9426,7 @@ mod tests {
     /// suspended; the assertion after the wait tells the two apart.
     fn child_finished(fixture: &FixtureManager, child: &str) -> bool {
         fixture.manager.sessions.lock().unwrap().get(&fixture.owned_id).map_or(true, |session| {
-            session.claude_children.get(child).is_some_and(|child| child.state == "finished")
+            session.native_children.get(child).is_some_and(|child| child.state == "finished")
         })
     }
 
@@ -12429,7 +11997,7 @@ mod tests {
                     "name": "Reviewer"
                 }
             });
-            assert!(claude_native_child_payload(session, &child).is_some());
+            assert!(native_child_payload(session, &child).is_some());
             std::thread::sleep(Duration::from_millis(2));
             let command = serde_json::json!({"update": {
                 "sessionUpdate": "async_task_spawned",
@@ -12474,7 +12042,7 @@ mod tests {
                     "state": "running"
                 }
             });
-            assert!(claude_native_child_payload(session, &child_progress).is_some());
+            assert!(native_child_payload(session, &child_progress).is_some());
             let command_progress = serde_json::json!({"update": {
                 "sessionUpdate": "async_task_progress",
                 "asyncTaskId": "task-1",
@@ -12501,7 +12069,7 @@ mod tests {
                     "state": "completed"
                 }
             });
-            assert!(claude_native_child_payload(session, &child_finished).is_some());
+            assert!(native_child_payload(session, &child_finished).is_some());
         }
         let child_finished = serde_json::to_value(&fixture.manager.list_sessions().unwrap()[0]).unwrap();
         let child_finished = child_finished["backgroundWork"].as_array().unwrap();
@@ -15164,8 +14732,7 @@ mod tests {
         ] {
             record_payload_for_session_and_dispatch(session, &manager.emitter, AgentConversationPayload::Tool {
                 item_id: "edit-1".into(), name: "Edit".into(), state,
-                summary: None, output: None, path, diff, has_detail: false, added: None, removed: None,
-            }).unwrap();
+                summary: None, output: None, path, diff, }).unwrap();
         }
         let emitted = seen.lock().unwrap();
         let completion = emitted.last().unwrap();

@@ -276,10 +276,31 @@ pub(super) fn project(value: &Value, line: &[u8], session_id: &str) -> Vec<Proje
             let Some(item_id) = block.get("tool_use_id").and_then(Value::as_str) else {
                 continue;
             };
-            let Some(output) = block.get("content").and_then(super::tool_output_text) else {
+            let output = block.get("content").and_then(super::tool_output_text);
+            // Claude records one toolUseResult beside its single tool_result block.
+            // The imported cc59719f transcript carries the edit hunks here, not in content.
+            let result = value.pointer("/message/content").and_then(Value::as_array)
+                .filter(|blocks| blocks.iter().filter(|block| block["type"] == "tool_result").count() == 1)
+                .and_then(|_| value.get("toolUseResult"));
+            let diff = result.and_then(structured_patch);
+            if output.is_none() && diff.is_none() {
                 continue;
-            };
-            records.push(super::tool_output_record(item_id, output, timestamp(value)));
+            }
+            let mut record = super::tool_output_record(item_id, output.clone().unwrap_or_default(), timestamp(value));
+            if let Some(diff) = diff {
+                let path = result.and_then(|result| result.get("filePath"))
+                    .and_then(Value::as_str).map(str::to_string);
+                record.payload.insert("diff".into(), json!(diff));
+                if let Some(path) = &path {
+                    record.payload.insert("path".into(), json!(path));
+                }
+                if let Some(AgentConversationPayload::Tool { output: row_output, path: row_path, diff: row_diff, .. }) = &mut record.native {
+                    *row_output = output;
+                    *row_path = path;
+                    *row_diff = Some(diff);
+                }
+            }
+            records.push(record);
         }
     }
     let model = value.pointer("/message/model").and_then(Value::as_str);
@@ -434,3 +455,25 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 }
+
+/// Keep the recorded hunk coordinates and context; re-diffing snippets loses line numbers.
+fn structured_patch(result: &Value) -> Option<String> {
+    let hunks = result.get("structuredPatch")?.as_array()?;
+    let mut diff = String::new();
+    for hunk in hunks {
+        let old_start = hunk.get("oldStart")?.as_u64()?;
+        let old_lines = hunk.get("oldLines")?.as_u64()?;
+        let new_start = hunk.get("newStart")?.as_u64()?;
+        let new_lines = hunk.get("newLines")?.as_u64()?;
+        diff.push_str(&format!("@@ -{old_start},{old_lines} +{new_start},{new_lines} @@\n"));
+        for line in hunk.get("lines")?.as_array()? {
+            diff.push_str(line.as_str()?);
+            diff.push('\n');
+        }
+    }
+    (!diff.is_empty()).then_some(diff)
+}
+
+#[cfg(test)]
+#[path = "claude_edit_tests.rs"]
+mod edit_tests;

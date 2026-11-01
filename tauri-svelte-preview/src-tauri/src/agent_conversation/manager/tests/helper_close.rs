@@ -113,16 +113,18 @@ async fn helper_close_waits_for_a_running_native_sub_agent() {
         let mut sessions = fixture.manager.sessions.lock().unwrap();
         let session = sessions.get_mut(&fixture.owned_id).unwrap();
         session.helper_of = Some("parent".into());
-        session.codex_children.insert("child".into(), CodexChildRollout {
-            child_id: "child".into(), label: "probe".into(),
-            state: "running".into(), latest_activity: "Running".into(),
-        });
+        let parent = session.native_session_id.clone().unwrap();
+        native_child_payload(session, &json!({"sessionId":parent,"update":{"sessionUpdate":"subagent_spawned","subagentSessionId":"child","name":"probe"}})).unwrap();
         persist_session(session).unwrap();
     }
     let now = store_timestamp(timestamp_millis()) + HELPER_CLOSE_AFTER_MS + 1;
     assert_eq!(fixture.manager.close_finished_helpers(now).unwrap(), 0);
-    fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
-        .codex_children.get_mut("child").unwrap().state = "finished".into();
+    {
+        let mut sessions = fixture.manager.sessions.lock().unwrap();
+        let session = sessions.get_mut(&fixture.owned_id).unwrap();
+        let parent = session.native_session_id.clone().unwrap();
+        native_child_payload(session, &json!({"sessionId":parent,"update":{"sessionUpdate":"subagent_state_update","subagentSessionId":"child","state":"completed"}})).unwrap();
+    }
     assert_eq!(fixture.manager.close_finished_helpers(now).unwrap(), 1);
     fixture.manager.close(&fixture.owned_id, fixture.generation).await.unwrap();
     fs::remove_dir_all(fixture.root).unwrap();

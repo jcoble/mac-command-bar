@@ -49,7 +49,6 @@
   // A call opened inside this bounded list moves to its top, so its diff or output shows.
   const disclosure = getContext<ConversationDisclosureContext>(conversationDisclosureContext);
   setContext<ConversationDisclosureContext>(conversationDisclosureContext, {
-    get ownedId() { return disclosure?.ownedId ?? ''; },
     get: (key) => disclosure?.get(key),
     set(key, open) {
       disclosure?.set(key, open);
