@@ -30,6 +30,8 @@ const BROWSER_INSPECTOR_POLL_SCRIPT: &str =
 const BROWSER_INSPECTOR_POLL_INTERVAL: Duration = Duration::from_millis(80);
 const BROWSER_INSPECTOR_POLL_TIMEOUT: Duration = Duration::from_millis(250);
 const BROWSER_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
+// Google calls WebKit's default string (no Safari token) an unsupported browser.
+const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
 
 type SnapshotResult = Result<(Vec<u8>, u32, u32), BrowserCommandError>;
 type SnapshotFuture = Pin<Box<dyn Future<Output = SnapshotResult> + Send + 'static>>;
@@ -1931,6 +1933,7 @@ impl BrowserViewFactory for TauriBrowserViewFactory {
         let page_generation = navigation_generation.clone();
         let title_generation = navigation_generation.clone();
         let mut builder = WebviewBuilder::new(label, WebviewUrl::External(builder_url))
+            .user_agent(BROWSER_USER_AGENT)
             .initialization_script(BROWSER_INSPECTOR_SCRIPT)
             .on_navigation(|url| normalize_browser_url(url.as_str(), true).is_ok())
             .on_page_load(move |_, payload| {
