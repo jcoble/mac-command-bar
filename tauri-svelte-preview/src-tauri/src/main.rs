@@ -3563,7 +3563,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(proof_mode::guard(tauri::generate_handler![
-            read_backend_capabilities,
+            read_backend_capabilities, commands::secrets::secret_set, commands::secrets::secret_delete, commands::secrets::secret_status, commands::secrets::secrets_backend,
             list_installed_font_families,
             list_source_files,
             list_source_directory,

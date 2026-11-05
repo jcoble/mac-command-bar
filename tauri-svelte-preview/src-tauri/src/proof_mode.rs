@@ -96,7 +96,7 @@ const REFUSED_COMMANDS: &[&str] = &[
     "install_remote_provider_updates", "restart_remote_for_provider_updates",
     "open_terminal_path", "open_terminal_command",
     "begin_agent_conversation_import", "extend_agent_conversation_import", "finish_agent_conversation_import",
-    "create_workflow_run", "start_workflow_run",
+    "create_workflow_run", "start_workflow_run", "secret_set", "secret_delete",
 ];
 
 /// Wraps the app's command handler: answers `read_proof_mode_label` (the label the app shows, or
