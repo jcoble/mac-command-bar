@@ -192,14 +192,14 @@ impl SessionStore {
         db("could not read session directory", rows.collect())
     }
 
-    /// This machine's sessions for the phone, each with its last activity (ms), newest first.
-    pub fn list_phone_sessions(&self) -> Result<Vec<(DirectoryEntry, i64)>> {
+    /// This machine's sessions for the phone, pinned first, then newest activity, each with its last activity (ms) and whether it is pinned and done.
+    pub fn list_phone_sessions(&self) -> Result<Vec<(DirectoryEntry, i64, bool, bool)>> {
         let connection = self.lock()?;
         let mut statement = db("could not prepare phone sessions", connection.prepare(
-            "SELECT d.name,d.owned_id,d.provider,d.project,d.state,d.run_id,d.step_id,d.handle,d.orchestrator,s.last_activity_at
+            "SELECT d.name,d.owned_id,d.provider,d.project,d.state,d.run_id,d.step_id,d.handle,d.orchestrator,s.last_activity_at,json_extract(s.extra,'$.railMeta.pinnedAt') IS NOT NULL AS pinned,json_extract(s.extra,'$.railMeta.completedAt') IS NOT NULL AS done
              FROM session_directory d JOIN sessions s ON s.owned_id = d.owned_id
-             ORDER BY s.last_activity_at DESC, d.owned_id"))?;
-        let rows = db("could not query phone sessions", statement.query_map([], |row| Ok((directory_entry(row)?, row.get(9)?))))?;
+             ORDER BY pinned DESC, s.last_activity_at DESC, d.owned_id"))?;
+        let rows = db("could not query phone sessions", statement.query_map([], |row| Ok((directory_entry(row)?, row.get(9)?, row.get(10)?, row.get(11)?))))?;
         db("could not read phone sessions", rows.collect())
     }
 
