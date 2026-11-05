@@ -72,3 +72,21 @@ async fn desktop_notification_sends_no_phone_push() {
     tokio::time::sleep(Duration::from_millis(800)).await;
     assert!(fake.messages.lock().unwrap().is_empty(), "a desktop notification reached the phone");
 }
+
+#[tokio::test]
+async fn phone_mute_holds_the_machine_until_unmuted() {
+    let (state, base) = phone_server().await;
+    let token = paired(&state, &base).await;
+    let until = super::super::now_ms() + 3_600_000;
+    let mute = |body: Value| client(reqwest::Method::POST, &base, "/mute", &token).json(&body).send();
+    let reply: Value = mute(json!({"untilMs": until})).await.unwrap().json().await.unwrap();
+    assert_eq!(reply, json!({"mutedUntilMs": until}));
+    let store = state.manager.store();
+    assert_eq!(crate::agent_conversation::messaging::board::muted_until(store, until - 1), Some(until));
+    let reply: Value = mute(json!({"untilMs": null})).await.unwrap().json().await.unwrap();
+    assert_eq!(reply, json!({"mutedUntilMs": null}));
+    assert_eq!(crate::agent_conversation::messaging::board::muted_until(store, until - 1), None);
+    assert_eq!(mute(json!({"untilMs": "soon"})).await.unwrap().status(), reqwest::StatusCode::BAD_REQUEST);
+    let stranger = reqwest::Client::new().post(format!("{base}/phone/v1/mute")).json(&json!({"untilMs": until})).send().await.unwrap();
+    assert_eq!(stranger.status(), reqwest::StatusCode::UNAUTHORIZED);
+}

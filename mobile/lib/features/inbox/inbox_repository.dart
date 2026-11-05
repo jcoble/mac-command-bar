@@ -82,6 +82,19 @@ class InboxRepository {
     }
   }
 
+  /// Holds this machine's desktop and phone notifications until [until];
+  /// board cards still show. Answers with when the mute ends.
+  Future<void> mute(DateTime until) async {
+    try {
+      await _dio.post<void>(
+        'mute',
+        data: {'untilMs': until.millisecondsSinceEpoch},
+      );
+    } on DioException catch (e) {
+      throw ApiException.fromDioException(e);
+    }
+  }
+
   /// True when the answer was taken (204), false when another answer got
   /// there first (409 stale). Anything else throws [ApiException].
   Future<bool> answer(InboxItem item, String optionId) async {

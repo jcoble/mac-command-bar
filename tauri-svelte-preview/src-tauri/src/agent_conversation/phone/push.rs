@@ -12,7 +12,11 @@ use mcb_core::session_store::SessionStore;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{inbox_items, now_ms, Payload, ServerState};
+use axum::{body::Bytes, extract::State, http::StatusCode, response::IntoResponse, Json};
+
+use super::super::messaging::board::muted_until;
+use super::super::remote::wire::{RemoteCommand, RemoteResponse};
+use super::{execute_phone_command, inbox_items, now_ms, parse, refuse, server_error, Payload, Reply, ServerState};
 
 const SCOPE: &str = "https://www.googleapis.com/auth/firebase.messaging";
 const FCM_BASE: &str = "https://fcm.googleapis.com";
@@ -90,7 +94,9 @@ impl PushSender {
 
     /// Sends each needs-you card and open question posted after `started` and unanswered 30 minutes later
     /// to the phones, once, while `allow` (the phone limit) lets it through. A restart skips what came before.
+    /// Nothing goes while the owner has muted the machine; what is still waiting when the mute ends does.
     pub(super) async fn remind(&self, store: &SessionStore, now: i64, started: i64, reminded: &mut HashSet<(String, String, i64)>, mut allow: impl FnMut(i64) -> bool) {
+        if muted_until(store, now).is_some() { return }
         let Ok(Some(machine)) = store.phone_machine() else { return };
         for item in store.board_unanswered(started, now - REMIND_AFTER_MS, now).unwrap_or_default() {
             let posted = (item["kind"].as_str().unwrap_or_default().into(), item["key"].as_str().unwrap_or_default().into(), item["at"].as_i64().unwrap_or(0));
@@ -187,6 +193,18 @@ pub(super) fn spawn_push(state: ServerState, sender: PushSender) {
 
 fn item_keys(items: &[(Option<String>, Value)]) -> HashSet<(String, i64)> {
     items.iter().map(|(_, item)| (item["id"].as_str().unwrap_or_default().to_string(), item["version"].as_i64().unwrap_or(0))).collect()
+}
+
+/// `POST /phone/v1/mute` `{untilMs}` → `{mutedUntilMs}`: More → Mute holds this machine's desktop and phone
+/// notifications until then (null unmutes), through the owner's `board_mute`, as the desktop sends it.
+pub(super) async fn mute(State(state): State<ServerState>, body: Bytes) -> Reply {
+    let request: Value = parse(&body)?;
+    let command = RemoteCommand::Messaging { op: "board_mute".into(), args: json!({"until_ms": request["untilMs"]}) };
+    match execute_phone_command(&state, command).await {
+        Ok(RemoteResponse::Messaging(until)) => Ok(Json(json!({"mutedUntilMs": until})).into_response()),
+        Ok(_) => Err(server_error(&"unexpected reply to board_mute")),
+        Err(error) => Err(refuse(StatusCode::BAD_REQUEST, &error)),
+    }
 }
 
 /// The FCM message for one phone. Its body is the item's kind and task key only: no title,
@@ -371,6 +389,24 @@ pub(super) mod tests {
         let messages = fake.messages.lock().unwrap();
         assert_eq!(messages.len(), 1, "{messages:?}");
         assert_eq!(messages[0]["message"]["notification"], json!({ "title": "From an agent · waiting", "body": "Approve PR #1" }));
+    }
+
+    #[tokio::test]
+    async fn a_muted_machine_sends_no_reminder_until_the_mute_ends() {
+        const MINUTE: i64 = 60_000;
+        let store = SessionStore::open_in_memory().unwrap();
+        store.add_phone_device("a", "a", "hash-a", 1).unwrap();
+        store.set_phone_push_token("a", "token-a").unwrap();
+        store.name_phone_machine("machine-1", "Workbox Test").unwrap();
+        store.board_update("waiting", "lead", false, &json!({"title": "waiting", "state": "needs_you"}), 1_000).unwrap();
+        crate::agent_conversation::messaging::answer(&store, None, "board_mute", &json!({"until_ms": 1_000 + 40 * MINUTE})).unwrap();
+        let fake = fake_fcm(200, "{}").await;
+        let (sender, mut reminded) = (test_sender(&fake), std::collections::HashSet::new());
+        sender.remind(&store, 1_000 + 35 * MINUTE, 500, &mut reminded, |_| true).await;
+        assert!(fake.messages.lock().unwrap().is_empty(), "muted: no reminder");
+        assert!(store.board(0, i64::MAX).unwrap()["cards"][0]["key"] == "waiting", "the card stays on the board");
+        sender.remind(&store, 1_000 + 40 * MINUTE, 500, &mut reminded, |_| true).await;
+        assert_eq!(fake.messages.lock().unwrap().len(), 1, "the mute ended: the reminder goes out");
     }
 
     #[test]

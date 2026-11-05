@@ -42,3 +42,11 @@ const board = (cards: BoardCard[], questions: BoardQuestion[] = [], machine = 'm
   const [long] = boardNotifications([board([])], [board([card('a', 'needs_you', 'x'.repeat(400))])]);
   assert.equal(long.body.length, 120);
 }
+
+{ // a_muted_machine_notifies_nothing_and_unmuting_does_not_replay_what_came_in_meanwhile
+  const muted = (cards: BoardCard[], questions: BoardQuestion[] = []) =>
+    ({ ...board(cards, questions), value: { ...board(cards, questions).value, muted_until_ms: 5_000 } }) as MachineBoard;
+  assert.deepEqual(boardNotifications([board([])], [muted([card('a', 'needs_you')], [question(1, 1)])]), []);
+  assert.deepEqual(boardNotifications([muted([card('a', 'needs_you')], [question(1, 1)])], [board([card('a', 'needs_you')], [question(1, 1)])]), []);
+  assert.equal(boardNotifications([muted([])], [board([card('b', 'needs_you')])]).length, 1, 'unmuted, a new card notifies');
+}

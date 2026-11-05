@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
+import '../../core/api/machine_client.dart';
 import '../../core/machines/machine_store.dart';
 import '../../core/theme/app_recipes.dart';
 import '../../core/theme/app_tokens.dart';
@@ -51,6 +52,24 @@ class _InboxScreenState extends ConsumerState<InboxScreen> {
       await ref.read(inboxProvider(machineId).notifier).refresh();
     });
   }
+
+  /// More → Mute: holds this machine's notifications until [until]; the
+  /// board still shows every card.
+  Future<void> _mute(String machineId, InboxItem item, DateTime until) =>
+      _send(item, () async {
+        await InboxRepository(
+          ref.read(machineClientProvider(machineId)),
+        ).mute(until);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Notifications muted until '
+              '${TimeOfDay.fromDateTime(until).format(context)}',
+            ),
+          ),
+        );
+      });
 
   /// Runs [send] with [item]'s buttons disabled; a refusal shows in a snackbar.
   Future<void> _send(InboxItem item, Future<void> Function() send) async {
@@ -109,6 +128,7 @@ class _InboxScreenState extends ConsumerState<InboxScreen> {
         busy: _busy.contains(question.id),
         onAnswer: (option) => _answer(machineId, question, option),
         onStop: () => _stop(machineId, question),
+        onMute: (until) => _mute(machineId, question, until),
       );
     }
     // A column, not a lazy list, so the focused card exists to scroll to.
@@ -286,8 +306,8 @@ class _InboxCard extends StatelessWidget {
 }
 
 /// One waiting step as its own page: the note and files scroll, and the
-/// answers stay pinned at the bottom, above the tab bar. Stop and Mute are
-/// under More.
+/// answers stay pinned at the bottom, above the tab bar. Stop and Mute (an
+/// hour, or until 8:00 tomorrow) are under More.
 class QuestionView extends StatelessWidget {
   const QuestionView({
     super.key,
@@ -295,20 +315,19 @@ class QuestionView extends StatelessWidget {
     required this.busy,
     required this.onAnswer,
     required this.onStop,
+    required this.onMute,
   });
 
   final InboxItem item;
   final bool busy;
   final ValueChanged<String> onAnswer;
   final VoidCallback onStop;
+  final ValueChanged<DateTime> onMute;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final muted = theme.textTheme.bodySmall?.copyWith(
-      color: scheme.onSurfaceVariant,
-    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -384,18 +403,23 @@ class QuestionView extends StatelessWidget {
                       ),
                     ),
                     MenuItemButton(
-                      onPressed: null,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Text('Mute'),
-                          Text(
-                            'Not available yet: the machine has no mute setting',
-                            style: muted,
-                          ),
-                        ],
-                      ),
+                      onPressed: busy
+                          ? null
+                          : () => onMute(
+                              DateTime.now().add(const Duration(hours: 1)),
+                            ),
+                      child: const Text('Mute for 1 hour'),
+                    ),
+                    MenuItemButton(
+                      onPressed: busy
+                          ? null
+                          : () {
+                              final now = DateTime.now();
+                              onMute(
+                                DateTime(now.year, now.month, now.day + 1, 8),
+                              );
+                            },
+                      child: const Text('Mute until tomorrow 8:00'),
                     ),
                   ],
                   builder: (context, menu, _) => TextButton(

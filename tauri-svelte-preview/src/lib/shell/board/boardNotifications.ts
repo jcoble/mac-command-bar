@@ -8,12 +8,13 @@ const notification = (title: string, body: string): SessionNotification =>
   ({ title: `Build Board · ${title}`, body: [...body].slice(0, 120).join('') });
 
 /** What changed from `previous` to `next` that the owner should hear about. A machine missing from
- *  `previous` (the first read, or one that just connected) only sets the baseline, so nothing repeats. */
+ *  `previous` (the first read, or one that just connected) only sets the baseline, so nothing repeats.
+ *  A muted machine notifies nothing; its cards still show on the board. */
 export function boardNotifications(previous: MachineBoard[] | null, next: MachineBoard[]): SessionNotification[] {
   const sent: SessionNotification[] = [];
   for (const { machine, value } of next) {
     const before = previous?.find((board) => board.machine === machine)?.value;
-    if (!before) continue;
+    if (!before || value.muted_until_ms) continue;
     for (const card of value.cards) {
       if (card.state !== 'needs_you') continue;
       if (before.cards.some((old) => old.key === card.key && old.state === 'needs_you')) continue;

@@ -36,6 +36,8 @@ export type MachineBoard = {
     session_notes: Array<{ target: string; notes: BoardNote[] }>;
     /** Missing from a machine on an older build. */
     questions?: BoardQuestion[];
+    /** While the owner has muted this machine's notifications: when the mute ends. */
+    muted_until_ms?: number | null;
   };
 };
 export type BoardCount = { count: number; snoozed_until_ms: number | null };
@@ -74,4 +76,9 @@ export async function addBoardNote(
 export async function answerBoardQuestion(machine: string, id: number, askedAtMs: number, answer: string, nowMs: number): Promise<boolean | null> {
   // A recorded answer must not be cancelled halfway, so this takes no signal.
   return invokeCancellable('board', { op: 'board_question', args: { machine, id, asked_at_ms: askedAtMs, answer, now_ms: nowMs } }, new AbortController().signal);
+}
+
+/** Mutes the machine's desktop and phone notifications until `untilMs`; null unmutes. Cards still show. */
+export async function muteBoard(machine: string, untilMs: number | null, signal: AbortSignal): Promise<number | null> {
+  return board('board_mute', { machine, until_ms: untilMs }, signal);
 }

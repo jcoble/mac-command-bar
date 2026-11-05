@@ -17,6 +17,24 @@ pub(crate) fn phone_slot(now: i64) -> bool {
     free
 }
 
+/// Where the owner's mute is kept: the time, in milliseconds, this machine's notifications resume.
+const MUTE_SETTING: &str = "board.muted_until_ms";
+
+/// When this machine's desktop board notifications, notify pushes and reminders resume, while that is after `now`.
+pub fn muted_until(store: &SessionStore, now: i64) -> Option<i64> {
+    store.get_app_setting(MUTE_SETTING).ok().flatten().and_then(|value| value.parse().ok()).filter(|until| *until > now)
+}
+
+/// The owner's Mute: holds notifications until `until_ms`; null or missing unmutes. Cards are never held.
+fn mute(store: &SessionStore, until: &Value) -> Result<Value, String> {
+    match until {
+        Value::Null => store.delete_app_setting(MUTE_SETTING),
+        Value::Number(_) if until.is_i64() => store.upsert_app_setting(MUTE_SETTING, &until.to_string()),
+        _ => return Err("until_ms must be a time or null".into()),
+    }.map_err(|error| error.to_string())?;
+    Ok(until.clone())
+}
+
 /// The phone gets at most 3 pushes in any 30 minutes and 5 in any hour until the owner answers.
 fn phone_limited(now: i64) -> bool {
     let mut sent = NOTIFIED.lock().unwrap_or_else(PoisonError::into_inner);
@@ -92,8 +110,10 @@ pub(super) fn update(store: &SessionStore, caller: &str, role: &str, mut args: V
     }
     let key = args["key"].as_str().ok_or("key must be a string")?.to_string();
     let now = chrono::Utc::now().timestamp_millis();
-    let refused = if args["notify"] != true { None } else if role != "orchestrator" { Some(NOT_ORCHESTRATOR) }
-        else if phone_limited(now) { Some(PHONE_LIMIT) } else { None };
+    let muted = muted_until(store, now).and_then(chrono::DateTime::from_timestamp_millis)
+        .map(|until| format!("muted until {}: the owner sees the card on the board", until.with_timezone(&chrono::Local).format("%H:%M")));
+    let refused = if args["notify"] != true { None } else if role != "orchestrator" { Some(NOT_ORCHESTRATOR.to_string()) }
+        else if muted.is_some() { muted } else if phone_limited(now) { Some(PHONE_LIMIT.to_string()) } else { None };
     if refused.is_some() { args["notify"] = json!(false); }
     let mut reply = json!({"key": key, "saved": true});
     if args.get("question").is_some() || args.get("answer").is_some() {
@@ -116,11 +136,17 @@ pub(super) fn answer(store: &SessionStore, op: &str, args: &Value) -> Result<Val
     let text = |key: &str| args[key].as_str().ok_or_else(|| format!("{key} is required"));
     let number = |key: &str| args[key].as_i64().ok_or_else(|| format!("{key} is required"));
     let result = match op {
-        "board" => store.board(number("today_ms")?, number("now_ms")?),
+        "board" => store.board(number("today_ms")?, number("now_ms")?)
+            .map(|mut board| { board["muted_until_ms"] = json!(muted_until(store, args["now_ms"].as_i64().unwrap_or_default())); board }),
         "board_count" => store.board_count(number("now_ms")?),
         "board_card" => store.board_card(text("key")?, text("action")?, number("at")?).map(Value::Bool),
         "board_note" => store.board_note(&uuid::Uuid::new_v4().to_string(), text("target")?, text("body")?, number("now_ms")?).map(Value::Bool),
         "board_question" => store.board_question_answer(number("id")?, number("asked_at_ms")?, text("answer")?, number("now_ms")?).map(Value::Bool),
+        "board_mute" => {
+            let value = mute(store, args.get("until_ms").unwrap_or(&Value::Null))?;
+            mcb_core::broker::messages_changed();
+            return Ok(value);
+        }
         _ => return Err(format!("Unknown messaging operation {op}")),
     };
     let value = result.map_err(|error| error.to_string())?;
@@ -240,6 +266,28 @@ mod tests {
         assert!(notify("full").get("phone").is_some());
         update(&store, "lead", "orchestrator", json!({"key": "q", "answer": "yes, from the chat"})).unwrap();
         assert_eq!(notify("after-chat"), json!({"key": "after-chat", "saved": true}), "an answer recorded from the chat resets it too");
+        // Here, not in the mute test, because the phone count is shared by every test: unmuted, notify sends again.
+        answer(&store, "board_mute", &json!({"until_ms": chrono::Utc::now().timestamp_millis() + 60_000})).unwrap();
+        assert!(notify("muted")["phone"].as_str().unwrap().starts_with("muted until "));
+        answer(&store, "board_mute", &json!({})).unwrap();
+        assert_eq!(notify("unmuted"), json!({"key": "unmuted", "saved": true}));
+        assert_eq!(store.board_notified_since(0).unwrap().len(), 8, "the muted one never went out");
+    }
+
+    #[test]
+    fn notify_while_muted_saves_the_card_and_sends_nothing_until_unmuted() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let until = chrono::Utc::now().timestamp_millis() + 3_600_000;
+        assert_eq!(answer(&store, "board_mute", &json!({"until_ms": until})).unwrap(), json!(until));
+        let reply = update(&store, "lead", "orchestrator", json!({"key": "one", "title": "Ready", "state": "needs_you", "notify": true})).unwrap();
+        assert!(reply["phone"].as_str().unwrap().starts_with("muted until "), "{reply}");
+        let board = answer(&store, "board", &json!({"today_ms": 0, "now_ms": until - 1})).unwrap();
+        assert_eq!((&board["cards"][0]["key"], &board["muted_until_ms"]), (&json!("one"), &json!(until)), "the card is saved and shows");
+        assert_eq!(store.board_notified_since(0).unwrap(), Vec::<Value>::new(), "nothing goes to the phone");
+        assert_eq!(muted_until(&store, until), None, "the mute ends at its time");
+        assert_eq!(answer(&store, "board_mute", &json!({"until_ms": null})).unwrap(), Value::Null);
+        assert_eq!(muted_until(&store, until - 1), None, "unmute ends it now");
+        assert_eq!(answer(&store, "board_mute", &json!({"until_ms": "soon"})).unwrap_err(), "until_ms must be a time or null");
     }
 
     #[test]

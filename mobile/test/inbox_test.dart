@@ -102,12 +102,13 @@ Future<(ProviderContainer, FakeAdapter, FakeLiveSocket)> inboxWith(
 }
 
 /// [QuestionView] on a phone-sized screen above a stand-in tab bar.
-Future<(List<String>, List<int>)> pumpQuestion(
+Future<(List<String>, List<int>, List<DateTime>)> pumpQuestion(
   WidgetTester tester,
   Map<String, Object?> json,
 ) async {
   final answers = <String>[];
   final stops = <int>[];
+  final mutes = <DateTime>[];
   tester.view.physicalSize = const Size(400, 700);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
@@ -119,19 +120,20 @@ Future<(List<String>, List<int>)> pumpQuestion(
           busy: false,
           onAnswer: answers.add,
           onStop: () => stops.add(1),
+          onMute: mutes.add,
         ),
         bottomNavigationBar: const SizedBox(key: Key('tab-bar'), height: 64),
       ),
     ),
   );
-  return (answers, stops);
+  return (answers, stops, mutes);
 }
 
 void main() {
   testWidgets('question_answers_stay_pinned_above_tab_bar_while_scrolling', (
     tester,
   ) async {
-    final (answers, _) = await pumpQuestion(tester, {
+    final (answers, _, _) = await pumpQuestion(tester, {
       ...pause('r1', 2000),
       'detail': List.filled(80, 'A long note line.').join('\n'),
       'evidence': [
@@ -155,19 +157,52 @@ void main() {
   });
 
   testWidgets('question_more_holds_stop_and_mute', (tester) async {
-    final (answers, stops) = await pumpQuestion(tester, pause('r1', 2000));
+    final (answers, stops, _) = await pumpQuestion(tester, pause('r1', 2000));
 
     // Stop is not one of the pinned answers.
     expect(find.text('Stop'), findsNothing);
     await tester.tap(find.text('More'));
     await tester.pumpAndSettle();
     expect(find.text('Stop'), findsOneWidget);
-    expect(find.text('Mute'), findsOneWidget);
+    expect(find.text('Mute for 1 hour'), findsOneWidget);
 
     await tester.tap(find.text('Stop'));
     await tester.pumpAndSettle();
     expect(stops, [1]);
     expect(answers, isEmpty);
+  });
+
+  testWidgets('question_more_mutes_for_an_hour_or_until_tomorrow_8', (
+    tester,
+  ) async {
+    final (_, _, mutes) = await pumpQuestion(tester, pause('r1', 2000));
+    final before = DateTime.now();
+    await tester.tap(find.text('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Mute for 1 hour'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('More'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Mute until tomorrow 8:00'));
+    await tester.pumpAndSettle();
+
+    expect(mutes, hasLength(2));
+    final hour = mutes[0].difference(before);
+    expect(hour.inMinutes, inInclusiveRange(59, 60));
+    expect(mutes[1], DateTime(before.year, before.month, before.day + 1, 8));
+  });
+
+  test('inbox_mute_sends_the_time_to_the_machine', () async {
+    final (c, adapter, _) = await inboxWith(
+      (r) => r.path == 'mute'
+          ? (200, {'mutedUntilMs': 1234})
+          : (200, {'items': []}),
+    );
+    adapter.requests.clear();
+    final repo = InboxRepository(c.read(machineClientProvider(machineId)));
+    await repo.mute(DateTime.fromMillisecondsSinceEpoch(1234));
+    expect(sent(adapter), ['POST mute']);
+    expect(adapter.requests.single.data, {'untilMs': 1234});
   });
 
   test('inbox_notifier_keeps_backend_options_only', () async {
