@@ -27,7 +27,12 @@ class InboxItem {
       ],
       options = [
         for (final o in (json['options'] as List?) ?? const [])
-          (id: '${o['id']}', label: '${o['label']}', style: '${o['style']}'),
+          (
+            id: '${o['id']}',
+            label: '${o['label']}',
+            style: '${o['style']}',
+            needsText: o['needsText'] == true,
+          ),
       ],
       createdAt = json['createdAt'] as int? ?? 0,
       version = json['version'] as int;
@@ -47,19 +52,31 @@ class InboxItem {
   final List<({String label, String? text, String? url})> evidence;
 
   /// The backend's buttons, in its order; style is primary, neutral or danger.
-  final List<({String id, String label, String style})> options;
+  /// A button with needsText asks what the owner wants to say before it sends.
+  final List<({String id, String label, String style, bool needsText})> options;
   final int createdAt;
   final int version;
 }
 
 class Inbox {
-  const Inbox(this.items, [this.answeredElsewhere = const {}]);
+  const Inbox(
+    this.items, [
+    this.answeredElsewhere = const {},
+    this.closedReasons = const {},
+  ]);
 
   /// Newest first, including cards kept to say they were answered elsewhere.
   final List<InboxItem> items;
 
   /// Ids of cards another answer got to first; they show a note, not buttons.
   final Set<String> answeredElsewhere;
+
+  /// The backend's reason, for a card nobody answered: it closed on its own.
+  final Map<String, String> closedReasons;
+
+  /// What a card kept in [answeredElsewhere] says instead of its buttons.
+  String closedWhy(String id) =>
+      closedReasons[id] ?? 'Already answered elsewhere';
 
   List<InboxItem> get pending =>
       items.where((i) => !answeredElsewhere.contains(i.id)).toList();
@@ -82,21 +99,30 @@ class InboxRepository {
     }
   }
 
-  /// True when the answer was taken (204), false when another answer got
-  /// there first (409 stale). Anything else throws [ApiException].
-  Future<bool> answer(InboxItem item, String optionId) async {
+  /// Taken when the answer landed (204). Not taken when it came too late (409
+  /// stale), with the backend's reason if it gave one. Anything else throws
+  /// [ApiException].
+  Future<({bool taken, String? why})> answer(
+    InboxItem item,
+    String optionId, {
+    String? text,
+  }) async {
     try {
       await _dio.post<void>(
         'inbox/${Uri.encodeComponent(item.id)}/answer',
-        data: {'optionId': optionId, 'version': item.version},
+        data: {
+          'optionId': optionId,
+          'version': item.version,
+          'text': ?text,
+        },
       );
-      return true;
+      return (taken: true, why: null);
     } on DioException catch (e) {
       final body = e.response?.data;
       if (e.response?.statusCode == 409 &&
           body is Map &&
           body['error'] == 'stale') {
-        return false;
+        return (taken: false, why: body['detail'] as String?);
       }
       throw ApiException.fromDioException(e);
     }
@@ -154,11 +180,13 @@ class InboxNotifier extends AsyncNotifier<Inbox> {
     if (ref.mounted && generation == _generation) state = next;
   }
 
-  /// Sends the owner's choice of one of [item]'s own options. A taken answer
-  /// drops the card; a stale one marks it "Already answered elsewhere" and
-  /// refetches. Other refusals throw [ApiException] and keep the card.
-  Future<void> answer(InboxItem item, String optionId) async {
-    if (await _repo.answer(item, optionId)) {
+  /// Sends the owner's choice of one of [item]'s own options, with [text] for
+  /// one that needs it. A taken answer drops the card; a stale one keeps it,
+  /// saying why it closed, and refetches. Other refusals throw [ApiException]
+  /// and keep the card.
+  Future<void> answer(InboxItem item, String optionId, {String? text}) async {
+    final sent = await _repo.answer(item, optionId, text: text);
+    if (sent.taken) {
       _generation++;
       final current = state.value;
       if (ref.mounted && current != null) {
@@ -166,6 +194,7 @@ class InboxNotifier extends AsyncNotifier<Inbox> {
           Inbox(
             current.items.where((i) => i.id != item.id).toList(),
             current.answeredElsewhere,
+            current.closedReasons,
           ),
         );
       }
@@ -180,6 +209,7 @@ class InboxNotifier extends AsyncNotifier<Inbox> {
         [...fresh, if (gone) item]
           ..sort((a, b) => b.createdAt.compareTo(a.createdAt)),
         {if (gone) item.id},
+        {if (gone) item.id: ?sent.why},
       ),
     );
   }

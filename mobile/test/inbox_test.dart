@@ -58,6 +58,23 @@ List<String> sent(FakeAdapter adapter) => [
   for (final r in adapter.requests) '${r.method} ${r.path}',
 ];
 
+final gate = <String, Object?>{
+  'id': 'step/gate/1',
+  'kind': 'gate',
+  'runId': 'r1',
+  'stepId': 'approve',
+  'title': 'Ship it?',
+  'detail': '',
+  'evidence': [],
+  'options': [
+    {'id': 'approve', 'label': 'Approve', 'style': 'primary'},
+    {'id': 'revise', 'label': 'Revise', 'style': 'neutral', 'needsText': true},
+    {'id': 'deny', 'label': 'Deny', 'style': 'danger'},
+  ],
+  'createdAt': 3000,
+  'version': 1,
+};
+
 /// Answers like [FakeAdapter], but holds the response to the next request
 /// until [gate] completes (the answer is chosen when the request arrives).
 class GatedAdapter extends FakeAdapter {
@@ -168,6 +185,146 @@ void main() {
     await tester.pumpAndSettle();
     expect(stops, [1]);
     expect(answers, isEmpty);
+  });
+
+  test('a_late_answer_shows_why_the_question_closed', () async {
+    var closed = false;
+    final (c, _, _) = await inboxWith(
+      (r) => switch ('${r.method} ${r.path}') {
+        'GET inbox' => (
+          200,
+          {
+            'items': [if (!closed) pause('r1', 2000)],
+          },
+        ),
+        'POST inbox/step%3Ar1%3Achecks/answer' => () {
+          closed = true;
+          return (
+            409,
+            {
+              'error': 'stale',
+              'detail': 'Closed: the work it follows is being redone',
+            },
+          );
+        }(),
+        _ => (500, {'error': 'Server error'}),
+      },
+    );
+    final item = c.read(inboxProvider(machineId)).requireValue.items.single;
+
+    await c.read(inboxProvider(machineId).notifier).answer(item, 'accept');
+
+    final inbox = c.read(inboxProvider(machineId)).requireValue;
+    expect(inbox.pending, isEmpty);
+    expect(
+      inbox.closedWhy(item.id),
+      'Closed: the work it follows is being redone',
+    );
+  });
+
+  test('a_stale_answer_with_no_reason_was_answered_elsewhere', () async {
+    var closed = false;
+    final (c, _, _) = await inboxWith(
+      (r) => switch ('${r.method} ${r.path}') {
+        'GET inbox' => (
+          200,
+          {
+            'items': [if (!closed) pause('r1', 2000)],
+          },
+        ),
+        _ => () {
+          closed = true;
+          return (409, {'error': 'stale'});
+        }(),
+      },
+    );
+    final item = c.read(inboxProvider(machineId)).requireValue.items.single;
+
+    await c.read(inboxProvider(machineId).notifier).answer(item, 'accept');
+
+    expect(
+      c.read(inboxProvider(machineId)).requireValue.closedWhy(item.id),
+      'Already answered elsewhere',
+    );
+  });
+
+  test('a_revision_sends_its_text_with_the_chosen_option', () async {
+    final (c, adapter, _) = await inboxWith(
+      (r) => switch ('${r.method} ${r.path}') {
+        'GET inbox' => (
+          200,
+          {
+            'items': [gate],
+          },
+        ),
+        _ => (204, null),
+      },
+    );
+    final item = c.read(inboxProvider(machineId)).requireValue.items.single;
+    expect([for (final o in item.options) o.needsText], [false, true, false]);
+    adapter.requests.clear();
+
+    await c
+        .read(inboxProvider(machineId).notifier)
+        .answer(item, 'revise', text: 'Smaller');
+
+    expect(adapter.requests.single.data, {
+      'optionId': 'revise',
+      'version': 1,
+      'text': 'Smaller',
+    });
+  });
+
+  testWidgets('revise_asks_what_should_change_before_it_sends', (tester) async {
+    String? typed;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async => typed = await askWhatShouldChange(context),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+
+    // Nothing to say sends nothing.
+    final send = find.widgetWithText(FilledButton, 'Send');
+    expect(tester.widget<FilledButton>(send).onPressed, isNull);
+    await tester.enterText(find.byType(TextField), '   ');
+    await tester.pump();
+    expect(tester.widget<FilledButton>(send).onPressed, isNull);
+
+    await tester.enterText(find.byType(TextField), 'Smaller');
+    await tester.pump();
+    await tester.tap(send);
+    await tester.pumpAndSettle();
+    expect(typed, 'Smaller');
+  });
+
+  testWidgets('cancelling_a_revision_sends_nothing', (tester) async {
+    String? typed = 'unset';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async => typed = await askWhatShouldChange(context),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect(typed, isNull);
   });
 
   test('inbox_notifier_keeps_backend_options_only', () async {

@@ -31,11 +31,19 @@ class _InboxScreenState extends ConsumerState<InboxScreen> {
   /// elsewhere.
   bool? _focusGone;
 
-  Future<void> _answer(String machineId, InboxItem item, String option) =>
-      _send(
-        item,
-        () => ref.read(inboxProvider(machineId).notifier).answer(item, option),
-      );
+  /// Sends the owner's choice, first asking what should change when the
+  /// option needs words. Backing out of that sends nothing.
+  Future<void> _answer(String machineId, InboxItem item, String option) async {
+    final needsText = item.options.any((o) => o.id == option && o.needsText);
+    final text = needsText ? await askWhatShouldChange(context) : null;
+    if (needsText && (text == null || !mounted)) return;
+    await _send(
+      item,
+      () => ref
+          .read(inboxProvider(machineId).notifier)
+          .answer(item, option, text: text),
+    );
+  }
 
   /// More → Stop, after the owner says yes: a paused step's own Stop answer,
   /// or for a gate, which has none, the run's Stop, as on the run page.
@@ -131,7 +139,9 @@ class _InboxScreenState extends ConsumerState<InboxScreen> {
               child: _InboxCard(
                 item: item,
                 highlighted: item.id == focus,
-                answeredElsewhere: inbox.answeredElsewhere.contains(item.id),
+                closedWhy: inbox.answeredElsewhere.contains(item.id)
+                    ? inbox.closedWhy(item.id)
+                    : null,
                 busy: _busy.contains(item.id),
                 onAnswer: (option) => _answer(machineId, item, option),
               ),
@@ -140,6 +150,52 @@ class _InboxScreenState extends ConsumerState<InboxScreen> {
       ),
     );
   }
+}
+
+/// Asks what a revision should change; null when the owner backs out.
+Future<String?> askWhatShouldChange(BuildContext context) =>
+    showDialog<String>(context: context, builder: (_) => const _ReviseDialog());
+
+class _ReviseDialog extends StatefulWidget {
+  const _ReviseDialog();
+
+  @override
+  State<_ReviseDialog> createState() => _ReviseDialogState();
+}
+
+class _ReviseDialogState extends State<_ReviseDialog> {
+  final _text = TextEditingController();
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('What should change?'),
+    content: TextField(
+      controller: _text,
+      autofocus: true,
+      minLines: 3,
+      maxLines: 6,
+      textCapitalization: TextCapitalization.sentences,
+      onChanged: (_) => setState(() {}),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        onPressed: _text.text.trim().isEmpty
+            ? null
+            : () => Navigator.pop(context, _text.text.trim()),
+        child: const Text('Send'),
+      ),
+    ],
+  );
 }
 
 /// The push lane's words for each kind.
@@ -158,14 +214,16 @@ class _InboxCard extends StatelessWidget {
   const _InboxCard({
     required this.item,
     required this.highlighted,
-    required this.answeredElsewhere,
+    required this.closedWhy,
     required this.busy,
     required this.onAnswer,
   });
 
   final InboxItem item;
   final bool highlighted;
-  final bool answeredElsewhere;
+
+  /// Why this card closed before its answer landed; null while it is open.
+  final String? closedWhy;
   final bool busy;
   final ValueChanged<String> onAnswer;
 
@@ -256,8 +314,8 @@ class _InboxCard extends StatelessWidget {
               ),
             ),
           const SizedBox(height: 14),
-          if (answeredElsewhere)
-            const _Note('Already answered elsewhere')
+          if (closedWhy != null)
+            _Note(closedWhy!)
           else
             Wrap(
               spacing: 8,
@@ -468,7 +526,12 @@ class _Note extends StatelessWidget {
       children: [
         Icon(Symbols.check_circle_rounded, size: 18, color: muted),
         const SizedBox(width: 8),
-        Text(text, style: theme.textTheme.bodyMedium?.copyWith(color: muted)),
+        Flexible(
+          child: Text(
+            text,
+            style: theme.textTheme.bodyMedium?.copyWith(color: muted),
+          ),
+        ),
       ],
     );
   }
